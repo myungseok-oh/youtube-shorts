@@ -1,0 +1,318 @@
+# 이슈60초 YouTube Shorts 자동 제작 시스템
+
+## 프로젝트 구조
+- `app.py` — FastAPI 백엔드 (포트 9000)
+- `config.json` — ffmpeg 경로, DB 경로, 서버 설정
+- `db/database.py` — SQLite WAL 래퍼
+- `db/models.py` — Channel, Job, JobStep 모델
+- `pipeline/` — 파이프라인 모듈
+  - `runner.py` — Phase A/B 파이프라인 실행기 + JobQueue (Phase B 순차 실행)
+  - `agent.py` — Claude CLI 호출 (뉴스검색+대본, 24시간 중복 필터, 밝은 이미지 프롬프트)
+  - `trend_collector.py` — Google Trends + YouTube Trending 수집
+  - `tts_generator.py` — gTTS/edge-tts 음성 생성
+  - `slide_generator.py` — 슬라이드 이미지 생성
+  - `generate_slides.js` — Puppeteer 슬라이드 렌더러 (진행바 제거, 오버레이 밝게)
+  - `sync_engine.py` — 오디오-슬라이드 타임라인 동기화
+  - `video_renderer.py` — ffmpeg 영상 합성
+  - `metadata.py` — 제목/설명/태그 생성
+  - `image_generator.py` — Openverse CC 배경 이미지 검색
+  - `image_library.py` — 이미지 라이브러리 매칭
+  - `sd_generator.py` — ComfyUI API 클라이언트 (SD 이미지/영상 생성)
+  - `youtube_uploader.py` — YouTube 업로드
+- `templates/dashboard.html` — Jinja2 + Tailwind 대시보드
+- `static/app.js` — 폴링 기반 프론트엔드 (큐 상태, 완료/활성 분리, OAuth 토큰 발급)
+- `static/style.css` — 대시보드 스타일
+- `test_phase3.py` — 샘플 데이터로 전체 파이프라인 테스트
+
+## 기술 스택
+- FastAPI + Uvicorn, SQLite WAL, Vanilla JS + Tailwind, gTTS/edge-tts, Puppeteer, ffmpeg
+- 배경 이미지: Genspark (수동) / Openverse CC API (자동 폴백) / SD (ComfyUI)
+- 트렌드 수집: Google Trends RSS, YouTube Data API v3
+- TTS: gTTS/edge-tts (기본), GPT-SoVITS (설치 완료, 통합 예정)
+
+## Phase 현황
+- Phase 1 (코어 파이프라인 + 웹 대시보드): **완료**
+- Phase 2 (Claude 에이전트 연동 — 뉴스검색+대본): **완료**
+- Phase 3 (슬라이드 품질 개선 — 배경 이미지): **완료** (Genspark 수동 + 벌크 업로드)
+- Phase 4 (YouTube 업로드): **완료**
+- Phase 5 (트렌드 수집 연동): **완료**
+- Phase 6 (나레이션 업로드): **완료**
+- Phase 7 (JobQueue 순차 실행): **완료**
+- Phase 8 (GPT-SoVITS 다양한 음성): **진행 중** (설치 완료, 파이프라인 통합 남음)
+
+## 파이프라인 단계
+1. news_search → 2. script → 3. slides (배경+슬라이드) → 4. tts (또는 나레이션 업로드) → 5. render → 6. upload
+
+## 파이프라인 흐름 (2단계 실행)
+
+### Phase A: 대본 생성 (병렬)
+```
+채널 실행 → trend_collector (선택) → parse_request() → 주제 리스트
+         → 주제별 Job 생성 → generate_script() → script_json → waiting_slides
+```
+- 24시간 내 동일 주제 중복 필터링
+- 주제 간 다른 분야 강제 (프롬프트 강화)
+
+### Phase B: 영상 제작 — JobQueue 순차 실행 (GPU 리소스 보호)
+```
+waiting_slides → [queued] → 슬라이드 렌더링 → TTS 또는 나레이션 → 영상 합성 → 업로드
+```
+- `JobQueue`: deque 기반 FIFO, 한 번에 1개 Job만 Phase B 실행
+- 상태 흐름: waiting_slides → queued → running → completed/failed
+
+## DB/경로
+- DB: `data/shorts.db`
+- ffmpeg: `C:\Users\msoh\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.0.1-full_build\bin\`
+
+---
+
+## 트렌드 수집 (Phase 5)
+
+### 구조
+```
+채널 실행 → collect_trends(sources, youtube_api_key)
+              ├─ Google Trends RSS (trends.google.co.kr/trending/rss?geo=KR)
+              └─ YouTube Trending (YouTube Data API v3, 1 unit/call)
+          → format_trend_context() → 텍스트
+          → parse_request(request, instructions, trend_context)
+```
+
+### 채널 config 필드
+```json
+{
+  "trend_sources": ["google_trends", "youtube_trending"],
+  "youtube_api_key": "AIzaSy..."
+}
+```
+
+### 참고
+- pytrends는 Google API 변경으로 404 반환 → RSS 피드로 대체 (추가 의존성 없음)
+- trend_sources 비어있으면 기존 Claude WebSearch 동작 유지
+- 각 소스 독립 실패 처리 (하나 실패해도 나머지 계속)
+
+---
+
+## 나레이션 업로드 (Phase 6)
+
+### 흐름
+- 작업 상세 팝업에서 **TTS 생성** / **음성 업로드** 택1
+- 업로드: `POST /api/jobs/{id}/narration` → `{job_dir}/narration.mp3`
+- Phase B에서 `_find_narration()` → 파일 있으면 TTS 스킵
+- `_render_with_narration()`: 나레이션 길이 ÷ 슬라이드 수 = 균등 배분 → 슬라이드쇼 영상 + 나레이션 합성
+
+---
+
+## 배경 이미지 히스토리
+
+### 시도 1: Pollinations.ai (AI 이미지 생성)
+- **탈락**: 무료 티어에서 사용 불가
+
+### 시도 2: Bing 이미지 크롤링
+- **탈락**: 저작권 문제
+
+### 시도 3: Openverse CC API (원스탑 파이프라인용)
+- CC 라이선스 이미지, 한국 뉴스 주제에 약함
+- 원스탑 파이프라인(`start_pipeline_full`)에서 자동 배경으로 사용
+
+### 현재: Genspark (수동)
+- 대본 생성 후 Genspark 프롬프트(영어) 자동 생성 → 사용자가 복사해서 이미지 생성
+- 벌크 업로드 (전체 업로드 버튼) 또는 개별 슬롯 업로드
+- 이미지 라이브러리 자동매칭 지원
+
+### Stable Diffusion (ComfyUI — 구현 완료)
+- 사용자 PC: RTX 2070 SUPER 8GB / Ryzen 7 3700X / 32GB RAM
+- ComfyUI v0.16.3: `C:\git\ComfyUI` (venv, PyTorch 2.6.0+cu124)
+- 모델: SD 1.5 (`v1-5-pruned-emaonly.safetensors`)
+- 시작: `C:\git\ComfyUI\start_comfyui.bat` (--disable-cuda-malloc 필수)
+- `pipeline/sd_generator.py` — ComfyUI API 클라이언트
+- 이미지 프롬프트: 밝은 톤 강제 (dark/moody/red 계열 금지)
+- GPU 동시 사용 불가 → JobQueue로 순차 실행
+
+---
+
+## Puppeteer 배경 이미지 핵심 이슈
+
+### 문제: `file:///` URL 차단
+- `page.setContent(html)` → 오리진이 `about:blank`
+- **해결**: `generate_slides.js`의 `bgInfo()`에서 이미지를 base64 data URL로 변환
+
+### 오버레이 불투명도
+- 현재: **35-50%** (`rgba(5,8,20,0.45)` ~ `rgba(5,8,20,0.50)`) — 밝게 조정됨
+
+### 경로 주의사항
+- Python → Node.js(Puppeteer)로 경로 전달 시 **절대경로 + 포워드 슬래시** 필수
+- `slide_generator.py`에서 `os.path.abspath().replace("\\", "/")` 처리
+- Windows 백슬래시(`\`) 경로는 Node.js `fs.existsSync()`에서 실패할 수 있음
+
+### 수정 후 체크리스트
+- `generate_slides.js` 또는 `slide_generator.py` 수정 후 반드시 확인:
+  1. 배경 이미지(PNG/JPG)가 슬라이드에 반영되는지
+  2. MP4/GIF 배경일 때 `slide_X_overlay.png`가 생성되는지
+  3. overlay가 있을 때 영상 합성에서 움직이는 배경이 적용되는지
+- 경로 관련 수정 시: Node.js에서 `fs.existsSync(path)` 테스트
+
+---
+
+## 배경 이미지 데이터 흐름
+
+```
+[수동 업로드] → {job_dir}/backgrounds/bg_1.jpg, bg_2.jpg, ...
+             → runner._load_uploaded_backgrounds() → list[dict]
+             → slide_generator → generate_slides.js → base64 data URL
+```
+
+- Closing 슬라이드: 마지막 콘텐츠 슬라이드 배경 이미지 재사용
+- 실패 시 기본 그라디언트 폴백
+
+---
+
+## GPT-SoVITS TTS (Phase 8 — 진행 중)
+
+### 설치 상태: 완료
+- 경로: `C:\git\GPT-SoVITS` (venv, Python 3.12, PyTorch 2.6.0+cu124)
+- API 서버: `start_api.bat` → `python api_v2.py -a 127.0.0.1 -p 9880`
+- 모델: GPT-SoVITS v2 weights, chinese-roberta-wwm-ext-large, chinese-hubert-base
+- 의존성 패치 완료:
+  - `jieba_fast` → `jieba` 폴백 (chinese.py, chinese2.py, tone_sandhi.py)
+  - `eunjeon` → `python-mecab-ko` shim (`venv/Lib/site-packages/eunjeon/__init__.py`)
+  - `pyopenjtalk` 제거 (일본어 전용, 빌드 불가)
+
+### 남은 작업
+1. **GPT-SoVITS API 서버 실행 확인** — `start_api.bat` 실행 후 한국어 TTS 정상 동작 테스트
+2. **참조 음성 준비** — GPT-SoVITS는 참조 오디오(3~10초)로 음색 복제, 채널별 참조 음성 필요
+3. **tts_generator.py 통합** — GPT-SoVITS API 호출 옵션 추가
+   - 채널 config에 `tts_engine` 필드 추가 (`edge-tts` | `gpt-sovits`)
+   - GPT-SoVITS 설정: `sovits_ref_audio`, `sovits_ref_text`, `sovits_model` 등
+4. **대시보드 UI** — 채널 설정에서 TTS 엔진 선택, 참조 음성 업로드
+5. **VRAM 관리** — SD(ComfyUI)와 GPT-SoVITS는 동시 GPU 사용 불가 (8GB)
+   - JobQueue가 순차 실행하므로 충돌 방지됨
+   - 단, ComfyUI와 GPT-SoVITS 서버 동시 실행 시 VRAM 부족 가능
+
+### GPT-SoVITS API 사용법 (참고)
+```
+POST http://127.0.0.1:9880/tts
+{
+  "text": "안녕하세요",
+  "text_lang": "ko",
+  "ref_audio_path": "참조음성.wav",
+  "prompt_text": "참조음성의 텍스트",
+  "prompt_lang": "ko"
+}
+→ WAV 오디오 응답
+```
+
+---
+
+## 채널 목록
+- **이슈60초** — 종합 뉴스, 기본 채널
+- **coinsihwang (코인시황)** — 코인 뉴스, 캐주얼 톤, 전연령 타겟
+  - 업비트/빗썸 신규상장/상폐 + 핫 코인 뉴스
+  - OAuth 토큰 발급 완료
+
+---
+
+## 최근 변경사항 (요약)
+- **JobQueue**: Phase B 순차 실행 (GPU 충돌 방지), 상태 `queued` 추가
+- **중복 방지**: 24시간 내 동일 주제 필터 + 프롬프트 강화
+- **밝은 이미지**: SD 프롬프트에서 dark/moody/red 금지, 오버레이 불투명도 35-50%
+- **슬라이드**: 진행바 제거, Closing 슬라이드에 배경 이미지 재사용
+- **Closing 텍스트**: "다음 뉴스에서 만나요" 하드코딩 제거 → 채널 지침 기반
+- **대시보드**: 완료/활성 작업 분리, 삭제 버튼 복원, OAuth 토큰 발급 UI
+
+---
+
+## 이미지/영상 프롬프트 작성 지침
+
+`pipeline/agent.py`의 `generate_image_prompts()`가 참조하는 기준.
+채널 config의 `image_prompt_style`로 채널별 커스텀 가능 (비어있으면 `DEFAULT_IMAGE_PROMPT_STYLE` 사용).
+
+### 핵심 원칙
+1. **구체적 장면 묘사** — 추상 개념 금지, 카메라맨이 실제로 촬영할 수 있는 장소/사물
+2. **영어 프롬프트** — 모든 AI 이미지 모델(Gemini, SD 등)은 영어가 품질 최상
+3. **30-60 words** — 너무 짧으면 디테일 부족, 너무 길면 혼란
+
+### 프롬프트 필수 구성요소 (5요소)
+| 요소 | 설명 | 예시 |
+|------|------|------|
+| **Subject** | 핵심 피사체 | semiconductor fabrication plant, voting booth |
+| **Setting** | 배경/환경 | industrial campus, bright sterile cleanroom |
+| **Lighting** | 조명/분위기 | morning sunlight, bright fluorescent lighting |
+| **Camera** | 앵글/구도 | cinematic wide shot, aerial view, close-up |
+| **Style** | 스타일 키워드 | photojournalism style, 8k resolution, sharp focus |
+
+### bg_type별 전략 (2가지 스타일 체계)
+
+#### 실사 스타일 (photo, broll, logo)
+- **photo**: 실제 장소/건물/사물 + `realistic, sharp focus, professional photography, 8k resolution`
+- **broll**: photo와 유사 + `cinematic shot, news B-roll style, dramatic composition`
+  - 영상 모델(Veo)에서만 `gentle camera pan, slow zoom` 사용 가능
+- **logo**: 해당 기업 건물 외관 + `brand signage visible, cinematic wide shot`
+
+#### 인포그래픽/일러스트 스타일 (graph)
+- **graph**: **실사(realistic) 절대 금지**. 반드시 인포그래픽/일러스트 스타일.
+  - 필수 키워드: `flat illustration, vector art, infographic, clean lines, soft pastels`
+  - 수치 비교: 저울, 막대 그래프, 화살표, 아이콘
+  - 쟁점 대립: `split screen, left vs right, comparison layout, vs layout`
+  - 통계/데이터: `diagram, charts and graphs, iconography, isometric view`
+  - Gemini 사용 시: 프롬프트로 직접 인포그래픽 이미지 생성
+  - SD 사용 시: Claude Haiku HTML 인포그래픽 → Puppeteer 렌더링
+
+#### closing
+- 항상 빈 문자열 → 마지막 콘텐츠 슬라이드 배경 재사용
+
+### 뉴스 주제 → 장면 매핑 (참조)
+| 주제 | photo/broll (실사) | graph (인포그래픽) |
+|------|-------------------|-------------------|
+| 투표/선거 | 투표소, 투표함, 파란 커튼 | 투표율 비교 차트, 찬반 비율 다이어그램 |
+| 국회/정치 | 국회의사당 외관, 돔 지붕 | 의석수 비교, 법안 찬반 아이콘 |
+| 반도체/삼성 | 팹 공장 외관/클린룸 내부 | 생산량 그래프, 공정 다이어그램 |
+| 주식/증시 | 거래소 모니터, 캔들스틱 차트 | 지수 변동 그래프, 업종별 비교 |
+| 부동산 | 아파트 단지 항공뷰, 드론샷 | 가격 추이 그래프, 지역별 비교 |
+| 코인/가상화폐 | 거래소 모니터, 네온 조명 | 시총 비교 다이어그램, 가격 차트 |
+| 무역/수출 | 컨테이너 항구, 크레인 | 수출입 비교 막대 그래프 |
+| 쟁점/대립 | (graph 사용 권장) | 좌우 분할, 저울, VS 레이아웃 |
+
+### BANNED (금지 요소)
+- 사람, 얼굴, 신체 부위, 손
+- 이미지 내 텍스트/숫자/글자 렌더링
+- 어두운/공포/무거운 톤 → 항상 밝고 전문적
+- 저화질, 흐림, 워터마크
+
+### 모델별 참고
+- **Gemini**: 상세 프롬프트에 강함, `8k/cinematic` 키워드 효과적, `TEXT+IMAGE` 혼합 모드
+- **SD (SDXL)**: 프롬프트 토큰 77개 제한, 네거티브 프롬프트 별도 (`SAFE_NEGATIVE`)
+- **Veo (영상)**: `camera pan, zoom, motion` 키워드 효과적 (이미지 모델에서는 무의미)
+
+---
+
+## 금융/투자 콘텐츠 안전 규칙
+
+`pipeline/agent.py`의 `generate_script()` 프롬프트에 하드코딩된 안전장치.
+채널 지침보다 우선 적용되며, 모든 채널의 대본 생성에 강제 적용됨.
+
+### 금지 사항
+| 카테고리 | 금지 표현 예시 |
+|---------|-------------|
+| 투자 시그널 | "신호 포착", "매수 타이밍", "지금이 기회", "역대급 시그널" |
+| 기술 지표 전망 | "RSI 과매도 → 반등", "골든크로스 → 상승", "MACD 돌파" |
+| 과거 수익률 암시 | "당시 90% 반등", "이전에 2배" (미래 반복 암시) |
+| 가격 예측 | 목표가, "~까지 오를 수 있다", "~% 상승 가능" |
+
+### 허용 사항
+- 팩트 전달: "스테이킹 비율이 30%를 넘었다"
+- 시장 상황 설명: "거래소 보유량이 감소하고 있다"
+- 전문가/기관 의견 인용: "~에 따르면" (출처 명시)
+- 면책 문구: "투자 판단은 본인 책임입니다"
+
+### 적용 위치
+- `agent.py` `generate_script()` 프롬프트 내 `### ★★★ 금융/투자 콘텐츠 안전 규칙` 섹션
+- 채널 지침(instructions)과 별개로 시스템 레벨에서 강제
+- 수정 시 모든 채널에 영향 → 신중하게 변경
+
+---
+
+## 남은 과제
+
+1. **GPT-SoVITS 파이프라인 통합** — tts_generator.py에 GPT-SoVITS 엔진 추가 (위 상세 참조)
+2. **밝은 배경 대응** — 이미지 밝기에 따라 오버레이 동적 조절
+3. **테스트 커버리지** — `test_phase3.py` 외에 단위 테스트 없음

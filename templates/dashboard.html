@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTube Shorts Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/style.css?v=20260309fb">
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+  <!-- Header -->
+  <header class="border-b border-gray-800 px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-red-500 flex items-center justify-center text-sm font-bold">YT</div>
+      <h1 class="text-xl font-bold">YouTube Shorts <span class="text-gray-500 font-normal text-sm">Dashboard</span></h1>
+    </div>
+    <div></div>
+  </header>
+
+  <div class="flex h-[calc(100vh-65px)]">
+
+    <!-- Sidebar: 채널 목록 -->
+    <aside id="sidebar" class="w-64 border-r border-gray-800 flex flex-col">
+      <div class="p-4 border-b border-gray-800">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">채널</h2>
+      </div>
+      <div id="channel-list" class="flex-1 overflow-y-auto p-2 space-y-1">
+      </div>
+      <div class="p-3 border-t border-gray-800">
+        <button onclick="openAddChannelModal()" class="w-full py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition">
+          + 채널 추가
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main: 주제별 카드 -->
+    <main id="main-content" class="flex-1 overflow-y-auto p-6">
+      <div id="job-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div class="text-gray-500 text-center py-20 col-span-full">채널을 선택하세요</div>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- 채널 추가 모달 -->
+  <div id="add-channel-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <h3 class="text-lg font-bold mb-4">채널 추가</h3>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">채널 이름</label>
+          <input id="ch-name" type="text" placeholder="예: 이슈60초"
+                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">핸들</label>
+          <input id="ch-handle" type="text" placeholder="예: @issue60sec"
+                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">설명</label>
+          <input id="ch-desc" type="text" placeholder="60초 뉴스 브리핑"
+                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 mt-6">
+        <button onclick="closeModal('add-channel-modal')" class="px-4 py-2 text-sm text-gray-400 hover:text-white transition">취소</button>
+        <button onclick="submitAddChannel()" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">추가</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 채널 설정 모달 -->
+  <div id="channel-settings-modal" class="modal-overlay hidden">
+    <div class="modal-content" style="max-width:700px">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-bold">채널 설정</h3>
+        <button onclick="closeModal('channel-settings-modal')" class="text-gray-500 hover:text-white text-lg transition">&times;</button>
+      </div>
+      <div class="space-y-4">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">채널 이름</label>
+            <input id="cs-name" type="text"
+                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <div>
+            <label class="block text-sm text-gray-400 mb-1">핸들</label>
+            <input id="cs-handle" type="text"
+                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">설명</label>
+          <input id="cs-desc" type="text"
+                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">요청</label>
+          <p class="text-xs text-gray-500 mb-2">실행 시 Claude가 요청을 해석하여 주제를 추출하고 영상을 제작합니다</p>
+          <textarea id="cs-topics" rows="2" placeholder="예: 오늘 경제 뉴스 3개 만들어줘"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"></textarea>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">에이전트 지침</label>
+          <p class="text-xs text-gray-500 mb-2">이 채널의 영상을 만들 때 AI 에이전트가 따를 지침 (마크다운)</p>
+          <textarea id="cs-instructions" rows="14"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed"></textarea>
+        </div>
+        <!-- 목표 영상 길이 -->
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">목표 영상 길이</label>
+          <select id="cs-target-duration"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+            <option value="60">60초 (50~60초, 문장 14~20개)</option>
+            <option value="30">30초 (35~45초, 문장 8~12개)</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">대본 생성 시 문장 수/글자 수를 자동 조절합니다</p>
+        </div>
+        <!-- 슬라이드 레이아웃 -->
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">슬라이드 레이아웃</label>
+          <select id="cs-slide-layout"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+            <option value="full">전체 배경 — 이미지가 화면 전체를 덮음</option>
+            <option value="center">가운데 — 이미지 중앙, 텍스트 상/하단</option>
+            <option value="top">상단 — 이미지 상단, 텍스트 하단</option>
+            <option value="bottom">하단 — 이미지 하단, 텍스트 상단</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">전체 배경은 큰 이미지 필요, 나머지는 작은 이미지로 빠르게 생성</p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">영상 형식</label>
+          <select id="cs-format"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+            <option value="single">단일 뉴스 — 주제 1개 = 영상 1개</option>
+            <option value="roundup">라운드업 — 주제 N개를 한 영상에 묶어서</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">라운드업: 여러 뉴스를 한 영상에 짧게 전달 (첫 슬라이드에 주제 목록 소개)</p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">이미지 스타일</label>
+          <select id="cs-image-style"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+            <option value="photo">포토 — 실사 사진 스타일 (건물, 장소, 사물)</option>
+            <option value="infographic">인포그래픽 — 일러스트/차트/다이어그램 스타일</option>
+            <option value="mixed">혼합 — bg_type에 따라 자동 (photo→실사, graph→인포그래픽)</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">포토: 뉴스 현장감, 인포그래픽: 데이터/비교 중심, 혼합: 슬라이드별 자동 판단</p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">이미지/영상 프롬프트 지침</label>
+          <p class="text-xs text-gray-500 mb-2">배경 이미지/영상 생성 시 AI가 따를 프롬프트 스타일 규칙. 비워두면 기본 뉴스 B-roll 스타일 사용</p>
+          <textarea id="cs-image-prompt-style" rows="8"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed"
+                    placeholder="비워두면 기본 뉴스 B-roll 스타일 적용"></textarea>
+        </div>
+        <!-- 영상 제작 방식 -->
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">영상 제작 방식</label>
+          <select id="cs-production-mode" onchange="toggleAutoBgSource()"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+            <option value="manual">수동 — 대본 생성 후 이미지/음성 준비 → 영상 제작</option>
+            <option value="auto">자동 — 대본 생성부터 영상 완성까지 원스탑 실행</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">자동 모드는 이미지/나레이션 직접 준비가 불필요합니다</p>
+        </div>
+
+        <!-- 자동 모드 배경 소스 -->
+        <div id="auto-bg-source-section" class="hidden">
+          <label class="block text-sm text-gray-400 mb-1">배경 이미지 소스</label>
+          <select id="cs-auto-bg-source" onchange="toggleGeminiSection()"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+            <option value="gemini">Gemini (Google AI, 무료)</option>
+            <option value="sd_image">SD 이미지 (SDXL)</option>
+            <option value="sd_video">SD 영상 (AnimateDiff)</option>
+            <option value="openverse">Openverse CC (무료 사진)</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">Gemini: 빠름(3초), 무료 500장/일 | SD: GPU 필요 | Openverse: 무료 CC 사진</p>
+        </div>
+
+        <div id="cs-gemini-section" style="display:none;">
+          <label class="block text-sm text-gray-400 mb-1">Gemini API Key</label>
+          <input id="cs-gemini-api-key" type="password"
+                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"
+                 placeholder="AIzaSy...">
+          <p class="text-xs text-gray-500 mt-1">Google AI Studio에서 발급 (aistudio.google.com)</p>
+        </div>
+
+        <!-- TTS 음성 설정 -->
+        <details class="border border-gray-700 rounded-lg">
+          <summary class="px-3 py-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200 transition">TTS 음성 설정</summary>
+          <div class="p-3 pt-0 space-y-3">
+            <p class="text-xs text-gray-500">영상 제작 시 사용할 TTS 엔진과 음성을 선택합니다</p>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">TTS 엔진</label>
+              <select id="cs-tts-engine" onchange="toggleTtsEngine()"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                <option value="edge-tts">Edge TTS (기본)</option>
+                <option value="gpt-sovits">GPT-SoVITS (음색 복제)</option>
+              </select>
+            </div>
+            <!-- Edge TTS 설정 -->
+            <div id="cs-tts-edge-section">
+              <div class="flex gap-2 items-center">
+                <select id="cs-tts-voice"
+                        class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                  <option value="ko-KR-SunHiNeural">선히 (여성)</option>
+                  <option value="ko-KR-InJoonNeural">인준 (남성)</option>
+                  <option value="ko-KR-HyunsuNeural">현수 (남성)</option>
+                  <option value="ko-KR-HyunsuMultilingualNeural">현수 멀티링구얼 (남성)</option>
+                  <option value="gtts">gTTS (구글 기본)</option>
+                </select>
+                <button onclick="previewChannelVoice()" id="btn-cs-preview-voice"
+                        class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
+              </div>
+              <div class="flex items-center gap-2 mt-2">
+                <span class="text-xs text-gray-500 w-8">속도</span>
+                <input type="range" id="cs-tts-rate" min="-30" max="50" value="0" step="10"
+                       class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-tts-rate-label').textContent = this.value + '%'">
+                <span id="cs-tts-rate-label" class="text-xs text-gray-400 w-10 text-right">0%</span>
+              </div>
+              <audio id="cs-voice-preview" class="w-full mt-2 hidden" controls></audio>
+            </div>
+            <!-- GPT-SoVITS 설정 -->
+            <div id="cs-tts-sovits-section" class="hidden space-y-2">
+              <div id="cs-sovits-status" class="text-xs text-gray-500"></div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">참조 음성 선택</label>
+                <div class="flex gap-2 items-center">
+                  <select id="cs-sovits-ref-voice"
+                          class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs"
+                          onchange="previewRefVoice()">
+                    <option value="">-- 선택하세요 --</option>
+                  </select>
+                  <button onclick="document.getElementById('cs-ref-audio-file').click()"
+                          class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap"
+                          title="data/ref_voices/ 폴더에 음성 추가">+ 추가</button>
+                  <input type="file" accept="audio/*" class="hidden" id="cs-ref-audio-file"
+                         onchange="uploadRefVoiceFile(this)">
+                </div>
+                <audio id="cs-ref-audio-preview" class="w-full mt-2 hidden h-8" controls></audio>
+                <p class="text-xs text-gray-600 mt-1">data/ref_voices/ 폴더에 음성 파일을 넣으면 자동으로 목록에 표시됩니다</p>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">참조 음성 텍스트 (음성에서 말한 내용)</label>
+                <input id="cs-sovits-ref-text" type="text" placeholder="안녕하세요 여러분 오늘도 재밌는 소식 가져왔어요"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">속도</label>
+                <div class="flex items-center gap-2">
+                  <input type="range" id="cs-sovits-speed" min="0.5" max="2.0" value="1.0" step="0.1"
+                         class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-sovits-speed-label').textContent = this.value + 'x'">
+                  <span id="cs-sovits-speed-label" class="text-xs text-gray-400 w-10 text-right">1.0x</span>
+                </div>
+              </div>
+              <div class="flex gap-2 items-center">
+                <button onclick="previewSovitsVoice()" id="btn-cs-preview-sovits"
+                        class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 rounded text-xs font-medium transition">GPT-SoVITS 미리듣기</button>
+              </div>
+              <audio id="cs-sovits-preview" class="w-full mt-2 hidden h-8" controls></audio>
+            </div>
+          </div>
+        </details>
+
+        <!-- 트렌드 소스 설정 -->
+        <details class="border border-gray-700 rounded-lg">
+          <summary class="px-3 py-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200 transition">트렌드 수집 설정</summary>
+          <div class="p-3 pt-0 space-y-3">
+            <p class="text-xs text-gray-500">실행 시 트렌드 데이터를 미리 수집하여 Claude에게 컨텍스트로 전달합니다</p>
+            <div class="flex flex-col gap-2">
+              <label class="flex items-center gap-2 text-sm text-gray-300">
+                <input id="cs-trend-google" type="checkbox" class="accent-orange-500"> Google Trends (한국 실시간)
+              </label>
+              <label class="flex items-center gap-2 text-sm text-gray-300">
+                <input id="cs-trend-youtube" type="checkbox" class="accent-orange-500"> YouTube Trending (한국)
+              </label>
+            </div>
+            <div id="cs-yt-apikey-row" class="hidden">
+              <label class="block text-xs text-gray-500 mb-1">YouTube Data API Key</label>
+              <input id="cs-youtube-api-key" type="password" placeholder="AIzaSy..."
+                     class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono">
+            </div>
+            <button onclick="previewTrends()" id="btn-preview-trends"
+                    class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">현재 트렌드 미리보기</button>
+            <div id="trend-preview-result" class="hidden text-xs bg-gray-900 rounded p-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-gray-400"></div>
+          </div>
+        </details>
+
+        <!-- YouTube 업로드 설정 -->
+        <details class="border border-gray-700 rounded-lg">
+          <summary class="px-3 py-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200 transition">YouTube 업로드 설정</summary>
+          <div class="p-3 pt-0 space-y-3">
+            <p class="text-xs text-gray-500">Google Cloud Console에서 OAuth 2.0 클라이언트를 생성 후 입력하세요</p>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Client ID</label>
+                <input id="cs-yt-client-id" type="text" placeholder="xxxx.apps.googleusercontent.com"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Client Secret</label>
+                <input id="cs-yt-client-secret" type="password" placeholder="GOCSPX-xxxx"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono">
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">Refresh Token</label>
+              <div class="flex gap-2">
+                <input id="cs-yt-refresh-token" type="password" placeholder="인증 후 자동 저장됩니다"
+                       class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono">
+                <button onclick="requestYoutubeToken()" id="btn-yt-oauth"
+                        class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs font-medium transition whitespace-nowrap">토큰 발급</button>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">공개 설정</label>
+                <select id="cs-yt-privacy"
+                        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                  <option value="private">비공개 (Private)</option>
+                  <option value="unlisted">일부 공개 (Unlisted)</option>
+                  <option value="public">공개 (Public)</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">업로드 방식</label>
+                <select id="cs-yt-upload-mode"
+                        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                  <option value="manual">수동 (완성 후 업로드 버튼)</option>
+                  <option value="auto">자동 (영상 완성 시 바로 업로드)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div class="flex items-center justify-between mt-6 pt-4 border-t border-gray-800">
+        <div class="flex gap-3">
+          <button onclick="deleteCurrentChannel()" class="text-xs text-gray-600 hover:text-red-400 transition">채널 삭제</button>
+          <button id="btn-clone-channel" onclick="cloneCurrentChannel()" class="text-xs text-gray-600 hover:text-blue-400 transition hidden">채널 복사</button>
+        </div>
+        <div class="flex gap-3">
+          <button onclick="closeModal('channel-settings-modal')" class="px-4 py-2 text-sm text-gray-400 hover:text-white transition">취소</button>
+          <button onclick="saveChannelSettings()" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">저장</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 주제 상세 팝업 -->
+  <div id="job-detail-modal" class="modal-overlay hidden">
+    <div class="modal-content modal-wide">
+      <div id="job-detail-content">
+        <!-- JS가 렌더링 -->
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20260309fc"></script>
+</body>
+</html>

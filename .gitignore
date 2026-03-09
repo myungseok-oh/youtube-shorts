@@ -1,0 +1,11 @@
+__pycache__/
+node_modules/
+output/
+files/
+=2.31.0
+*.pyc
+config.json
+data/client_secret_*.json
+data/shorts.db
+data/shorts.db-shm
+data/shorts.db-wal
