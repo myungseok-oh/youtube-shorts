@@ -168,7 +168,7 @@ def _build_script_schema(target_duration: int = 60, channel_format: str = "singl
   "news_date": "2026-03-09",
   "youtube_title": "제목 (100자 이내)",
   "sentences": [{{"text": "문장 (15~25자)", "slide": 1}}, ...],
-  "slides": [{{"category": "속보", "main": "핵심 <span class=\\"hl\\">강조</span>", "sub": "보조 설명", "accent": "#ff4444", "bg_type": "photo"}}, ...]
+  "slides": [{{"category": "카테고리", "main": "핵심 <span class=\\"hl\\">강조</span>", "sub": "보조 설명", "accent": "#ff4444", "bg_type": "photo"}}, ...]
 }}
 
 규칙:
@@ -181,7 +181,7 @@ def _build_script_schema(target_duration: int = 60, channel_format: str = "singl
 - sentences에 채널명 언급 금지
 - 문장 종결 다양하게, 채널 지침 톤 준수
 - slides: {p['slides']}개, 강조 키워드는 <span class="hl">...</span>
-- 첫 슬라이드: category에 임팩트 태그("속보","긴급" 등), main 짧고 강렬
+- 첫 슬라이드: category에 주제에 맞는 태그(예: "경제","정치","코인","테크","사회" 등), main 짧고 강렬. "속보"는 실제 속보일 때만 사용
 - 마지막 슬라이드: 자동 처리. main에 짧은 마무리. bg_type: "closing"
 - youtube_title: 100자 이내, 클릭 유도. 채널 지침 제목 형식 따를 것
 - bg_type: photo(장소/사물) | broll(시네마틱, 1~2개만) | graph(인포그래픽) | logo(기업 건물) | closing(마지막)

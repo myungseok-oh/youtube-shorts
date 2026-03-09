@@ -38,6 +38,13 @@ def build_timeline(script: list[dict], audio_dir: str) -> dict:
         slide_durations[s] = slide_durations.get(s, 0) + dur
         slide_audio_map.setdefault(s, []).append(audio_path)
 
+    # 클로징(마지막 슬라이드) 최소 4초 보장
+    if slide_durations:
+        last_slide = max(slide_durations.keys())
+        min_closing = 4.0
+        if slide_durations[last_slide] < min_closing:
+            slide_durations[last_slide] = min_closing
+
     total = sum(slide_durations.values())
     return {
         "durations": durations,
@@ -47,14 +54,19 @@ def build_timeline(script: list[dict], audio_dir: str) -> dict:
     }
 
 
-def merge_slide_audio(slide_audio_map: dict, segment_dir: str) -> dict[int, str]:
+def merge_slide_audio(slide_audio_map: dict, segment_dir: str,
+                      narration_delay: float = 0) -> dict[int, str]:
     """같은 슬라이드에 매핑된 오디오 파일들을 하나로 합침.
+
+    Args:
+        narration_delay: 첫 슬라이드 오디오 앞에 삽입할 무음 시간(초)
 
     Returns:
         {slide_num: merged_audio_path, ...}
     """
     os.makedirs(segment_dir, exist_ok=True)
     merged = {}
+    first_slide = min(slide_audio_map.keys())
 
     for s in sorted(slide_audio_map.keys()):
         files = slide_audio_map[s]
@@ -75,6 +87,19 @@ def merge_slide_audio(slide_audio_map: dict, segment_dir: str) -> dict[int, str]
                  "-i", list_file, "-c", "copy", merged_path],
                 capture_output=True
             )
+
+        # 첫 슬라이드에 나레이션 딜레이 적용 (adelay 필터)
+        if s == first_slide and narration_delay > 0:
+            delay_ms = int(narration_delay * 1000)
+            delayed_path = os.path.join(segment_dir, f"slide_audio_{s}_delayed{ext}")
+            subprocess.run(
+                [config.ffmpeg(), "-y", "-i", merged_path,
+                 "-af", f"adelay={delay_ms}|{delay_ms}",
+                 delayed_path],
+                capture_output=True
+            )
+            if os.path.exists(delayed_path) and os.path.getsize(delayed_path) > 0:
+                os.replace(delayed_path, merged_path)
 
         merged[s] = merged_path
 

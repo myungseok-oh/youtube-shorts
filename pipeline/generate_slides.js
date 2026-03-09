@@ -77,6 +77,14 @@ function sourceLabel(source) {
   return `<div class="source-text">이미지 출처 : ${source}</div>`;
 }
 
+function badgeHTML(category, style = '') {
+  if (!category) return '';
+  const isBreaking = category === '속보' || category === '긴급';
+  const cls = isBreaking ? 'badge breaking' : 'badge';
+  const s = style ? ` style="${style}"` : '';
+  return `<div class="${cls}"${s}>${isBreaking ? category : category}</div>`;
+}
+
 function buildHTML(slide, index) {
   const accent = slide.accent || '#ff6b35';
   const bgData = bgInfo(index);
@@ -137,13 +145,31 @@ function commonStyles(accent, bgImg) {
     }
     .badge {
       display: inline-block;
-      padding: 10px 28px;
-      background: #FF4D4D;
-      border: none;
-      border-radius: 8px;
-      font-size: 30px; font-weight: 900;
+      padding: 14px 36px;
+      background: linear-gradient(170deg, ${accent} 0%, color-mix(in srgb, ${accent} 70%, #000) 100%);
+      border: 3px solid rgba(255,255,255,0.5);
+      border-radius: 10px;
+      font-size: 34px; font-weight: 900;
       letter-spacing: 6px;
       color: #ffffff;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
+      text-shadow: 0 2px 4px rgba(0,0,0,0.4);
+    }
+    .badge.breaking {
+      padding: 20px 48px;
+      background: linear-gradient(170deg, #ff3b3b 0%, #cc0000 50%, #990000 100%);
+      border: 4px solid rgba(255,255,255,0.7);
+      font-size: 46px; letter-spacing: 8px;
+      box-shadow: 0 8px 32px rgba(200,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.3);
+      transform: perspective(400px) rotateX(2deg);
+    }
+    .badge.breaking::after {
+      content: 'BREAKING NEWS';
+      display: block;
+      font-size: 16px; letter-spacing: 4px; font-weight: 700;
+      margin-top: 6px; padding-top: 8px;
+      border-top: 2px solid rgba(255,255,255,0.5);
+      color: rgba(255,255,255,0.9);
     }
     .hl {
       color: #ffd700;
@@ -181,13 +207,31 @@ function zonedStyles(accent) {
     }
     .badge {
       display: inline-block;
-      padding: 10px 28px;
-      background: #FF4D4D;
-      border: none;
-      border-radius: 8px;
-      font-size: 30px; font-weight: 900;
+      padding: 14px 36px;
+      background: linear-gradient(170deg, #ff4d4d 0%, #cc0000 100%);
+      border: 3px solid rgba(255,255,255,0.5);
+      border-radius: 10px;
+      font-size: 34px; font-weight: 900;
       letter-spacing: 6px;
       color: #ffffff;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
+      text-shadow: 0 2px 4px rgba(0,0,0,0.4);
+    }
+    .badge.breaking {
+      padding: 20px 48px;
+      background: linear-gradient(170deg, #ff3b3b 0%, #cc0000 50%, #990000 100%);
+      border: 4px solid rgba(255,255,255,0.7);
+      font-size: 46px; letter-spacing: 8px;
+      box-shadow: 0 8px 32px rgba(200,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.3);
+      transform: perspective(400px) rotateX(2deg);
+    }
+    .badge.breaking::after {
+      content: 'BREAKING NEWS';
+      display: block;
+      font-size: 16px; letter-spacing: 4px; font-weight: 700;
+      margin-top: 6px; padding-top: 8px;
+      border-top: 2px solid rgba(255,255,255,0.5);
+      color: rgba(255,255,255,0.9);
     }
     .hl {
       color: #ffd700;
@@ -210,17 +254,19 @@ function zonedStyles(accent) {
       display: flex; flex-direction: column;
       justify-content: center; align-items: center;
       padding: 40px 60px;
+      background: linear-gradient(180deg, rgba(5,8,20,0.92) 0%, rgba(5,8,20,0.75) 100%);
     }
     .main-text {
       font-size: 72px; font-weight: 900;
       text-align: center; line-height: 1.35;
       padding: 0 20px;
-      text-shadow: 0 2px 6px rgba(0,0,0,0.5);
+      text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 40px rgba(0,0,0,0.7);
     }
     .sub-text {
-      font-size: 44px; color: rgba(255,255,255,0.5);
+      font-size: 44px; color: rgba(255,255,255,0.6);
       text-align: center; font-weight: 400; padding: 0 30px;
       margin-top: 30px;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.8);
     }
     .slide-num {
       position: absolute; bottom: 40px; left: 50px; z-index: 10;
@@ -274,15 +320,17 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
   .top-bar { display: none; }
   .accent-stripe { display: none; }
   .main-text {
-    font-size: 88px; font-weight: 900;
-    text-align: center; line-height: 1.3;
-    padding: 0 80px;
-    text-shadow: 0 2px 8px rgba(0,0,0,0.9), 0 4px 40px rgba(0,0,0,0.6);
+    font-size: 110px; font-weight: 900;
+    text-align: center; line-height: 1.2;
+    padding: 0 60px;
+    text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 50px rgba(0,0,0,0.7);
+    letter-spacing: -2px;
   }
   .sub-text {
-    font-size: 46px; color: rgba(255,255,255,0.55);
+    font-size: 46px; color: rgba(255,255,255,0.65);
     text-align: center; font-weight: 400; padding: 0 100px;
-    margin-top: 40px;
+    margin-top: 50px;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.9);
   }
   .badge { margin-bottom: 60px; }
 </style></head>
@@ -292,7 +340,7 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
   <div class="top-bar"></div>
   <div class="accent-stripe"></div>
   <div class="content-wrap">
-    ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
+    ${badgeHTML(slide.category)}
     <div class="main-text">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
   </div>
@@ -317,12 +365,13 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
     font-size: 76px; font-weight: 900;
     text-align: center; line-height: 1.35;
     padding: 0 80px;
-    text-shadow: 0 2px 8px rgba(0,0,0,0.9), 0 4px 30px rgba(0,0,0,0.6);
+    text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 40px rgba(0,0,0,0.7);
   }
   .sub-text {
-    font-size: 44px; color: rgba(255,255,255,0.5);
+    font-size: 44px; color: rgba(255,255,255,0.6);
     text-align: center; font-weight: 400; padding: 0 90px;
     margin-top: 36px;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.8);
   }
   .badge { margin-bottom: 24px; }
   .slide-num {
@@ -351,7 +400,7 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
   <div class="corner-tl"></div>
   <div class="corner-br"></div>
   <div class="content-wrap">
-    ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
+    ${badgeHTML(slide.category)}
     <div class="divider-top"></div>
     <div class="main-text">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
@@ -458,7 +507,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   .bg-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     background: ${bgImg
-      ? 'linear-gradient(180deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.65) 50%, rgba(0,0,0,0.75) 100%)'
+      ? 'linear-gradient(180deg, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.80) 50%, rgba(0,0,0,0.85) 100%)'
       : 'transparent'};
     z-index: 1;
   }
@@ -475,14 +524,17 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   /* 상단 배지 */
   .badge {
     display: inline-block;
-    padding: 10px 28px;
-    background: ${accent};
-    border-radius: 8px;
-    font-size: 32px; font-weight: 700;
+    padding: 14px 36px;
+    background: linear-gradient(170deg, ${accent} 0%, color-mix(in srgb, ${accent} 70%, #000) 100%);
+    border: 3px solid rgba(255,255,255,0.5);
+    border-radius: 10px;
+    font-size: 34px; font-weight: 900;
     letter-spacing: 4px; text-transform: uppercase;
     color: #ffffff;
     align-self: flex-start;
     margin-bottom: 40px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
+    text-shadow: 0 2px 4px rgba(0,0,0,0.4);
   }
   /* 타이틀 */
   .title-area {
@@ -491,7 +543,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   .main-title {
     font-size: 92px; font-weight: 900;
     line-height: 1.25;
-    text-shadow: 0 4px 16px rgba(0,0,0,0.8), 0 2px 4px rgba(0,0,0,0.9);
+    text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 40px rgba(0,0,0,0.7);
   }
   .hl {
     color: #ffd700;
@@ -514,23 +566,23 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   .headline-item {
     display: flex; align-items: center;
     gap: 24px;
-    padding: 24px 32px;
-    background: rgba(255,255,255,0.06);
-    border-left: 4px solid ${accent};
+    padding: 28px 36px;
+    background: rgba(0,0,0,0.45);
+    border-left: 5px solid ${accent};
     border-radius: 0 12px 12px 0;
-    backdrop-filter: blur(4px);
-    transition: all 0.2s;
+    backdrop-filter: blur(8px);
   }
   .headline-num {
     font-size: 36px; font-weight: 900;
     color: ${accent};
     min-width: 56px;
     text-align: center;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.8);
   }
   .headline-text {
     font-size: 44px; font-weight: 700;
     line-height: 1.35;
-    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
+    text-shadow: 0 2px 10px rgba(0,0,0,0.9), 0 4px 20px rgba(0,0,0,0.6);
   }
   .source-text {
     position: absolute; bottom: 14px; right: 30px; z-index: 10;
@@ -548,7 +600,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   <div class="bg-overlay"></div>
   ${grainSVG()}
   <div class="content-wrap">
-    ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
+    ${badgeHTML(slide.category)}
     <div class="title-area">
       <div class="main-title">${slide.main}</div>
     </div>
@@ -569,19 +621,19 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
 // ──── Zoned Opening 슬라이드 ────
 function buildZonedOpening(slide, accent, bgData, progressPct) {
   const textHTML = `
-    ${slide.category === "속보" ? `<div class="badge" style="margin-bottom:40px;">${slide.category}</div>` : ''}
-    <div class="main-text" style="font-size:84px;line-height:1.3;">${slide.main}</div>
+    ${badgeHTML(slide.category, 'margin-bottom:40px')}
+    <div class="main-text" style="font-size:100px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text" style="font-size:44px;">${slide.sub}</div>` : ''}
   `;
 
   let bodyContent = '';
   if (layout === 'center') {
     bodyContent = `
-      <div class="text-zone" style="height:25%;justify-content:flex-end;padding-bottom:20px;">
-        ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
-        <div class="main-text" style="font-size:78px;line-height:1.3;margin-top:16px;">${slide.main}</div>
+      <div class="text-zone" style="height:35%;justify-content:flex-end;padding-bottom:20px;">
+        ${badgeHTML(slide.category)}
+        <div class="main-text" style="font-size:96px;line-height:1.2;letter-spacing:-2px;margin-top:16px;">${slide.main}</div>
       </div>
-      ${imageZoneHTML(bgData, 50)}
+      ${imageZoneHTML(bgData, 40)}
       <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">
         ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
       </div>
@@ -617,7 +669,7 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
 // ──── Zoned Content 슬라이드 ────
 function buildZonedContent(slide, accent, bgData, progressPct, index) {
   const textHTML = `
-    ${slide.category === "속보" ? `<div class="badge" style="margin-bottom:20px;">${slide.category}</div>` : ''}
+    ${badgeHTML(slide.category, 'margin-bottom:20px')}
     <div class="main-text">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
   `;
@@ -626,7 +678,7 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
   if (layout === 'center') {
     bodyContent = `
       <div class="text-zone" style="height:25%;justify-content:flex-end;padding-bottom:20px;">
-        ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
+        ${badgeHTML(slide.category)}
         <div class="main-text" style="font-size:68px;">${slide.main}</div>
       </div>
       ${imageZoneHTML(bgData, 50)}
@@ -691,10 +743,8 @@ async function main() {
     const bgExt = bgPath ? path.extname(bgPath).toLowerCase() : '';
     const isVideoBg = bgExt === '.mp4' || bgExt === '.gif';
 
-    // full layout: 배경 있으면 overlay 생성
-    // zoned layout: MP4/GIF 배경일 때만 overlay 생성 (영상 합성 필요)
-    const needOverlay = (layout === 'full' && bgPath && fs.existsSync(bgPath))
-                     || (layout !== 'full' && isVideoBg && bgPath && fs.existsSync(bgPath));
+    // 배경 이미지/영상이 있으면 overlay 생성 (Ken Burns / 영상 합성용)
+    const needOverlay = bgPath && fs.existsSync(bgPath);
 
     if (needOverlay) {
       if (layout === 'full') {

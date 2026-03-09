@@ -71,17 +71,18 @@ def render_segments(slide_durations: dict, image_dir: str,
 
         video_bg = _find_video_bg(image_dir, s)
         image_bg = _find_image_bg(image_dir, s)
+        has_overlay = os.path.exists(overlay_path)
 
-        if video_bg and os.path.exists(overlay_path):
-            # 영상 배경 + 투명 오버레이 합성
+        if video_bg and has_overlay:
+            print(f"[video_renderer] slide {s}: video_bg + overlay")
             _render_video_segment(video_bg, overlay_path, audio_path, seg_path,
                                   dur, vcfg)
-        elif image_bg and os.path.exists(overlay_path):
-            # 이미지 배경 + Ken Burns + 오버레이
+        elif image_bg and has_overlay:
+            print(f"[video_renderer] slide {s}: Ken Burns + overlay")
             _render_kenburns_segment(image_bg, overlay_path, audio_path,
                                      seg_path, dur, vcfg)
         else:
-            # 정적 슬라이드 (배경 없음 또는 오버레이 없음)
+            print(f"[video_renderer] slide {s}: static (bg={bool(image_bg)}, overlay={has_overlay})")
             _render_static_segment(img_path, audio_path, seg_path, dur, vcfg)
 
         segment_files.append(seg_path)
@@ -91,12 +92,14 @@ def render_segments(slide_durations: dict, image_dir: str,
 
 def _render_static_segment(img_path: str, audio_path: str,
                             output_path: str, duration: float, vcfg: dict):
-    """정적 이미지 슬라이드"""
+    """정적 이미지 슬라이드 (xfade 호환: 1080x1920, 24fps)"""
     subprocess.run([
         config.ffmpeg(), "-y",
         "-loop", "1", "-i", img_path,
         "-i", audio_path,
-        "-c:v", "libx264", "-tune", "stillimage",
+        "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,"
+               "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,fps=24",
+        "-c:v", "libx264", "-preset", "fast",
         "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
         "-pix_fmt", "yuv420p",
         "-shortest",
@@ -172,15 +175,71 @@ def _render_video_segment(bg_path: str, overlay_path: str, audio_path: str,
             audio_path, output_path, duration, vcfg)
 
 
-def concat_segments(segment_files: list[str], output_path: str) -> str:
-    """세그먼트들을 하나의 최종 영상으로 합침.
+def concat_segments(segment_files: list[str], output_path: str,
+                    sfx_cfg: dict | None = None,
+                    slide_durations: dict | None = None) -> str:
+    """세그먼트들을 하나의 최종 영상으로 합침 (크로스페이드) + BGM/효과음 믹싱.
+
+    Args:
+        sfx_cfg: 채널 config dict (sfx_*, bgm_*, crossfade_* 설정 포함)
+        slide_durations: {슬라이드번호: 초} — 전환 시점 계산용
 
     Returns:
         최종 영상 파일 경로
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    concat_file = os.path.join(os.path.dirname(segment_files[0]), "concat_final.txt")
 
+    # 오디오 믹싱 필요 여부 판단
+    needs_sfx = sfx_cfg and sfx_cfg.get("sfx_enabled") and slide_durations
+    needs_bgm = sfx_cfg and sfx_cfg.get("bgm_enabled") and sfx_cfg.get("bgm_file")
+    needs_mix = needs_sfx or needs_bgm
+    concat_out = output_path if not needs_mix else output_path.replace(".mp4", "_nomix.mp4")
+
+    # 크로스페이드 적용 여부
+    xfade_dur = 0.5  # 기본 0.5초
+    if sfx_cfg:
+        xfade_dur = sfx_cfg.get("crossfade_duration", 0.5) or 0.5
+
+    print(f"[video_renderer] concat_segments: {len(segment_files)} files, "
+          f"xfade={xfade_dur}s, sfx={bool(needs_sfx)}, bgm={bool(needs_bgm)}")
+
+    actual_xfade = 0  # 실제 적용된 xfade 시간 (fallback 시 0)
+    if len(segment_files) >= 2 and xfade_dur > 0:
+        try:
+            _concat_with_xfade(segment_files, concat_out, slide_durations, xfade_dur)
+            actual_xfade = xfade_dur
+        except Exception as e:
+            print(f"[video_renderer] xfade failed, falling back to simple concat: {e}")
+            _concat_simple(segment_files, concat_out)
+    else:
+        _concat_simple(segment_files, concat_out)
+
+    if not os.path.exists(concat_out):
+        raise RuntimeError("Video rendering failed")
+
+    # 2차: BGM + 효과음 믹싱
+    if needs_mix:
+        try:
+            _mix_audio(concat_out, output_path, sfx_cfg, slide_durations,
+                       mix_sfx=needs_sfx, mix_bgm=needs_bgm,
+                       xfade_dur=actual_xfade)
+        except Exception as e:
+            print(f"[video_renderer] Audio mixing failed, using original: {e}")
+            if not os.path.exists(output_path):
+                os.replace(concat_out, output_path)
+        finally:
+            if os.path.exists(concat_out) and concat_out != output_path:
+                os.remove(concat_out)
+
+    if not os.path.exists(output_path):
+        raise RuntimeError("Video rendering failed")
+
+    return output_path
+
+
+def _concat_simple(segment_files: list[str], output_path: str):
+    """단순 concat (하드컷)"""
+    concat_file = os.path.join(os.path.dirname(segment_files[0]), "concat_final.txt")
     with open(concat_file, "w", encoding="utf-8") as f:
         for seg in segment_files:
             abs_seg = os.path.abspath(seg).replace("\\", "/")
@@ -196,7 +255,235 @@ def concat_segments(segment_files: list[str], output_path: str) -> str:
         output_path
     ], capture_output=True)
 
-    if not os.path.exists(output_path):
-        raise RuntimeError("Video rendering failed")
 
-    return output_path
+def _get_segment_duration(seg_path: str) -> float:
+    """ffprobe로 세그먼트 길이 조회"""
+    result = subprocess.run([
+        config.ffprobe(), "-v", "quiet",
+        "-print_format", "json", "-show_format", seg_path
+    ], capture_output=True, text=True)
+    try:
+        import json
+        data = json.loads(result.stdout)
+        return float(data["format"]["duration"])
+    except Exception:
+        return 5.0
+
+
+def _concat_with_xfade(segment_files: list[str], output_path: str,
+                       slide_durations: dict | None, xfade_dur: float):
+    """xfade 크로스페이드로 세그먼트 합성.
+
+    영상: xfade=transition=fade (모든 입력을 1080x1920/24fps로 정규화)
+    오디오: acrossfade (44100Hz/stereo로 정규화)
+    """
+    n = len(segment_files)
+    if n < 2:
+        _concat_simple(segment_files, output_path)
+        return
+
+    # 세그먼트별 실제 길이 조회
+    durations = []
+    if slide_durations:
+        for s in sorted(slide_durations.keys()):
+            durations.append(slide_durations[s])
+    if len(durations) != n:
+        durations = [_get_segment_duration(seg) for seg in segment_files]
+
+    # xfade 시간이 세그먼트보다 길면 줄임
+    xd = min(xfade_dur, min(durations) * 0.4)
+
+    # 입력 파일
+    inputs = []
+    for seg in segment_files:
+        inputs.extend(["-i", seg])
+
+    # filter_complex 구성
+    # 1) 각 입력의 비디오/오디오를 정규화 (fps, 해상도, 오디오 포맷 통일)
+    # 2) xfade 체인 (비디오), acrossfade 체인 (오디오)
+    norm_filters = []
+    for i in range(n):
+        norm_filters.append(
+            f"[{i}:v]fps=24,scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[nv{i}]"
+        )
+        norm_filters.append(
+            f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[na{i}]"
+        )
+
+    vfilters = []
+    afilters = []
+    offset = durations[0] - xd  # 첫 xfade 시작점
+
+    for i in range(1, n):
+        vin = f"[xv{i-2}]" if i >= 2 else f"[nv0]"
+        vout = f"[xv{i-1}]" if i < n - 1 else "[vout]"
+        vfilters.append(
+            f"{vin}[nv{i}]xfade=transition=fade:duration={xd:.3f}:offset={offset:.3f}{vout}"
+        )
+
+        ain = f"[xa{i-2}]" if i >= 2 else f"[na0]"
+        aout = f"[xa{i-1}]" if i < n - 1 else "[aout]"
+        afilters.append(
+            f"{ain}[na{i}]acrossfade=d={xd:.3f}:c1=tri:c2=tri{aout}"
+        )
+
+        if i < n - 1:
+            offset += durations[i] - xd
+
+    filter_complex = ";".join(norm_filters + vfilters + afilters)
+
+    print(f"[video_renderer] xfade: {n} segments, xd={xd:.3f}s, durations={durations}")
+
+    result = subprocess.run([
+        config.ffmpeg(), "-y",
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", "[vout]", "-map", "[aout]",
+        "-c:v", "libx264", "-preset", "fast",
+        "-c:a", "aac", "-b:a", "192k",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        output_path
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[video_renderer] xfade error: {result.stderr[:500]}")
+        raise RuntimeError("xfade concat failed")
+
+
+def _get_audio_path(subdir: str, filename: str) -> str | None:
+    """data/{subdir}/ 폴더에서 오디오 파일 경로 반환"""
+    if not filename:
+        return None
+    path = os.path.join(config.root_dir(), "data", subdir, filename)
+    return path if os.path.exists(path) else None
+
+
+def _mix_audio(input_path: str, output_path: str,
+               cfg: dict, slide_durations: dict,
+               mix_sfx: bool = False, mix_bgm: bool = False,
+               xfade_dur: float = 0):
+    """ffmpeg로 BGM + 효과음을 영상에 믹싱.
+
+    BGM: 전체 영상에 루프, 끝에서 페이드아웃
+    효과음: 슬라이드 전환 시점에 삽입
+    xfade_dur: 크로스페이드 적용 시 전환당 줄어드는 시간
+    """
+    # 슬라이드 전환 시점 계산 (누적 시간)
+    sorted_slides = sorted(slide_durations.keys())
+    cumulative = []
+    acc = 0.0
+    for s in sorted_slides:
+        acc += slide_durations[s]
+        cumulative.append(acc)
+
+    # xfade 타이밍 보정: 각 전환마다 xfade_dur만큼 총 시간 감소
+    # cumulative[i] -= i * xfade_dur (i번째 슬라이드까지 i번의 전환 발생)
+    if xfade_dur > 0 and len(sorted_slides) > 1:
+        for i in range(len(cumulative)):
+            cumulative[i] -= min(i, len(sorted_slides) - 1) * xfade_dur
+
+    total_dur = cumulative[-1] if cumulative else 0
+
+    # 추가 입력 파일 수집: (파일경로, 필터라벨)
+    extra_inputs = []  # [(path, ...)]
+    filter_parts = []
+    mix_labels = ["[0:a]"]  # 원본 오디오는 항상 첫 번째
+    input_idx = 1  # 0 = 원본 영상
+
+    # --- BGM ---
+    if mix_bgm:
+        bgm_path = _get_audio_path("bgm", cfg.get("bgm_file", ""))
+        if bgm_path:
+            bgm_vol = (cfg.get("bgm_volume", 10) or 10) / 100.0
+            narr_delay = cfg.get("narration_delay") or 2  # 나레이션 시작 시점
+            bgm_start_ms = int(narr_delay * 1000)
+
+            # 마지막 슬라이드(클로징) 시작 시점 = 페이드아웃 시작
+            # 클로징 전 마지막 콘텐츠 슬라이드 끝에서 페이드아웃
+            last_content_end = cumulative[-2] if len(cumulative) >= 2 else total_dur
+            bgm_end = last_content_end  # 클로징 시작 시점에서 BGM 종료
+            bgm_dur = bgm_end - narr_delay
+            fade_in_dur = min(3, bgm_dur * 0.1)
+            fade_out_dur = min(5, bgm_dur * 0.2)  # 넉넉한 페이드아웃
+            fade_out_start = max(0, bgm_dur - fade_out_dur)
+
+            extra_inputs.append(bgm_path)
+            filter_parts.append(
+                f"[{input_idx}:a]aloop=loop=-1:size=2e+09,"
+                f"atrim=0:{bgm_dur:.2f},"
+                f"afade=t=in:st=0:d={fade_in_dur:.2f},"
+                f"afade=t=out:st={fade_out_start:.2f}:d={fade_out_dur:.2f},"
+                f"volume={bgm_vol},"
+                f"adelay={bgm_start_ms}|{bgm_start_ms}[bgm]"
+            )
+            mix_labels.append("[bgm]")
+            input_idx += 1
+
+    # --- SFX ---
+    if mix_sfx:
+        sfx_vol = (cfg.get("sfx_volume", 15) or 15) / 100.0
+        # (path, delay_ms, fade_filter) — fade_filter는 추가 afade 문자열
+        sfx_events = []
+
+        # 인트로: 첫 슬라이드 길이에 맞춰 페이드아웃 (슬라이드 끝 1초 전부터)
+        intro_path = _get_audio_path("sfx", cfg.get("sfx_intro", ""))
+        if intro_path:
+            first_slide_dur = slide_durations[sorted_slides[0]] if sorted_slides else 7
+            fade_start = max(1, first_slide_dur - 1)
+            sfx_events.append((intro_path, 0,
+                               f"afade=t=out:st={fade_start:.1f}:d=1"))
+
+        # 슬라이드 전환
+        trans_path = _get_audio_path("sfx", cfg.get("sfx_transition", ""))
+        if trans_path and len(cumulative) > 1:
+            for i in range(len(cumulative) - 2):
+                sfx_events.append((trans_path, int(cumulative[i] * 1000), ""))
+
+        # 클로징: 4초부터 페이드아웃
+        outro_path = _get_audio_path("sfx", cfg.get("sfx_outro", ""))
+        if outro_path and len(cumulative) >= 2:
+            sfx_events.append((outro_path, int(cumulative[-2] * 1000),
+                               "afade=t=out:st=4:d=4"))
+
+        for si, (ev_path, delay_ms, fade) in enumerate(sfx_events):
+            extra_inputs.append(ev_path)
+            fade_part = f",{fade}" if fade else ""
+            filter_parts.append(
+                f"[{input_idx}:a]adelay={delay_ms}|{delay_ms},"
+                f"volume={sfx_vol}{fade_part}[sfx{si}]"
+            )
+            mix_labels.append(f"[sfx{si}]")
+            input_idx += 1
+
+    if len(mix_labels) <= 1:
+        os.replace(input_path, output_path)
+        return
+
+    # amix로 전체 믹싱 (normalize=0: 볼륨 자동 정규화 비활성화 — 스트림 추가/종료 시 뚝 끊김 방지)
+    mix_inputs_str = "".join(mix_labels)
+    filter_parts.append(
+        f"{mix_inputs_str}amix=inputs={len(mix_labels)}"
+        f":duration=first:dropout_transition=0:normalize=0[aout]"
+    )
+
+    filter_complex = ";".join(filter_parts)
+
+    cmd = [config.ffmpeg(), "-y", "-i", input_path]
+    for p in extra_inputs:
+        cmd.extend(["-i", p])
+    cmd.extend([
+        "-filter_complex", filter_complex,
+        "-map", "0:v", "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        output_path
+    ])
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[video_renderer] Audio mix ffmpeg error: {result.stderr[:500]}")
+        raise RuntimeError("Audio mixing failed")

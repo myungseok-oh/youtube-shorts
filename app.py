@@ -1363,6 +1363,10 @@ async def api_sd_generate_auto(job_id: str):
         slide = slides[i] if i < len(slides) else {}
         bg_type = slide.get("bg_type", "photo")
 
+        # dict → 영어 프롬프트 문자열 추출
+        raw_p = prompts[i]
+        en_prompt = raw_p.get("en", raw_p) if isinstance(raw_p, dict) else raw_p
+
         # 기존 파일 정리
         for ext in ["jpg", "jpeg", "png", "webp", "gif", "mp4"]:
             old = os.path.join(bg_dir, f"bg_{idx}.{ext}")
@@ -1380,7 +1384,7 @@ async def api_sd_generate_auto(job_id: str):
 
             elif auto_bg_source == "gemini":
                 # Gemini 이미지 생성 — 레이아웃에 따라 비율 결정
-                if not prompts[i]:
+                if not en_prompt:
                     results.append({"index": idx, "ok": True, "skipped": True, "bg_type": bg_type})
                     continue
                 if gemini_count > 0:
@@ -1388,7 +1392,7 @@ async def api_sd_generate_auto(job_id: str):
                 _ar = "1:1" if slide_layout in ("center", "top", "bottom") else "9:16"
                 output_path = os.path.join(bg_dir, f"bg_{idx}.png")
                 await asyncio.to_thread(
-                    gemini_gen_image, prompts[i], output_path, gemini_key,
+                    gemini_gen_image, en_prompt, output_path, gemini_key,
                     _ar
                 )
                 gemini_count += 1
@@ -1405,7 +1409,7 @@ async def api_sd_generate_auto(job_id: str):
                 # SD 영상 생성
                 output_path = os.path.join(bg_dir, f"bg_{idx}.mp4")
                 await asyncio.to_thread(
-                    generate_video, prompts[i], output_path,
+                    generate_video, en_prompt, output_path,
                     host=comfyui_cfg["host"], port=comfyui_cfg["port"],
                     layout=slide_layout
                 )
@@ -1414,7 +1418,7 @@ async def api_sd_generate_auto(job_id: str):
                 # SD 이미지 생성 (기본)
                 output_path = os.path.join(bg_dir, f"bg_{idx}.jpg")
                 await asyncio.to_thread(
-                    generate_image, prompts[i], output_path,
+                    generate_image, en_prompt, output_path,
                     host=comfyui_cfg["host"], port=comfyui_cfg["port"],
                     layout=slide_layout
                 )
@@ -1640,6 +1644,41 @@ async def api_dashboard():
     return result
 
 
+@app.get("/api/bgm")
+async def api_list_bgm():
+    """data/bgm/ 폴더의 배경음악 목록"""
+    bgm_dir = os.path.join(config.root_dir(), "data", "bgm")
+    os.makedirs(bgm_dir, exist_ok=True)
+    files = []
+    for fname in sorted(os.listdir(bgm_dir)):
+        if fname.lower().endswith((".mp3", ".wav", ".ogg", ".m4a")):
+            files.append(fname)
+    return files
+
+
+@app.get("/api/bgm/{filename}")
+async def api_get_bgm(filename: str):
+    """배경음악 파일 서빙"""
+    bgm_dir = os.path.join(config.root_dir(), "data", "bgm")
+    path = os.path.join(bgm_dir, filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "BGM 파일이 없습니다")
+    ext = filename.rsplit(".", 1)[-1].lower()
+    return FileResponse(path, media_type=f"audio/{ext}")
+
+
+@app.get("/api/sfx")
+async def api_list_sfx():
+    """data/sfx/ 폴더의 효과음 목록"""
+    sfx_dir = os.path.join(config.root_dir(), "data", "sfx")
+    os.makedirs(sfx_dir, exist_ok=True)
+    files = []
+    for fname in sorted(os.listdir(sfx_dir)):
+        if fname.lower().endswith((".mp3", ".wav", ".ogg", ".m4a")):
+            files.append(fname)
+    return files
+
+
 @app.get("/api/ref-voices")
 async def api_list_ref_voices():
     """data/ref_voices/ 폴더의 참조 음성 목록"""
@@ -1653,6 +1692,17 @@ async def api_list_ref_voices():
             name = fname.rsplit(".", 1)[0]
             voices.append({"filename": fname, "name": name, "size_kb": size_kb})
     return voices
+
+
+@app.get("/api/sfx/{filename}")
+async def api_get_sfx(filename: str):
+    """효과음 파일 서빙"""
+    sfx_dir = os.path.join(config.root_dir(), "data", "sfx")
+    path = os.path.join(sfx_dir, filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "효과음 파일이 없습니다")
+    ext = filename.rsplit(".", 1)[-1].lower()
+    return FileResponse(path, media_type=f"audio/{ext}")
 
 
 @app.get("/api/ref-voices/{filename}")

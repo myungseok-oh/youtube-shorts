@@ -439,7 +439,8 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                         generate_backgrounds(slides_data, dirs["bg"])
 
                 # 배경 다시 로드
-                bg_results = _load_uploaded_backgrounds(dirs["bg"], len(slides_data))
+                bg_results = _load_uploaded_backgrounds(dirs["bg"], len(slides_data),
+                                                        source=auto_bg_source)
 
             slide_paths = generate_slides(slides_data, dirs["image"],
                                           date=date_str, brand=brand,
@@ -450,12 +451,6 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                          output_data={"files": slide_paths,
                                       "count": len(slide_paths),
                                       "backgrounds": bg_count})
-
-            # 썸네일 자동 생성
-            try:
-                _generate_job_thumbnail(job_id, script, slides_data, bg_results, brand, dirs["job"])
-            except Exception as e:
-                print(f"[thumbnail] 썸네일 생성 실패 (무시): {e}")
 
         except Exception as e:
             _update_step(db, job_id, "slides", "failed", error_msg=str(e))
@@ -537,13 +532,29 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
 
             _update_step(db, job_id, "render", "running")
             try:
+                _ch_cfg_render = json.loads(channel.get("config", "{}")) if channel else {}
+                narration_delay = _ch_cfg_render.get("narration_delay") or 2
+
                 timeline = build_timeline(sentences, dirs["audio"])
                 merged_audio = merge_slide_audio(timeline["slide_audio_map"],
-                                                 dirs["segment"])
+                                                 dirs["segment"],
+                                                 narration_delay=narration_delay)
+                # 딜레이가 있으면 첫 슬라이드 duration에 반영
+                if narration_delay > 0:
+                    first_s = min(timeline["slide_durations"].keys())
+                    timeline["slide_durations"][first_s] += narration_delay
+                    timeline["total_duration"] += narration_delay
+
                 segments = render_segments(timeline["slide_durations"], dirs["image"],
                                            merged_audio, dirs["segment"])
                 final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
-                concat_segments(segments, final_path)
+
+                # 효과음 설정 로드
+                sfx_cfg = _ch_cfg_render if (_ch_cfg_render.get("sfx_enabled") or _ch_cfg_render.get("bgm_enabled") or _ch_cfg_render.get("crossfade_duration")) else None
+
+                concat_segments(segments, final_path,
+                                sfx_cfg=sfx_cfg,
+                                slide_durations=timeline["slide_durations"])
 
                 file_size = os.path.getsize(final_path) / (1024 * 1024)
                 _update_step(db, job_id, "render", "completed",
@@ -558,6 +569,13 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                 generate_metadata(topic, sentences, dirs["job"],
                                   youtube_title=script_json.get("youtube_title", ""),
                                   brand=brand)
+
+                # 썸네일 생성 (render 완료 후 — 배경 이미지 확보된 상태)
+                try:
+                    _generate_job_thumbnail(job_id, script_json, slides_data, [], brand, dirs["job"])
+                except Exception as e:
+                    print(f"[thumbnail] 썸네일 생성 실패 (무시): {e}")
+
             except Exception as e:
                 _update_step(db, job_id, "render", "failed", error_msg=str(e))
                 raise
@@ -623,19 +641,51 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
         traceback.print_exc()
 
 
+def _find_first_bg(bg_dir: str) -> str:
+    """배경 디렉토리에서 첫 번째 배경 파일 경로 반환.
+    정적 이미지 우선, 없으면 MP4/GIF에서 프레임 추출."""
+    if not os.path.isdir(bg_dir):
+        return ""
+
+    # 정적 이미지 우선
+    for f in sorted(os.listdir(bg_dir)):
+        if f.startswith("bg_") and f.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            return os.path.join(bg_dir, f)
+
+    # MP4/GIF → 첫 프레임 추출
+    for f in sorted(os.listdir(bg_dir)):
+        if f.startswith("bg_") and f.lower().endswith((".mp4", ".gif")):
+            src = os.path.join(bg_dir, f)
+            thumb = os.path.join(bg_dir, "_thumb_bg.jpg")
+            try:
+                subprocess.run([
+                    config.ffmpeg(), "-y", "-i", src,
+                    "-vframes", "1", "-q:v", "2", thumb
+                ], capture_output=True)
+                if os.path.exists(thumb):
+                    return thumb
+            except Exception:
+                pass
+
+    return ""
+
+
 def _generate_job_thumbnail(job_id: str, script: dict, slides_data: list,
                             bg_results: list, brand: str, job_dir: str):
-    """슬라이드 생성 후 썸네일 자동 생성."""
+    """영상 렌더 완료 후 썸네일 자동 생성."""
     title = script.get("youtube_title", "")
     if not title:
         title = slides_data[0].get("main", "").replace('<span class="hl">', "").replace("</span>", "")
     category = slides_data[0].get("category", "") if slides_data else ""
     accent = slides_data[0].get("accent", "#ff6b35") if slides_data else "#ff6b35"
 
-    # 첫 번째 배경 이미지 사용
+    # 배경 이미지 결정
     bg_path = ""
     if bg_results:
         bg_path = bg_results[0].get("path", "")
+    if not bg_path:
+        bg_dir = os.path.join(job_dir, "backgrounds")
+        bg_path = _find_first_bg(bg_dir)
 
     output_path = os.path.join(job_dir, "thumbnail.png")
     generate_thumbnail(title, output_path, category=category,
@@ -781,8 +831,9 @@ def _render_with_narration(narration_path: str, image_dir: str,
     return total_dur
 
 
-def _load_uploaded_backgrounds(bg_dir: str, slide_count: int) -> list[dict]:
-    """backgrounds 디렉토리에서 업로드된 이미지를 슬라이드 순서대로 로드.
+def _load_uploaded_backgrounds(bg_dir: str, slide_count: int,
+                               source: str = "upload") -> list[dict]:
+    """backgrounds 디렉토리에서 배경 이미지를 슬라이드 순서대로 로드.
 
     파일명 규칙: bg_1.jpg, bg_2.png, ... (확장자 무관)
     마지막 슬라이드(closing)는 빈 배경.
@@ -793,7 +844,7 @@ def _load_uploaded_backgrounds(bg_dir: str, slide_count: int) -> list[dict]:
         for ext in ["mp4", "jpg", "jpeg", "png", "webp", "gif"]:
             path = os.path.join(bg_dir, f"bg_{i}.{ext}")
             if os.path.exists(path):
-                results.append({"path": path, "source": "Genspark"})
+                results.append({"path": path, "source": source})
                 found = True
                 break
 
@@ -984,7 +1035,8 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
                             print(f"[runner] bg_{idx+1} 이미지 생성 실패: {e}")
 
             # 업로드/생성된 배경 로드 → 슬라이드 렌더
-            bg_results = _load_uploaded_backgrounds(dirs["bg"], len(slides_data))
+            bg_results = _load_uploaded_backgrounds(dirs["bg"], len(slides_data),
+                                                    source=auto_bg_source)
             slide_paths = generate_slides(slides_data, dirs["image"],
                                           date=date_str, brand=brand,
                                           backgrounds=bg_results,
@@ -995,12 +1047,6 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
                                       "count": len(slide_paths),
                                       "backgrounds": bg_count,
                                       "bg_source": bg_source_log})
-
-            # 썸네일 자동 생성
-            try:
-                _generate_job_thumbnail(job_id, script, slides_data, bg_results, brand, dirs["job"])
-            except Exception as e:
-                print(f"[thumbnail] 썸네일 생성 실패 (무시): {e}")
 
         except Exception as e:
             _update_step(db, job_id, "slides", "failed", error_msg=str(e))
@@ -1037,13 +1083,28 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
         # --- Step 5: render ---
         _update_step(db, job_id, "render", "running")
         try:
+            _ch_cfg_r = json.loads(channel.get("config", "{}")) if channel else {}
+            narration_delay_r = _ch_cfg_r.get("narration_delay") or 2
+
             timeline = build_timeline(sentences, dirs["audio"])
             merged_audio = merge_slide_audio(timeline["slide_audio_map"],
-                                             dirs["segment"])
+                                             dirs["segment"],
+                                             narration_delay=narration_delay_r)
+            if narration_delay_r > 0:
+                first_s = min(timeline["slide_durations"].keys())
+                timeline["slide_durations"][first_s] += narration_delay_r
+                timeline["total_duration"] += narration_delay_r
+
             segments = render_segments(timeline["slide_durations"], dirs["image"],
                                        merged_audio, dirs["segment"])
             final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
-            concat_segments(segments, final_path)
+
+            # 효과음 설정
+            sfx_cfg_r = _ch_cfg_r if (_ch_cfg_r.get("sfx_enabled") or _ch_cfg_r.get("bgm_enabled") or _ch_cfg_r.get("crossfade_duration")) else None
+
+            concat_segments(segments, final_path,
+                            sfx_cfg=sfx_cfg_r,
+                            slide_durations=timeline["slide_durations"])
 
             file_size = os.path.getsize(final_path) / (1024 * 1024)
             _update_step(db, job_id, "render", "completed",
@@ -1057,6 +1118,13 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
                        [final_path, _now(), job_id])
             generate_metadata(topic, sentences, dirs["job"],
                               youtube_title=script_json.get("youtube_title", ""))
+
+            # 썸네일 생성 (render 완료 후)
+            try:
+                _generate_job_thumbnail(job_id, script_json, slides_data, [], brand, dirs["job"])
+            except Exception as e:
+                print(f"[thumbnail] 썸네일 생성 실패 (무시): {e}")
+
         except Exception as e:
             _update_step(db, job_id, "render", "failed", error_msg=str(e))
             raise

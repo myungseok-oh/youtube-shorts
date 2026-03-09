@@ -313,6 +313,96 @@
           </div>
         </details>
 
+        <!-- 배경 음악 / 음향 설정 -->
+        <details class="border border-gray-700 rounded-lg">
+          <summary class="px-3 py-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200 transition">배경 음악 (BGM)</summary>
+          <div class="p-3 pt-0 space-y-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">나레이션 시작 딜레이 <span id="cs-narration-delay-label">2</span>초</label>
+              <input id="cs-narration-delay" type="range" min="0" max="5" value="2" step="0.5"
+                     oninput="document.getElementById('cs-narration-delay-label').textContent=this.value"
+                     class="w-full accent-orange-500">
+              <p class="text-[10px] text-gray-600 mt-0.5">영상 시작 후 나레이션이 시작되기까지 무음 구간 (인트로 효과음용)</p>
+            </div>
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-gray-400">BGM 사용</label>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input id="cs-bgm-enabled" type="checkbox" class="sr-only peer">
+                <div class="w-9 h-5 bg-gray-700 peer-checked:bg-orange-500 rounded-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+              </label>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">음악 선택</label>
+              <select id="cs-bgm-file" onchange="previewBgm(this.value)" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                <option value="">없음</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1">볼륨 <span id="cs-bgm-volume-label">10</span>%</label>
+              <input id="cs-bgm-volume" type="range" min="5" max="30" value="10" step="5"
+                     oninput="document.getElementById('cs-bgm-volume-label').textContent=this.value"
+                     class="w-full accent-orange-500">
+            </div>
+            <audio id="cs-bgm-preview" class="hidden w-full" controls style="height:28px"></audio>
+          </div>
+        </details>
+
+        <!-- 효과음 설정 -->
+        <details class="border border-gray-700 rounded-lg">
+          <summary class="px-3 py-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200 transition">효과음 (SFX)</summary>
+          <div class="p-3 pt-0 space-y-3">
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-gray-400">효과음 사용</label>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input id="cs-sfx-enabled" type="checkbox" class="sr-only peer">
+                <div class="w-9 h-5 bg-gray-700 peer-checked:bg-orange-500 rounded-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+              </label>
+            </div>
+            <div id="cs-sfx-options">
+              <div class="mb-2">
+                <label class="block text-xs text-gray-500 mb-1">볼륨 <span id="cs-sfx-volume-label">15</span>%</label>
+                <input id="cs-sfx-volume" type="range" min="5" max="50" value="15" step="5"
+                       oninput="document.getElementById('cs-sfx-volume-label').textContent=this.value"
+                       class="w-full accent-orange-500">
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">슬라이드 전환</label>
+                  <select id="cs-sfx-transition" onchange="previewSfx(this.value)" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                    <option value="">없음</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">오프닝</label>
+                  <select id="cs-sfx-intro" onchange="previewSfx(this.value)" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                    <option value="">없음</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">클로징</label>
+                  <select id="cs-sfx-outro" onchange="previewSfx(this.value)" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                    <option value="">없음</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">강조</label>
+                  <select id="cs-sfx-highlight" onchange="previewSfx(this.value)" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                    <option value="">없음</option>
+                  </select>
+                </div>
+              </div>
+              <audio id="cs-sfx-preview" class="hidden w-full mt-2" controls style="height:28px"></audio>
+              <div class="mt-2 pt-2 border-t border-gray-700">
+                <label class="block text-xs text-gray-500 mb-1">슬라이드 전환 크로스페이드 <span id="cs-crossfade-label">0.5</span>초</label>
+                <input id="cs-crossfade-duration" type="range" min="0" max="1.5" value="0.5" step="0.1"
+                       oninput="document.getElementById('cs-crossfade-label').textContent=this.value"
+                       class="w-full accent-orange-500">
+                <p class="text-[10px] text-gray-600 mt-0.5">0 = 하드컷, 0.3~0.7 권장</p>
+              </div>
+            </div>
+          </div>
+        </details>
+
         <!-- YouTube 업로드 설정 -->
         <details class="border border-gray-700 rounded-lg">
           <summary class="px-3 py-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200 transition">YouTube 업로드 설정</summary>

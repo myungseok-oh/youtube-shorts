@@ -1464,6 +1464,64 @@ async function checkSovitsStatus() {
   }
 }
 
+async function loadBgmFiles(cfg) {
+  try {
+    const res = await fetch("/api/bgm");
+    const files = await res.json();
+    const sel = document.getElementById("cs-bgm-file");
+    sel.innerHTML = '<option value="">없음</option>';
+    for (const f of files) {
+      const opt = document.createElement("option");
+      opt.value = f;
+      opt.textContent = f.replace(/\.mp3$/, "");
+      if (cfg.bgm_file === f) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch {}
+}
+
+let _bgmAudio = null;
+function previewBgm(filename) {
+  if (_bgmAudio) { _bgmAudio.pause(); _bgmAudio = null; }
+  const el = document.getElementById("cs-bgm-preview");
+  if (!filename) { el.classList.add("hidden"); return; }
+  el.src = `/api/bgm/${encodeURIComponent(filename)}?t=${Date.now()}`;
+  el.classList.remove("hidden");
+  el.play();
+  _bgmAudio = el;
+}
+
+async function loadSfxFiles(cfg) {
+  try {
+    const res = await fetch("/api/sfx");
+    const files = await res.json();
+    const ids = ["cs-sfx-transition", "cs-sfx-intro", "cs-sfx-outro", "cs-sfx-highlight"];
+    const keys = ["sfx_transition", "sfx_intro", "sfx_outro", "sfx_highlight"];
+    for (let j = 0; j < ids.length; j++) {
+      const sel = document.getElementById(ids[j]);
+      sel.innerHTML = '<option value="">없음</option>';
+      for (const f of files) {
+        const opt = document.createElement("option");
+        opt.value = f;
+        opt.textContent = f.replace(/-\d+\.mp3$/, "").replace(/[-_]/g, " ");
+        if (cfg[keys[j]] === f) opt.selected = true;
+        sel.appendChild(opt);
+      }
+    }
+  } catch {}
+}
+
+let _sfxAudio = null;
+function previewSfx(filename) {
+  if (_sfxAudio) { _sfxAudio.pause(); _sfxAudio = null; }
+  const el = document.getElementById("cs-sfx-preview");
+  if (!filename) { el.classList.add("hidden"); return; }
+  el.src = `/api/sfx/${encodeURIComponent(filename)}?t=${Date.now()}`;
+  el.classList.remove("hidden");
+  el.play();
+  _sfxAudio = el;
+}
+
 async function loadRefVoices(selectedVoice) {
   const select = document.getElementById("cs-sovits-ref-voice");
   try {
@@ -2564,6 +2622,24 @@ async function openChannelSettings(channelId) {
   toggleTtsEngine();
   loadRefVoices(cfg.sovits_ref_voice || "");
 
+  // BGM / 음향 설정
+  const nDelay = cfg.narration_delay ?? 2;
+  document.getElementById("cs-narration-delay").value = nDelay;
+  document.getElementById("cs-narration-delay-label").textContent = nDelay;
+  document.getElementById("cs-bgm-enabled").checked = !!cfg.bgm_enabled;
+  document.getElementById("cs-bgm-volume").value = cfg.bgm_volume || 10;
+  document.getElementById("cs-bgm-volume-label").textContent = cfg.bgm_volume || 10;
+  loadBgmFiles(cfg);
+
+  // 효과음 설정
+  document.getElementById("cs-sfx-enabled").checked = !!cfg.sfx_enabled;
+  document.getElementById("cs-sfx-volume").value = cfg.sfx_volume || 15;
+  document.getElementById("cs-sfx-volume-label").textContent = cfg.sfx_volume || 15;
+  const xfDur = cfg.crossfade_duration ?? 0.5;
+  document.getElementById("cs-crossfade-duration").value = xfDur;
+  document.getElementById("cs-crossfade-label").textContent = xfDur;
+  loadSfxFiles(cfg);
+
   // 트렌드 소스 설정
   const trendSources = cfg.trend_sources || [];
   document.getElementById("cs-trend-google").checked = trendSources.includes("google_trends");
@@ -2618,6 +2694,21 @@ async function saveChannelSettings() {
   cfg.sovits_ref_voice = document.getElementById("cs-sovits-ref-voice").value;
   cfg.sovits_ref_text = document.getElementById("cs-sovits-ref-text").value.trim();
   cfg.sovits_speed = parseFloat(document.getElementById("cs-sovits-speed").value) || 1.0;
+
+  // BGM / 음향 설정 저장
+  cfg.narration_delay = parseFloat(document.getElementById("cs-narration-delay").value) || 0;
+  cfg.bgm_enabled = document.getElementById("cs-bgm-enabled").checked;
+  cfg.bgm_file = document.getElementById("cs-bgm-file").value;
+  cfg.bgm_volume = parseInt(document.getElementById("cs-bgm-volume").value) || 10;
+
+  // 효과음 설정 저장
+  cfg.sfx_enabled = document.getElementById("cs-sfx-enabled").checked;
+  cfg.sfx_volume = parseInt(document.getElementById("cs-sfx-volume").value) || 15;
+  cfg.sfx_transition = document.getElementById("cs-sfx-transition").value;
+  cfg.sfx_intro = document.getElementById("cs-sfx-intro").value;
+  cfg.sfx_outro = document.getElementById("cs-sfx-outro").value;
+  cfg.sfx_highlight = document.getElementById("cs-sfx-highlight").value;
+  cfg.crossfade_duration = parseFloat(document.getElementById("cs-crossfade-duration").value) || 0;
 
   // 트렌드 소스 저장
   const trendSources = [];
