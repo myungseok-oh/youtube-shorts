@@ -1,4 +1,5 @@
 """SQLite WAL 모드 래퍼 — 스레드 안전"""
+from __future__ import annotations
 import os
 import sqlite3
 import threading

@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YouTube Shorts Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/style.css?v=20260309fb">
+  <link rel="stylesheet" href="/static/style.css?v=20260309s">
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen">
 
@@ -15,22 +16,21 @@
       <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500 to-red-500 flex items-center justify-center text-sm font-bold">YT</div>
       <h1 class="text-xl font-bold">YouTube Shorts <span class="text-gray-500 font-normal text-sm">Dashboard</span></h1>
     </div>
-    <div></div>
+    <div class="flex items-center gap-4">
+      <div id="header-queue-status" class="flex items-center gap-3 text-xs text-gray-400"></div>
+      <button onclick="openNewsBrowser()" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white hover:bg-gray-800 border border-gray-700 rounded-lg transition">탐색</button>
+    </div>
   </header>
 
   <div class="flex h-[calc(100vh-65px)]">
 
     <!-- Sidebar: 채널 목록 -->
-    <aside id="sidebar" class="w-64 border-r border-gray-800 flex flex-col">
-      <div class="p-4 border-b border-gray-800">
+    <aside id="sidebar" class="w-80 border-r border-gray-800 flex flex-col">
+      <div class="p-4 border-b border-gray-800 flex items-center justify-between">
         <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">채널</h2>
+        <button onclick="openAddChannelModal()" class="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 rounded transition text-lg leading-none" title="채널 추가">+</button>
       </div>
       <div id="channel-list" class="flex-1 overflow-y-auto p-2 space-y-1">
-      </div>
-      <div class="p-3 border-t border-gray-800">
-        <button onclick="openAddChannelModal()" class="w-full py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition">
-          + 채널 추가
-        </button>
       </div>
     </aside>
 
@@ -198,6 +198,7 @@
               <select id="cs-tts-engine" onchange="toggleTtsEngine()"
                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
                 <option value="edge-tts">Edge TTS (기본)</option>
+                <option value="google-cloud">Google Cloud TTS</option>
                 <option value="gpt-sovits">GPT-SoVITS (음색 복제)</option>
               </select>
             </div>
@@ -210,7 +211,6 @@
                   <option value="ko-KR-InJoonNeural">인준 (남성)</option>
                   <option value="ko-KR-HyunsuNeural">현수 (남성)</option>
                   <option value="ko-KR-HyunsuMultilingualNeural">현수 멀티링구얼 (남성)</option>
-                  <option value="gtts">gTTS (구글 기본)</option>
                 </select>
                 <button onclick="previewChannelVoice()" id="btn-cs-preview-voice"
                         class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
@@ -222,6 +222,30 @@
                 <span id="cs-tts-rate-label" class="text-xs text-gray-400 w-10 text-right">0%</span>
               </div>
               <audio id="cs-voice-preview" class="w-full mt-2 hidden" controls></audio>
+            </div>
+            <!-- Google Cloud TTS 설정 -->
+            <div id="cs-tts-google-section" class="hidden">
+              <div class="flex gap-2 items-center">
+                <select id="cs-google-voice"
+                        class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                  <option value="ko-KR-Wavenet-A">Wavenet A (여성)</option>
+                  <option value="ko-KR-Wavenet-B">Wavenet B (여성)</option>
+                  <option value="ko-KR-Wavenet-C">Wavenet C (남성)</option>
+                  <option value="ko-KR-Wavenet-D">Wavenet D (남성)</option>
+                  <option value="ko-KR-Neural2-A">Neural2 A (여성)</option>
+                  <option value="ko-KR-Neural2-B">Neural2 B (여성)</option>
+                  <option value="ko-KR-Neural2-C">Neural2 C (남성)</option>
+                </select>
+                <button onclick="previewChannelVoice()" id="btn-cs-preview-google"
+                        class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
+              </div>
+              <div class="flex items-center gap-2 mt-2">
+                <span class="text-xs text-gray-500 w-8">속도</span>
+                <input type="range" id="cs-google-rate" min="-30" max="50" value="0" step="10"
+                       class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-google-rate-label').textContent = this.value + '%'">
+                <span id="cs-google-rate-label" class="text-xs text-gray-400 w-10 text-right">0%</span>
+              </div>
+              <audio id="cs-google-preview" class="w-full mt-2 hidden" controls></audio>
             </div>
             <!-- GPT-SoVITS 설정 -->
             <div id="cs-tts-sovits-section" class="hidden space-y-2">
@@ -359,6 +383,20 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260309fc"></script>
+  <!-- 수동 대본 입력 모달 -->
+  <div id="manual-modal" class="modal-overlay hidden">
+    <div class="modal-content modal-wide">
+      <div id="manual-modal-content"></div>
+    </div>
+  </div>
+
+  <!-- 뉴스 탐색 모달 -->
+  <div id="news-browser-modal" class="modal-overlay hidden">
+    <div class="modal-content" style="max-width:800px; height:80vh; display:flex; flex-direction:column;">
+      <div id="news-browser-content" style="flex:1; min-height:0; display:flex; flex-direction:column;"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20260309s"></script>
 </body>
 </html>

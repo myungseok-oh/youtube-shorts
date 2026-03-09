@@ -1,7 +1,9 @@
-"""이슈60초 — FastAPI 백엔드"""
+"""yShorts — FastAPI 백엔드"""
+from __future__ import annotations
 import json
 import asyncio
 import os
+import re
 import shutil
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -23,7 +25,7 @@ from pipeline.runner import (
     _load_uploaded_backgrounds,
 )
 from pipeline.agent import parse_request
-from pipeline.trend_collector import collect_trends, format_trend_context
+from pipeline.trend_collector import collect_trends, collect_news, format_trend_context
 from pipeline.sd_generator import (
     generate_image, generate_video, generate_sd_prompts, generate_all_prompts,
     agent_generate_image,
@@ -35,32 +37,11 @@ from pipeline.gemini_generator import generate_image as gemini_gen_image
 db = Database(config.db_path())
 
 DEFAULT_INSTRUCTIONS = """\
-# 유튜브 쇼츠 뉴스 브리핑 에이전트 - 이슈60초
+# 유튜브 쇼츠 뉴스 브리핑 에이전트
 
 너는 유튜브 쇼츠 뉴스 영상 제작 전문가야.
 주어진 주제에 대해 최신 뉴스를 검색/분석해서
-60초 쇼츠 뉴스 브리핑 영상을 만들어줘.
-
-## 채널 정보
-- 채널명: 이슈60초
-- 컨셉: 바쁜 현대인을 위한 60초 핵심 뉴스 브리핑
-- 톤: 깔끔하고 신뢰감 있는 뉴스 앵커 스타일
-- 타겟: 20~50대 직장인
-
-## 주제 선정 방식
-- 트렌드 데이터(Google Trends, YouTube Trending)가 함께 제공될 수 있음
-- 트렌드 데이터가 있으면 해당 데이터에서 요청 카테고리에 맞는 주제를 우선 선정
-- 트렌드 데이터가 없으면 웹 검색으로 직접 오늘의 화제 뉴스를 찾아서 선정
-
-## 대본 구조 (60초) — 하나의 기사를 논리적으로 전개
-하나의 뉴스 기사를 아래 흐름으로 풀어낸다. 각 슬라이드는 독립된 주제가 아니라 같은 기사의 다른 측면이다.
-- [0~3초] 훅: 충격적 사실 or 핵심 수치로 시작 (시청자 주목)
-- [3~15초] 핵심 요약: 무슨 일이 일어났는지 한마디로
-- [15~35초] 원인/배경 → 영향/파장: 왜 일어났는지, 어떤 파급이 있는지
-- [35~55초] 전망/의미: 앞으로 어떻게 될 것인지, 전문가 의견
-- [55~60초] 마무리: 짧은 마무리 멘트
-- 슬라이드 사이는 자연스럽게 연결 ("이런 가운데", "그 배경에는", "전문가들은" 등)
-- 처음부터 끝까지 이어 읽으면 하나의 완결된 뉴스 내레이션이 되어야 함
+쇼츠 뉴스 브리핑 영상을 만들어줘.
 
 ## 대본 규칙
 - 존댓말 기반이되, 문장 끝을 다양하게: ~입니다, ~인데요, ~한 상황, ~일까요?, ~됩니다, ~했는데요
@@ -68,34 +49,135 @@ DEFAULT_INSTRUCTIONS = """\
 - 한 문장 20자 이내
 - 수치/데이터 1개 이상 포함
 - 감정적 표현 자제, 팩트 중심
-
-## 영상 조건
-- 길이: 50~60초
-- 비율: 9:16 세로
-
-## 제목: 40자 이내
-## 해시태그: #이슈60초 #오늘뉴스 #경제뉴스 #국제뉴스 #쇼츠뉴스 + 주제별 5개
-## 설명: 100자 이내
 """
+
+
+# ── 조사/어미 패턴 (한국어 단어 분리용) ──
+_JOSA_PATTERN = re.compile(
+    r'(은|는|이|가|을|를|의|에|에서|로|으로|와|과|도|만|까지|부터|에게|한테|께|라|이라|으로서|에게서)$'
+)
+
+
+def _tokenize_ko(text: str) -> set:
+    """한국어 텍스트에서 핵심 단어 집합 추출 (간이 토크나이저).
+
+    공백 분리 → 조사/어미 제거 → 2자 이상 단어만 유지.
+    """
+    words = set()
+    for w in re.split(r'[\s,·…/()"\'\[\]]+', text):
+        w = w.strip('.,!?~·""''「」『』')
+        w = _JOSA_PATTERN.sub('', w)
+        if len(w) >= 2:
+            words.add(w)
+    return words
+
+
+def _is_duplicate(topic: str, recent_topics: list, threshold: float = 0.5) -> bool:
+    """topic이 recent_topics 중 하나와 유사한지 Jaccard similarity로 판정.
+
+    threshold: 0.5 (50%) 이상이면 중복으로 판정.
+    """
+    if not recent_topics:
+        return False
+
+    topic_words = _tokenize_ko(topic)
+    if not topic_words:
+        return False
+
+    for recent in recent_topics:
+        recent_words = _tokenize_ko(recent)
+        if not recent_words:
+            continue
+
+        intersection = topic_words & recent_words
+        union = topic_words | recent_words
+        similarity = len(intersection) / len(union) if union else 0
+
+        if similarity >= threshold:
+            return True
+
+        # 핵심 고유명사 겹침 체크: 3자 이상 단어가 정확히 일치하면 중복 가능성 높음
+        long_words = {w for w in topic_words if len(w) >= 3}
+        recent_long = {w for w in recent_words if len(w) >= 3}
+        common_long = long_words & recent_long
+        if common_long and len(common_long) >= 2:
+            return True
+
+    return False
+
+
+def _recover_orphan_jobs():
+    """서버 시작 시 running 상태로 남은 고아 작업을 감지하여 재시작"""
+    orphans = db.fetchall(
+        "SELECT id, status FROM jobs WHERE status IN ('running', 'queued')"
+    )
+    if not orphans:
+        return
+
+    now = datetime.now().isoformat()
+    for job in orphans:
+        job_id = job["id"]
+        # running step 찾기
+        running_step = db.fetchone(
+            "SELECT step_name FROM job_steps WHERE job_id = ? AND status = 'running'",
+            [job_id]
+        )
+        step_name = running_step["step_name"] if running_step else "unknown"
+
+        # running step → failed 처리
+        db.execute(
+            "UPDATE job_steps SET status = 'failed', completed_at = ?, "
+            "error_msg = '서버 재시작으로 중단됨' "
+            "WHERE job_id = ? AND status = 'running'", [now, job_id])
+
+        print(f"[복구] {job_id}: {step_name} 단계에서 중단됨 → 재시작")
+
+        # Phase A (news_search, script) → Phase A 재시작
+        if step_name in ("news_search", "script"):
+            # 대본 없으면 처음부터, 있으면 Phase B
+            job_row = db.fetchone("SELECT script_json FROM jobs WHERE id = ?", [job_id])
+            if job_row and job_row.get("script_json"):
+                db.execute("UPDATE jobs SET status = 'waiting_slides', updated_at = ? WHERE id = ?",
+                           [now, job_id])
+                print(f"[복구] {job_id}: 대본 있음 → waiting_slides")
+            else:
+                # Phase A 재시작
+                db.execute("UPDATE jobs SET status = 'running', updated_at = ? WHERE id = ?",
+                           [now, job_id])
+                db.execute(
+                    "UPDATE job_steps SET status = 'pending', error_msg = '' "
+                    "WHERE job_id = ? AND status = 'failed'", [job_id])
+                start_pipeline(db, job_id)
+                print(f"[복구] {job_id}: Phase A 재시작")
+        # Phase B (slides, tts, render, qa, upload) → 큐 재등록
+        elif step_name in ("slides", "tts", "render", "qa", "upload"):
+            db.execute("UPDATE jobs SET status = 'waiting_slides', updated_at = ? WHERE id = ?",
+                       [now, job_id])
+            # failed step을 pending으로 되돌리고 큐 재등록
+            db.execute(
+                "UPDATE job_steps SET status = 'pending', error_msg = '' "
+                "WHERE job_id = ? AND step_name = ?", [job_id, step_name])
+            resume_pipeline(db, job_id)
+            print(f"[복구] {job_id}: Phase B 큐 재등록 ({step_name}부터)")
+        else:
+            # 알 수 없는 상태 → failed로 두고 수동 처리
+            db.execute("UPDATE jobs SET status = 'failed', updated_at = ? WHERE id = ?",
+                       [now, job_id])
+            print(f"[복구] {job_id}: 알 수 없는 단계 → failed 처리")
 
 
 @asynccontextmanager
 async def lifespan(app):
     channels = list_channels(db)
     if not channels:
-        create_channel(db, name="이슈60초", handle="@issue60sec",
-                       description="60초 뉴스 브리핑",
+        create_channel(db, name="새 채널", handle="",
+                       description="뉴스 브리핑 채널",
                        instructions=DEFAULT_INSTRUCTIONS,
-                       default_topics="오늘 경제/국제 뉴스 3개 만들어줘")
-    else:
-        # 기존 채널의 지침이 구버전이면 자동 업데이트
-        for ch in channels:
-            old = ch.get("instructions", "")
-            if old and "한 문장 20자 이내" in old and "문장 끝을 다양하게" not in old:
-                update_channel(db, ch["id"], instructions=DEFAULT_INSTRUCTIONS)
+                       default_topics="오늘 주요 뉴스 3개 만들어줘")
+    _recover_orphan_jobs()
     yield
 
-app = FastAPI(title="이슈60초", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="yShorts", version="1.0.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -218,15 +300,64 @@ async def api_create_job(request: Request):
     return job
 
 
+@app.post("/api/jobs/create-manual")
+async def api_create_manual_job(request: Request):
+    """수동 모드: 사용자가 직접 작성한 대본으로 작업 생성 (Claude 호출 없음)"""
+    body = await request.json()
+    channel_id = body.get("channel_id")
+    topic = body.get("topic")
+    script_json = body.get("script_json")
+
+    if not channel_id or not topic or not script_json:
+        raise HTTPException(400, "channel_id, topic, script_json are required")
+    if not get_channel(db, channel_id):
+        raise HTTPException(404, "Channel not found")
+
+    job = create_job(
+        db, channel_id=channel_id,
+        topic=topic,
+        script_json=script_json,
+    )
+
+    # 슬라이드에 image_prompt_en이 있으면 meta_json에 복사
+    slides = script_json.get("slides", [])
+    _prompts = [
+        {"ko": s.get("image_prompt_ko", ""), "en": s.get("image_prompt_en", "")}
+        for s in slides if s.get("bg_type") != "closing"
+    ]
+    if any(p.get("en") for p in _prompts):
+        meta = {"image_prompts": _prompts}
+        db.execute("UPDATE jobs SET meta_json = ? WHERE id = ?",
+                   [json.dumps(meta, ensure_ascii=False), job["id"]])
+
+    # Phase A 스킵 → 바로 waiting_slides
+    db.execute("UPDATE jobs SET status = 'waiting_slides' WHERE id = ?", [job["id"]])
+    db.execute(
+        "UPDATE job_steps SET status = 'skipped' WHERE job_id = ? AND step_name IN ('news_search', 'script')",
+        [job["id"]],
+    )
+
+    return {"id": job["id"], "status": "waiting_slides"}
+
+
 @app.post("/api/channels/{channel_id}/run")
-async def api_run_channel(channel_id: str):
+async def api_run_channel(channel_id: str, request: Request):
     """채널의 요청을 Claude가 해석 → 주제별 작업 생성 → Phase A (대본까지)"""
     import traceback, asyncio
 
     ch = get_channel(db, channel_id)
     if not ch:
         raise HTTPException(404, "Channel not found")
-    request_text = (ch.get("default_topics") or "").strip()
+
+    # body에 request가 있으면 우선 사용, 없으면 채널 기본값
+    request_text = ""
+    try:
+        body = await request.json()
+        request_text = (body.get("request") or "").strip()
+    except Exception:
+        pass
+    if not request_text:
+        request_text = (ch.get("default_topics") or "").strip()
     if not request_text:
         raise HTTPException(400, "요청이 설정되지 않았습니다. 채널 설정에서 요청을 추가하세요.")
 
@@ -258,6 +389,17 @@ async def api_run_channel(channel_id: str):
             parse_request, request_text, instructions,
             trend_context=trend_context, recent_topics=recent_topics
         )
+
+        # 코드 레벨 중복 필터 (프롬프트 의존 보완)
+        filtered = []
+        for topic in topics:
+            if _is_duplicate(topic, recent_topics):
+                print(f"[중복 필터] 제거: {topic}")
+            else:
+                filtered.append(topic)
+        if not filtered:
+            raise HTTPException(400, "중복되지 않는 새 뉴스를 찾지 못했습니다. 다시 시도해주세요.")
+        topics = filtered
 
         production_mode = cfg.get("production_mode", "manual")
         channel_format = cfg.get("format", "single")
@@ -308,6 +450,28 @@ async def api_get_channel_trends(channel_id: str):
     trends = collect_trends(trend_sources, youtube_api_key=yt_api_key)
     formatted = format_trend_context(trends)
     return {"trends": trends, "formatted": formatted}
+
+
+@app.get("/api/news/browse")
+async def api_news_browse(category: str = ""):
+    """뉴스 탐색 — Google News / Trends / YouTube Trending 통합 조회"""
+    sources = ["google_news", "google_trends"]
+    yt_api_key = ""
+
+    # YouTube API 키: 채널 config에서 찾기
+    channels = list_channels(db)
+    for ch in channels:
+        try:
+            cfg = json.loads(ch.get("config") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        key = cfg.get("youtube_api_key", "")
+        if key:
+            yt_api_key = key
+            sources.append("youtube_trending")
+            break
+
+    return collect_news(sources=sources, youtube_api_key=yt_api_key, category=category)
 
 
 @app.get("/api/jobs/{job_id}")
@@ -520,7 +684,7 @@ async def api_generate_thumbnail(job_id: str):
         raise HTTPException(400, "No slides in script")
 
     channel = db.fetchone("SELECT * FROM channels WHERE id = ?", [job.get("channel_id", "")])
-    brand = channel["name"] if channel else "이슈60초"
+    brand = channel["name"] if channel else ""
 
     title = script.get("youtube_title", "")
     if not title:
@@ -595,6 +759,47 @@ async def api_delete_narration(job_id: str):
     if not deleted:
         raise HTTPException(404, "Narration not found")
     return {"ok": True}
+
+
+# ─── 작업 상태 강제 변경 ───
+
+ALLOWED_FORCE_STATUSES = {"completed", "failed", "waiting_slides"}
+
+@app.post("/api/jobs/{job_id}/force-status")
+async def api_force_status(job_id: str, request: Request):
+    """관리용: stuck 상태 작업의 상태를 강제 변경"""
+    job = db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    body = await request.json()
+    new_status = body.get("status", "")
+    if new_status not in ALLOWED_FORCE_STATUSES:
+        raise HTTPException(400, f"허용된 상태: {', '.join(sorted(ALLOWED_FORCE_STATUSES))}")
+
+    old_status = job.get("status", "")
+    now = datetime.now().isoformat()
+    db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
+               [new_status, now, job_id])
+
+    # step 상태도 일괄 갱신
+    if new_status == "completed":
+        # running → completed, pending → skipped
+        db.execute(
+            "UPDATE job_steps SET status = 'completed', completed_at = ? "
+            "WHERE job_id = ? AND status = 'running'", [now, job_id])
+        db.execute(
+            "UPDATE job_steps SET status = 'skipped', completed_at = ? "
+            "WHERE job_id = ? AND status = 'pending'", [now, job_id])
+    elif new_status == "failed":
+        # running → failed
+        db.execute(
+            "UPDATE job_steps SET status = 'failed', completed_at = ?, "
+            "error_msg = '수동 실패 처리' "
+            "WHERE job_id = ? AND status = 'running'", [now, job_id])
+
+    return {"ok": True, "job_id": job_id,
+            "old_status": old_status, "new_status": new_status}
 
 
 # ─── 수동 YouTube 업로드 ───
@@ -1100,8 +1305,10 @@ async def api_sd_generate_video_all(job_id: str):
                 os.remove(old)
 
         try:
+            p = prompts[i]
+            en_p = p.get("en", p) if isinstance(p, dict) else p
             await asyncio.to_thread(
-                generate_video, prompts[i], output_path,
+                generate_video, en_p, output_path,
                 host=cfg["host"], port=cfg["port"]
             )
             results.append({"index": idx, "ok": True})
@@ -1172,20 +1379,21 @@ async def api_sd_generate_auto(job_id: str):
                 continue
 
             elif auto_bg_source == "gemini":
-                # Gemini 이미지 생성
+                # Gemini 이미지 생성 — 레이아웃에 따라 비율 결정
                 if not prompts[i]:
                     results.append({"index": idx, "ok": True, "skipped": True, "bg_type": bg_type})
                     continue
                 if gemini_count > 0:
                     await asyncio.sleep(5)  # Gemini 분당 요청 제한 대응
+                _ar = "1:1" if slide_layout in ("center", "top", "bottom") else "9:16"
                 output_path = os.path.join(bg_dir, f"bg_{idx}.png")
                 await asyncio.to_thread(
                     gemini_gen_image, prompts[i], output_path, gemini_key,
-                    "9:16"
+                    _ar
                 )
                 gemini_count += 1
 
-            elif bg_type == "graph" and auto_bg_source != "gemini":
+            elif bg_type == "graph":
                 # SD 모드: graph → Claude 인포그래픽
                 output_path = os.path.join(bg_dir, f"bg_{idx}.png")
                 await asyncio.to_thread(
@@ -1230,7 +1438,7 @@ async def api_rerender_slides(job_id: str):
     date_str = script.get("date", "")
 
     channel = db.fetchone("SELECT * FROM channels WHERE id = ?", [job["channel_id"]])
-    brand = channel.get("name", "이슈60초") if channel else "이슈60초"
+    brand = channel.get("name", "") if channel else ""
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     slide_layout = ch_cfg.get("slide_layout", "full")
 
@@ -1253,29 +1461,45 @@ async def api_rerender_slides(job_id: str):
 
 @app.post("/api/jobs/{job_id}/retry")
 async def api_retry_job(job_id: str):
-    """실패한 작업 재시도 (Phase B 다시 실행)"""
+    """실패한 작업 재시도 (Phase A 또는 Phase B)"""
     job = db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
     if not job:
         raise HTTPException(404, "Job not found")
     if job["status"] != "failed":
         raise HTTPException(400, f"Job status is '{job['status']}', expected 'failed'")
 
-    # 실패한 단계부터 재시작 → waiting_slides로 되돌린 후 resume
-    db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
-               ["waiting_slides", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id])
-    # 실패/pending 단계 초기화
-    db.execute(
-        "UPDATE job_steps SET status = 'pending', error_msg = NULL, output_data = NULL, started_at = NULL, completed_at = NULL WHERE job_id = ? AND step_name IN ('tts', 'render', 'qa', 'upload')",
+    # 실패한 단계 확인
+    failed_step = db.fetchone(
+        "SELECT step_name FROM job_steps WHERE job_id = ? AND status = 'failed' ORDER BY id LIMIT 1",
         [job_id])
+    failed_name = failed_step["step_name"] if failed_step else ""
 
-    # 기존 오디오 삭제 (재생성)
-    audio_dir = os.path.join(config.output_dir(), job_id, "audio")
-    if os.path.isdir(audio_dir):
-        import shutil
-        shutil.rmtree(audio_dir, ignore_errors=True)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    resume_pipeline(db, job_id)
-    return {"ok": True, "message": "Retry queued"}
+    if failed_name in ("news_search", "script") or not job.get("script_json"):
+        # Phase A 실패 또는 script_json 없음 → Phase A 재실행
+        db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
+                   ["pending", now, job_id])
+        db.execute(
+            "UPDATE job_steps SET status = 'pending', error_msg = NULL, output_data = NULL, started_at = NULL, completed_at = NULL WHERE job_id = ? AND step_name IN ('news_search', 'script')",
+            [job_id])
+        start_pipeline(db, job_id)
+        return {"ok": True, "message": "Phase A retry started"}
+    else:
+        # Phase B 실패 → waiting_slides로 되돌린 후 resume
+        db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
+                   ["waiting_slides", now, job_id])
+        db.execute(
+            "UPDATE job_steps SET status = 'pending', error_msg = NULL, output_data = NULL, started_at = NULL, completed_at = NULL WHERE job_id = ? AND step_name IN ('slides', 'tts', 'render', 'qa', 'upload')",
+            [job_id])
+
+        # 기존 오디오 삭제 (재생성)
+        audio_dir = os.path.join(config.output_dir(), job_id, "audio")
+        if os.path.isdir(audio_dir):
+            shutil.rmtree(audio_dir, ignore_errors=True)
+
+        resume_pipeline(db, job_id)
+        return {"ok": True, "message": "Phase B retry queued"}
 
 
 @app.post("/api/jobs/{job_id}/reset")
@@ -1296,7 +1520,6 @@ async def api_reset_job(job_id: str):
     # 기존 오디오 삭제
     audio_dir = os.path.join(config.output_dir(), job_id, "audio")
     if os.path.isdir(audio_dir):
-        import shutil
         shutil.rmtree(audio_dir, ignore_errors=True)
 
     return {"ok": True, "message": "Reset to waiting_slides"}
@@ -1459,7 +1682,10 @@ async def api_upload_ref_voice(file: UploadFile = File(...)):
 
 @app.get("/api/tts/preview")
 async def api_tts_preview(voice: str = "ko-KR-SunHiNeural", rate: int = 0):
-    """TTS 음성 미리듣기용 샘플 생성 (Edge TTS)"""
+    """TTS 음성 미리듣기용 샘플 생성 (Edge TTS / Google Cloud TTS)"""
+    from pipeline.tts_generator import GOOGLE_CLOUD_VOICES, _get_google_tts_token
+    import base64
+
     sample_text = "오늘의 핵심 뉴스를 60초로 전해드립니다."
     preview_dir = os.path.join(config.root_dir(), "data", "tts_preview")
     os.makedirs(preview_dir, exist_ok=True)
@@ -1468,10 +1694,29 @@ async def api_tts_preview(voice: str = "ko-KR-SunHiNeural", rate: int = 0):
     out_path = os.path.join(preview_dir, cache_name)
 
     if not os.path.exists(out_path):
-        if voice == "gtts":
-            from gtts import gTTS
-            tts = gTTS(text=sample_text, lang="ko", slow=False)
-            tts.save(out_path)
+        if voice in GOOGLE_CLOUD_VOICES:
+            import requests as http_requests
+            try:
+                token = _get_google_tts_token()
+            except RuntimeError as e:
+                raise HTTPException(400, str(e))
+            speaking_rate = 1.0 + rate / 100.0
+            speaking_rate = max(0.25, min(4.0, speaking_rate))
+            resp = http_requests.post(
+                "https://texttospeech.googleapis.com/v1/text:synthesize",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "input": {"text": sample_text},
+                    "voice": {"languageCode": "ko-KR", "name": voice},
+                    "audioConfig": {"audioEncoding": "MP3", "speakingRate": speaking_rate},
+                },
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                raise HTTPException(502, f"Google Cloud TTS 오류: {resp.text[:200]}")
+            audio_bytes = base64.b64decode(resp.json()["audioContent"])
+            with open(out_path, "wb") as f:
+                f.write(audio_bytes)
         else:
             import edge_tts
             rate_str = f"+{rate}%" if rate >= 0 else f"{rate}%"
@@ -1605,17 +1850,25 @@ async def api_oauth_youtube(request: Request):
 
 @app.delete("/api/jobs/{job_id}")
 async def api_delete_job(job_id: str):
-    if not get_job(db, job_id):
+    job = get_job(db, job_id)
+    if not job:
         raise HTTPException(404, "Job not found")
-    # 소프트 삭제: status를 deleted로 변경 (중복 필터용 topic 유지)
-    db.execute(
-        "UPDATE jobs SET status = 'deleted', updated_at = ? WHERE id = ?",
-        [datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id]
-    )
-    # 디스크 파일만 삭제
+
+    # 디스크 파일 삭제
     job_dir = os.path.join(config.output_dir(), job_id)
     if os.path.isdir(job_dir):
         shutil.rmtree(job_dir, ignore_errors=True)
+
+    if job.get("status") == "completed":
+        # 완료된 작업: 소프트 삭제 (중복 필터용 topic 유지)
+        db.execute(
+            "UPDATE jobs SET status = 'deleted', updated_at = ? WHERE id = ?",
+            [datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id]
+        )
+    else:
+        # 완료 전 작업: DB에서 완전 삭제
+        delete_job(db, job_id)
+
     return {"ok": True}
 
 

@@ -127,7 +127,7 @@ function commonStyles(accent, bgImg) {
     .progress-bar {
       position: absolute; bottom: 0; left: 0;
       height: 6px; z-index: 10;
-      background: linear-gradient(90deg, ${accent}, #ffd700);
+      background: ${accent};
       border-radius: 0 3px 0 0;
     }
     .source-text {
@@ -138,13 +138,12 @@ function commonStyles(accent, bgImg) {
     .badge {
       display: inline-block;
       padding: 10px 28px;
-      background: rgba(255,255,255,0.08);
-      border: 1.5px solid rgba(255,255,255,0.15);
-      border-radius: 50px;
-      font-size: 30px; font-weight: 700;
-      letter-spacing: 6px; text-transform: uppercase;
-      color: ${accent};
-      backdrop-filter: blur(4px);
+      background: #FF4D4D;
+      border: none;
+      border-radius: 8px;
+      font-size: 30px; font-weight: 900;
+      letter-spacing: 6px;
+      color: #ffffff;
     }
     .hl {
       color: #ffd700;
@@ -183,12 +182,12 @@ function zonedStyles(accent) {
     .badge {
       display: inline-block;
       padding: 10px 28px;
-      background: rgba(255,255,255,0.08);
-      border: 1.5px solid rgba(255,255,255,0.15);
-      border-radius: 50px;
-      font-size: 30px; font-weight: 700;
-      letter-spacing: 6px; text-transform: uppercase;
-      color: ${accent};
+      background: #FF4D4D;
+      border: none;
+      border-radius: 8px;
+      font-size: 30px; font-weight: 900;
+      letter-spacing: 6px;
+      color: #ffffff;
     }
     .hl {
       color: #ffd700;
@@ -219,7 +218,7 @@ function zonedStyles(accent) {
       text-shadow: 0 2px 6px rgba(0,0,0,0.5);
     }
     .sub-text {
-      font-size: 36px; color: rgba(255,255,255,0.5);
+      font-size: 44px; color: rgba(255,255,255,0.5);
       text-align: center; font-weight: 400; padding: 0 30px;
       margin-top: 30px;
     }
@@ -274,13 +273,6 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
   ${commonStyles(accent, bgImg)}
   .top-bar { display: none; }
   .accent-stripe { display: none; }
-  .glow {
-    position: absolute; top: 30%; left: 50%; z-index: 3;
-    width: 600px; height: 600px;
-    transform: translate(-50%, -50%);
-    background: radial-gradient(circle, ${accent}22 0%, transparent 70%);
-    border-radius: 50%;
-  }
   .main-text {
     font-size: 88px; font-weight: 900;
     text-align: center; line-height: 1.3;
@@ -288,7 +280,7 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
     text-shadow: 0 2px 8px rgba(0,0,0,0.9), 0 4px 40px rgba(0,0,0,0.6);
   }
   .sub-text {
-    font-size: 38px; color: rgba(255,255,255,0.55);
+    font-size: 46px; color: rgba(255,255,255,0.55);
     text-align: center; font-weight: 400; padding: 0 100px;
     margin-top: 40px;
   }
@@ -299,9 +291,8 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
   ${grainSVG()}
   <div class="top-bar"></div>
   <div class="accent-stripe"></div>
-  <div class="glow"></div>
   <div class="content-wrap">
-    ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+    ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
     <div class="main-text">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
   </div>
@@ -318,7 +309,7 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
   .top-bar { display: none; }
   .divider-top, .divider-bottom {
     width: 120px; height: 2px;
-    background: linear-gradient(90deg, transparent, ${accent}88, transparent);
+    background: rgba(255,255,255,0.15);
   }
   .divider-top { margin-bottom: 50px; }
   .divider-bottom { margin-top: 50px; }
@@ -329,7 +320,7 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
     text-shadow: 0 2px 8px rgba(0,0,0,0.9), 0 4px 30px rgba(0,0,0,0.6);
   }
   .sub-text {
-    font-size: 38px; color: rgba(255,255,255,0.5);
+    font-size: 44px; color: rgba(255,255,255,0.5);
     text-align: center; font-weight: 400; padding: 0 90px;
     margin-top: 36px;
   }
@@ -360,7 +351,7 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
   <div class="corner-tl"></div>
   <div class="corner-br"></div>
   <div class="content-wrap">
-    ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+    ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
     <div class="divider-top"></div>
     <div class="main-text">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
@@ -377,13 +368,6 @@ function buildClosing(slide, accent, bgImg, progressPct) {
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
   ${commonStyles(accent, bgImg)}
-  .glow {
-    position: absolute; top: 50%; left: 50%; z-index: 3;
-    width: 800px; height: 800px;
-    transform: translate(-50%, -50%);
-    background: radial-gradient(circle, ${accent}18 0%, transparent 60%);
-    border-radius: 50%;
-  }
   .brand-text {
     font-size: 110px; font-weight: 900;
     text-align: center; letter-spacing: 8px;
@@ -422,7 +406,6 @@ function buildClosing(slide, accent, bgImg, progressPct) {
 <body>
   <div class="bg-overlay"></div>
   ${grainSVG()}
-  <div class="glow"></div>
   <div class="bracket-tl"></div>
   <div class="bracket-tr"></div>
   <div class="bracket-bl"></div>
@@ -518,7 +501,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   /* 구분선 */
   .divider {
     width: 160px; height: 4px;
-    background: linear-gradient(90deg, ${accent}, transparent);
+    background: rgba(255,255,255,0.15);
     margin-bottom: 50px;
     border-radius: 2px;
   }
@@ -557,7 +540,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   .progress-bar {
     position: absolute; bottom: 0; left: 0;
     height: 6px; z-index: 10;
-    background: linear-gradient(90deg, ${accent}, #ffd700);
+    background: ${accent};
     border-radius: 0 3px 0 0;
   }
 </style></head>
@@ -565,7 +548,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   <div class="bg-overlay"></div>
   ${grainSVG()}
   <div class="content-wrap">
-    ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+    ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
     <div class="title-area">
       <div class="main-title">${slide.main}</div>
     </div>
@@ -586,16 +569,16 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
 // ──── Zoned Opening 슬라이드 ────
 function buildZonedOpening(slide, accent, bgData, progressPct) {
   const textHTML = `
-    ${slide.category ? `<div class="badge" style="margin-bottom:40px;">${slide.category}</div>` : ''}
+    ${slide.category === "속보" ? `<div class="badge" style="margin-bottom:40px;">${slide.category}</div>` : ''}
     <div class="main-text" style="font-size:84px;line-height:1.3;">${slide.main}</div>
-    ${slide.sub ? `<div class="sub-text" style="font-size:36px;">${slide.sub}</div>` : ''}
+    ${slide.sub ? `<div class="sub-text" style="font-size:44px;">${slide.sub}</div>` : ''}
   `;
 
   let bodyContent = '';
   if (layout === 'center') {
     bodyContent = `
       <div class="text-zone" style="height:25%;justify-content:flex-end;padding-bottom:20px;">
-        ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+        ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
         <div class="main-text" style="font-size:78px;line-height:1.3;margin-top:16px;">${slide.main}</div>
       </div>
       ${imageZoneHTML(bgData, 50)}
@@ -623,17 +606,9 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
 <html><head><meta charset="utf-8"><style>
   ${zonedStyles(accent)}
   .main-text { font-size: 84px; }
-  .glow {
-    position: absolute; top: 30%; left: 50%; z-index: 3;
-    width: 600px; height: 600px;
-    transform: translate(-50%, -50%);
-    background: radial-gradient(circle, ${accent}22 0%, transparent 70%);
-    border-radius: 50%;
-  }
 </style></head>
 <body>
   ${grainSVG()}
-  <div class="glow"></div>
   ${bodyContent}
   ${sourceLabel(bgData.source)}
 </body></html>`;
@@ -642,7 +617,7 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
 // ──── Zoned Content 슬라이드 ────
 function buildZonedContent(slide, accent, bgData, progressPct, index) {
   const textHTML = `
-    ${slide.category ? `<div class="badge" style="margin-bottom:20px;">${slide.category}</div>` : ''}
+    ${slide.category === "속보" ? `<div class="badge" style="margin-bottom:20px;">${slide.category}</div>` : ''}
     <div class="main-text">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
   `;
@@ -651,7 +626,7 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
   if (layout === 'center') {
     bodyContent = `
       <div class="text-zone" style="height:25%;justify-content:flex-end;padding-bottom:20px;">
-        ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+        ${slide.category === "속보" ? `<div class="badge">${slide.category}</div>` : ''}
         <div class="main-text" style="font-size:68px;">${slide.main}</div>
       </div>
       ${imageZoneHTML(bgData, 50)}

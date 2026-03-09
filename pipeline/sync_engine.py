@@ -1,4 +1,5 @@
 """타임라인 동기화 엔진 — 오디오와 슬라이드 매핑 계산"""
+from __future__ import annotations
 import os
 import shutil
 import subprocess

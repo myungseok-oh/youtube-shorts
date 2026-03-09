@@ -1,4 +1,5 @@
 """Stable Diffusion 이미지/영상 생성 — ComfyUI API 클라이언트"""
+from __future__ import annotations
 import json
 import os
 import random
@@ -730,7 +731,8 @@ Output ONLY this JSON (no other text):
 Each array must have exactly {num_slides} items.
 """
 
-    raw = _run_claude(prompt, timeout=120)
+    raw = _run_claude(prompt, timeout=120, use_web=False,
+                      model="claude-haiku-4-5-20251001")
 
     # 파싱
     try:
@@ -782,7 +784,8 @@ SDXL RULES:
 - NO text, letters, numbers, watermarks
 - Output ONLY the English prompt, nothing else."""
 
-    raw = _run_claude(prompt, timeout=60)
+    raw = _run_claude(prompt, timeout=60, use_web=False,
+                      model="claude-haiku-4-5-20251001")
     try:
         wrapper = json.loads(raw)
         if isinstance(wrapper, dict) and "result" in wrapper:
@@ -817,8 +820,10 @@ JSON만 출력:
     full_prompt = f"{abs_path} 파일을 Read 도구로 읽고, 다음 평가를 해줘:\n\n{review_prompt}"
     output_dir = os.path.dirname(os.path.dirname(abs_path))
 
+    from pipeline.agent import _find_claude_bin
+    claude_bin = _find_claude_bin()
     result = subprocess.run(
-        f'claude -p --output-format json --allowedTools "Read" --add-dir "{output_dir}"',
+        f'"{claude_bin}" -p --output-format json --allowedTools "Read" --add-dir "{output_dir}"',
         input=full_prompt,
         capture_output=True, text=True, timeout=60,
         encoding="utf-8", shell=True, env=_clean_env(),
@@ -860,7 +865,8 @@ Write an improved SDXL prompt that fixes the problem.
 RULES: Detailed scene, 30-60 words, end with "high quality, photorealistic, vivid colors, cinematic lighting, 9:16 portrait", NO text/letters/numbers.
 Output ONLY the improved prompt."""
 
-    raw = _run_claude(prompt, timeout=60)
+    raw = _run_claude(prompt, timeout=60, use_web=False,
+                      model="claude-haiku-4-5-20251001")
     try:
         wrapper = json.loads(raw)
         if isinstance(wrapper, dict) and "result" in wrapper:

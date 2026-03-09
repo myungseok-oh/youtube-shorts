@@ -1,7 +1,11 @@
-"""TTS 음성 생성 — gTTS / Edge TTS / GPT-SoVITS 지원"""
+"""TTS 음성 생성 — Edge TTS / Google Cloud TTS / GPT-SoVITS 지원"""
+from __future__ import annotations
 import asyncio
+import base64
 import os
 import subprocess
+import threading
+import requests
 from pipeline import config
 
 
@@ -12,10 +16,44 @@ EDGE_VOICES = {
     "ko-KR-SunHiNeural": "선히 (여성)",
 }
 
+GOOGLE_CLOUD_VOICES = {
+    "ko-KR-Wavenet-A": "Wavenet A (여성)",
+    "ko-KR-Wavenet-B": "Wavenet B (여성)",
+    "ko-KR-Wavenet-C": "Wavenet C (남성)",
+    "ko-KR-Wavenet-D": "Wavenet D (남성)",
+    "ko-KR-Neural2-A": "Neural2 A (여성)",
+    "ko-KR-Neural2-B": "Neural2 B (여성)",
+    "ko-KR-Neural2-C": "Neural2 C (남성)",
+}
+
 DEFAULT_VOICE = "ko-KR-SunHiNeural"
+
+GOOGLE_TTS_KEY_PATH = os.path.join(config.root_dir(), "data", "google-tts.json")
+_google_creds = None
+_google_creds_lock = threading.Lock()
 
 SOVITS_DEFAULT_HOST = "127.0.0.1"
 SOVITS_DEFAULT_PORT = 9880
+
+
+def _get_google_tts_token() -> str:
+    """서비스 계정 키파일에서 access token 획득 (자동 갱신)."""
+    global _google_creds
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request
+
+    with _google_creds_lock:
+        if _google_creds is None:
+            if not os.path.exists(GOOGLE_TTS_KEY_PATH):
+                raise RuntimeError(
+                    f"Google Cloud TTS 키 파일이 없습니다: {GOOGLE_TTS_KEY_PATH}")
+            _google_creds = service_account.Credentials.from_service_account_file(
+                GOOGLE_TTS_KEY_PATH,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+        if not _google_creds.valid:
+            _google_creds.refresh(Request())
+        return _google_creds.token
 
 
 async def _edge_tts_generate(text: str, voice: str, out_path: str,
@@ -37,15 +75,40 @@ def _generate_edge(sentences: list[dict], audio_dir: str,
     return paths
 
 
-def _generate_gtts(sentences: list[dict], audio_dir: str) -> list[str]:
-    """gTTS로 전체 문장 음성 생성."""
-    from gtts import gTTS
-    cfg = config.tts_cfg()
+def _generate_google_cloud(sentences: list[dict], audio_dir: str,
+                           voice: str,
+                           rate: str = "+0%") -> list[str]:
+    """Google Cloud TTS REST API로 음성 생성 (서비스 계정 인증)."""
+    token = _get_google_tts_token()
+
+    # rate 변환: "+10%" → 1.1, "-20%" → 0.8
+    speaking_rate = 1.0
+    try:
+        rate_val = int(rate.replace("%", "").replace("+", ""))
+        speaking_rate = 1.0 + rate_val / 100.0
+    except (ValueError, AttributeError):
+        pass
+    speaking_rate = max(0.25, min(4.0, speaking_rate))
+
+    url = "https://texttospeech.googleapis.com/v1/text:synthesize"
+    headers = {"Authorization": f"Bearer {token}"}
     paths = []
     for i, item in enumerate(sentences):
         out_path = os.path.join(audio_dir, f"audio_{i + 1}.mp3")
-        tts = gTTS(text=item["text"], lang=cfg["lang"], slow=cfg["slow"])
-        tts.save(out_path)
+        resp = requests.post(url, headers=headers, json={
+            "input": {"text": item["text"]},
+            "voice": {"languageCode": "ko-KR", "name": voice},
+            "audioConfig": {
+                "audioEncoding": "MP3",
+                "speakingRate": speaking_rate,
+            },
+        }, timeout=30)
+        if resp.status_code != 200:
+            err = resp.text[:300] if resp.text else f"HTTP {resp.status_code}"
+            raise RuntimeError(f"Google Cloud TTS 실패 (문장 {i+1}): {err}")
+        audio_bytes = base64.b64decode(resp.json()["audioContent"])
+        with open(out_path, "wb") as f:
+            f.write(audio_bytes)
         paths.append(out_path)
     return paths
 
@@ -175,7 +238,7 @@ def generate_audio(sentences: list[dict], audio_dir: str,
     Args:
         sentences: [{"text": "...", "slide": 1}, ...]
         audio_dir: 오디오 저장 디렉토리
-        voice: Edge TTS 음성 이름 (빈 문자열이면 기본 Edge TTS)
+        voice: TTS 음성 이름 (Edge TTS / Google Cloud TTS voice name)
         rate: 속도 조절 (-50 ~ 200, 정수). None이면 기본 속도.
         sovits_cfg: GPT-SoVITS 설정 dict (있으면 GPT-SoVITS 사용)
 
@@ -190,10 +253,10 @@ def generate_audio(sentences: list[dict], audio_dir: str,
 
     rate_str = _format_rate(rate) if rate is not None else "+0%"
 
-    if voice and voice in EDGE_VOICES:
+    if voice and voice in GOOGLE_CLOUD_VOICES:
+        return _generate_google_cloud(sentences, audio_dir, voice, rate=rate_str)
+    elif voice and voice in EDGE_VOICES:
         return _generate_edge(sentences, audio_dir, voice, rate=rate_str)
-    elif voice == "gtts":
-        return _generate_gtts(sentences, audio_dir)
     else:
         # 기본값: Edge TTS
         return _generate_edge(sentences, audio_dir, DEFAULT_VOICE, rate=rate_str)

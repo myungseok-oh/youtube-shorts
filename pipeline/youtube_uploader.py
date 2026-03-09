@@ -1,4 +1,5 @@
 """YouTube Data API v3 업로더 — Resumable upload"""
+from __future__ import annotations
 import os
 import httplib2
 from googleapiclient.discovery import build

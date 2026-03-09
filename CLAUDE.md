@@ -1,7 +1,7 @@
 # 이슈60초 YouTube Shorts 자동 제작 시스템
 
 ## 프로젝트 구조
-- `app.py` — FastAPI 백엔드 (포트 9000)
+- `app.py` — FastAPI 백엔드 (포트 9999)
 - `config.json` — ffmpeg 경로, DB 경로, 서버 설정
 - `db/database.py` — SQLite WAL 래퍼
 - `db/models.py` — Channel, Job, JobStep 모델

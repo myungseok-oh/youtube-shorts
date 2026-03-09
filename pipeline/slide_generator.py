@@ -1,4 +1,5 @@
 """Node.js Puppeteer 슬라이드 생성기 래퍼"""
+from __future__ import annotations
 import json
 import os
 import re

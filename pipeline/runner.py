@@ -3,6 +3,7 @@
 Phase A: news_search + script → waiting_slides (병렬, CPU)
 Phase B: slides + tts + render + upload (큐 순차, GPU)
 """
+from __future__ import annotations
 import json
 import os
 import subprocess
@@ -14,7 +15,7 @@ from datetime import datetime
 
 from pipeline import config
 from pipeline.agent import generate_script, generate_image_prompts
-from pipeline.tts_generator import generate_audio
+from pipeline.tts_generator import generate_audio, GOOGLE_CLOUD_VOICES
 from pipeline.slide_generator import generate_slides, generate_chart, generate_infographic, generate_thumbnail
 from pipeline.sync_engine import build_timeline, merge_slide_audio
 from pipeline.video_renderer import render_segments, concat_segments
@@ -23,7 +24,11 @@ from pipeline.youtube_uploader import upload_video
 from pipeline.image_generator import generate_backgrounds
 from pipeline.sd_generator import agent_generate_image, generate_video as sd_generate_video, check_available as sd_check_available
 from pipeline.gemini_generator import generate_image as gemini_generate_image
-from pipeline.qa_agent import run_qa
+# from pipeline.qa_agent import run_qa  # QA 비활성화
+
+
+def _gc_voices():
+    return GOOGLE_CLOUD_VOICES
 
 
 def _prompt_en(p) -> str:
@@ -172,7 +177,17 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
                     slides = script_json.get("slides", [])
                     slide_layout_a = ch_config.get("slide_layout", "full")
                     image_style_a = ch_config.get("image_style", "mixed")
-                    image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a)
+
+                    # script_json 슬라이드에 image_prompt_en이 있으면 그대로 사용
+                    _existing_a = [
+                        {"ko": s.get("image_prompt_ko", ""), "en": s.get("image_prompt_en", "")}
+                        for s in slides if s.get("bg_type") != "closing"
+                    ]
+                    if all(p.get("en") for p in _existing_a):
+                        image_prompts = _existing_a
+                        print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing_a)}개)")
+                    else:
+                        image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a)
                     if image_prompts:
                         meta = {}
                         existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
@@ -317,7 +332,17 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
 
                 slide_layout_b = ch_config_b.get("slide_layout", "full")
                 image_style_b = ch_config_b.get("image_style", "mixed")
-                image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_b, layout=slide_layout_b, image_style=image_style_b)
+
+                # script_json 슬라이드에 image_prompt_en이 있으면 그대로 사용
+                _existing = [
+                    {"ko": s.get("image_prompt_ko", ""), "en": s.get("image_prompt_en", "")}
+                    for s in slides_data if s.get("bg_type") != "closing"
+                ]
+                if all(p.get("en") for p in _existing):
+                    image_prompts = _existing
+                    print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing)}개)")
+                else:
+                    image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_b, layout=slide_layout_b, image_style=image_style_b)
                 if image_prompts:
                     # meta_json에 프롬프트 저장
                     meta = {}
@@ -457,6 +482,9 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                                  "duration": round(total_dur, 1),
                                  "size_mb": round(file_size, 1),
                              })
+                # render 완료 즉시 output_path 기록 (영상 미리보기용)
+                db.execute("UPDATE jobs SET output_path = ?, updated_at = ? WHERE id = ?",
+                           [final_path, _now(), job_id])
                 generate_metadata(topic, sentences, dirs["job"],
                                   youtube_title=script_json.get("youtube_title", ""),
                                   brand=brand)
@@ -486,12 +514,16 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                     else:
                         sovits_cfg = None
 
-                    tts_voice = tts_voice_override or ch_config.get("tts_voice", "")
-                    tts_rate = tts_rate_override or ch_config.get("tts_rate", None)
+                    if tts_engine == "google-cloud":
+                        tts_voice = tts_voice_override or ch_config.get("google_voice", "ko-KR-Wavenet-A")
+                        tts_rate = tts_rate_override if tts_rate_override is not None else ch_config.get("google_rate", None)
+                    else:
+                        tts_voice = tts_voice_override or ch_config.get("tts_voice", "")
+                        tts_rate = tts_rate_override if tts_rate_override is not None else ch_config.get("tts_rate", None)
                     audio_paths = generate_audio(sentences, dirs["audio"],
                                                  voice=tts_voice, rate=tts_rate,
                                                  sovits_cfg=sovits_cfg)
-                    engine_label = "GPT-SoVITS" if sovits_cfg else "Edge TTS"
+                    engine_label = "GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS")
                     _update_step(db, job_id, "tts", "completed",
                                  output_data={"files": audio_paths,
                                               "count": len(audio_paths),
@@ -520,6 +552,9 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                                  "duration": round(timeline["total_duration"], 1),
                                  "size_mb": round(file_size, 1),
                              })
+                # render 완료 즉시 output_path 기록 (영상 미리보기용)
+                db.execute("UPDATE jobs SET output_path = ?, updated_at = ? WHERE id = ?",
+                           [final_path, _now(), job_id])
                 generate_metadata(topic, sentences, dirs["job"],
                                   youtube_title=script_json.get("youtube_title", ""),
                                   brand=brand)
@@ -527,42 +562,9 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                 _update_step(db, job_id, "render", "failed", error_msg=str(e))
                 raise
 
-        # --- Step 6: QA 검토 ---
-        instructions = channel.get("instructions", "") if channel else ""
-        qa_retry_count = _get_qa_retry_count(db, job_id)
-        _update_step(db, job_id, "qa", "running")
-        try:
-            qa_result = run_qa(topic, script_json, instructions, brand,
-                               retry_count=qa_retry_count,
-                               job_dir=dirs["job"])
-            if qa_result["passed"]:
-                _update_step(db, job_id, "qa", "completed",
-                             output_data=qa_result)
-            else:
-                _update_step(db, job_id, "qa", "completed",
-                             output_data=qa_result)
-                # 재시도 가능하면 해당 단계부터 재작업
-                if qa_retry_count < MAX_QA_RETRIES and qa_result.get("restart_from"):
-                    print(f"[runner] QA FAIL ({qa_retry_count+1}/{MAX_QA_RETRIES}): "
-                          f"restart_from={qa_result['restart_from']}, "
-                          f"issues={qa_result.get('issues', [])}")
-                    qa_feedback = "\n".join(f"- {issue}" for issue in qa_result.get("issues", []))
-                    if qa_result.get("details"):
-                        qa_feedback += f"\n종합: {qa_result['details']}"
-                    _qa_restart(db, job_id, qa_result["restart_from"],
-                                qa_retry_count + 1, channel, topic, brand, dirs,
-                                tts_voice_override, tts_rate_override,
-                                sovits_cfg_override, qa_feedback=qa_feedback,
-                                target_duration=target_duration)
-                    return  # 재작업 함수에서 완료 처리
-                else:
-                    print(f"[runner] QA FAIL but max retries reached — completing anyway")
-        except Exception as e:
-            # QA 실패 시 블로킹하지 않고 경고만
-            _update_step(db, job_id, "qa", "completed",
-                         output_data={"passed": True, "score": 0,
-                                      "issues": [f"QA 실행 오류: {str(e)[:100]}"],
-                                      "details": "QA 오류 — 기본 PASS"})
+        # --- QA 스킵 ---
+        _update_step(db, job_id, "qa", "skipped",
+                     output_data={"message": "QA 비활성화"})
 
         # --- Step 7: upload ---
         ch_config = json.loads(channel.get("config", "{}")) if channel else {}
@@ -870,7 +872,17 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             # 이미지 프롬프트 생성
             slide_layout_s3 = ch_config_s3.get("slide_layout", "full")
             image_style_s3 = ch_config_s3.get("image_style", "mixed")
-            image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_s3, layout=slide_layout_s3, image_style=image_style_s3)
+
+            # script_json 슬라이드에 image_prompt_en이 있으면 그대로 사용
+            _existing_s3 = [
+                {"ko": s.get("image_prompt_ko", ""), "en": s.get("image_prompt_en", "")}
+                for s in slides_data if s.get("bg_type") != "closing"
+            ]
+            if all(p.get("en") for p in _existing_s3):
+                image_prompts = _existing_s3
+                print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing_s3)}개)")
+            else:
+                image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_s3, layout=slide_layout_s3, image_style=image_style_s3)
             if image_prompts:
                 meta = {}
                 existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
@@ -1004,12 +1016,16 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             if tts_engine == "gpt-sovits":
                 sovits_cfg = _build_sovits_cfg(ch_config, channel_id)
 
-            tts_voice = ch_config.get("tts_voice", "")
-            tts_rate = ch_config.get("tts_rate", None)
+            if tts_engine == "google-cloud":
+                tts_voice = ch_config.get("google_voice", "ko-KR-Wavenet-A")
+                tts_rate = ch_config.get("google_rate", None)
+            else:
+                tts_voice = ch_config.get("tts_voice", "")
+                tts_rate = ch_config.get("tts_rate", None)
             audio_paths = generate_audio(sentences, dirs["audio"],
                                          voice=tts_voice, rate=tts_rate,
                                          sovits_cfg=sovits_cfg)
-            engine_label = "GPT-SoVITS" if sovits_cfg else "Edge TTS"
+            engine_label = "GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS")
             _update_step(db, job_id, "tts", "completed",
                          output_data={"files": audio_paths,
                                       "count": len(audio_paths),
@@ -1036,53 +1052,18 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
                              "duration": round(timeline["total_duration"], 1),
                              "size_mb": round(file_size, 1),
                          })
+            # render 완료 즉시 output_path 기록 (영상 미리보기용)
+            db.execute("UPDATE jobs SET output_path = ?, updated_at = ? WHERE id = ?",
+                       [final_path, _now(), job_id])
             generate_metadata(topic, sentences, dirs["job"],
                               youtube_title=script_json.get("youtube_title", ""))
         except Exception as e:
             _update_step(db, job_id, "render", "failed", error_msg=str(e))
             raise
 
-        # --- Step 6: QA 검토 ---
-        qa_retry_count = _get_qa_retry_count(db, job_id)
-        _update_step(db, job_id, "qa", "running")
-        try:
-            qa_result = run_qa(topic, script_json, instructions, brand,
-                               retry_count=qa_retry_count,
-                               job_dir=dirs["job"])
-            _update_step(db, job_id, "qa", "completed", output_data=qa_result)
-            if not qa_result["passed"] and qa_retry_count < MAX_QA_RETRIES and qa_result.get("restart_from"):
-                print(f"[runner/full] QA FAIL ({qa_retry_count+1}/{MAX_QA_RETRIES}): "
-                      f"restart_from={qa_result['restart_from']}")
-                # 원스탑에서 QA 재작업: 해당 단계 리셋 후 재귀 호출
-                restart_from = qa_result["restart_from"]
-                if restart_from == "script":
-                    _update_step(db, job_id, "script", "running")
-                    qa_fb = "\n".join(f"- {i}" for i in qa_result.get("issues", []))
-                    if qa_result.get("details"):
-                        qa_fb += f"\n종합: {qa_result['details']}"
-                    fb_section = f"\n\n⚠️ 이전 대본이 QA 검토에서 탈락했습니다. 아래 문제점을 반드시 수정해주세요:\n{qa_fb}\n" if qa_fb else ""
-                    script_json = generate_script(topic, instructions + fb_section, brand,
-                                                   target_duration=target_duration)
-                    db.execute("UPDATE jobs SET script_json = ?, updated_at = ? WHERE id = ?",
-                               [json.dumps(script_json, ensure_ascii=False), _now(), job_id])
-                    _update_step(db, job_id, "script", "completed",
-                                 output_data={"sentences": len(script_json.get("sentences", [])),
-                                              "slides": len(script_json.get("slides", [])),
-                                              "qa_retry": qa_retry_count + 1})
-                _reset_steps_from(db, job_id, ["slides", "tts", "render", "qa", "upload"])
-                # 나머지 단계를 _run_pipeline에서 이어서 처리하기 위해
-                # script_json 갱신 후 Phase B 부분만 재실행
-                sentences = script_json.get("sentences", [])
-                slides_data = script_json.get("slides", [])
-                # slides, tts, render, qa, upload 재실행은 복잡하므로
-                # Phase B 큐에 넣어서 처리
-                _run_phase_b(db, job_id)
-                return
-        except Exception as e:
-            _update_step(db, job_id, "qa", "completed",
-                         output_data={"passed": True, "score": 0,
-                                      "issues": [f"QA 실행 오류: {str(e)[:100]}"],
-                                      "details": "QA 오류 — 기본 PASS"})
+        # --- QA 스킵 ---
+        _update_step(db, job_id, "qa", "skipped",
+                     output_data={"message": "QA 비활성화"})
 
         # --- Step 7: upload ---
         ch_config = json.loads(channel.get("config", "{}")) if channel else {}

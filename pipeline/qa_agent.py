@@ -1,4 +1,5 @@
 """QA 에이전트 — 뉴스 영상 콘텐츠 전문가가 완성된 영상을 검토"""
+from __future__ import annotations
 import json
 import os
 import re
@@ -7,7 +8,8 @@ from pipeline.agent import _run_claude
 
 def run_qa(topic: str, script_json: dict, instructions: str,
            brand: str = "이슈60초", max_retries: int = 2,
-           retry_count: int = 0, job_dir: str = "") -> dict:
+           retry_count: int = 0, job_dir: str = "",
+           has_custom_narration: bool = False) -> dict:
     """완성된 영상(대본+슬라이드)을 뉴스 콘텐츠 전문가 관점에서 검토.
 
     Returns:
@@ -53,8 +55,18 @@ def run_qa(topic: str, script_json: dict, instructions: str,
             f"슬라이드{i+1}: [{s.get('category','')}] {clean_main} / {s.get('sub','')} (배경: {bg_type})"
         )
 
+    narration_notice = ""
+    if has_custom_narration:
+        narration_notice = """
+## ⚠️ 커스텀 나래이션 사용 중
+사용자가 직접 녹음한 나래이션이 사용됨.
+아래 '대본 전문'은 원래 자동생성된 텍스트이므로 실제 영상 음성과 다를 수 있음.
+**대본 문구/표현/어미/톤 관련 검사를 건너뛰고**, 슬라이드 구조/배경 이미지/전체 흐름만 검사할 것.
+"""
+
     prompt = f"""너는 10년 경력의 YouTube Shorts 뉴스 PD이자 콘텐츠 전문가야.
 유튜브 숏폼 뉴스 영상의 최종 검수를 담당한다.
+{narration_notice}
 
 ## 너의 전문성
 - 숏폼 뉴스 영상 기획/제작 10년 경력

@@ -4,9 +4,13 @@ const POLL_INTERVAL = 4000;
 let pollTimer = null;
 let channelsCache = [];
 let currentDetailJobId = null;
+let selectedChannelId = null;
 let _completedCollapsed = true;
 let _selectMode = false;
 let _selectedJobs = new Set();
+let _wizardStep = 1;
+let _lastScriptData = null;
+let _lastStepsData = null;
 
 const STEP_ICONS = {
   news_search: "\uD83D\uDD0D",
@@ -14,7 +18,6 @@ const STEP_ICONS = {
   slides:      "\uD83D\uDDBC\uFE0F",
   tts:         "\uD83D\uDD0A",
   render:      "\uD83C\uDFAC",
-  qa:          "\u2705",
   upload:      "\uD83D\uDCE4",
 };
 
@@ -24,11 +27,10 @@ const STEP_LABELS = {
   slides:      "슬라이드",
   tts:         "TTS",
   render:      "영상합성",
-  qa:          "QA",
   upload:      "업로드",
 };
 
-const STEP_ORDER = ["news_search", "script", "slides", "tts", "render", "qa", "upload"];
+const STEP_ORDER = ["news_search", "script", "slides", "tts", "render", "upload"];
 
 const _CHANNEL_COLORS = [
   "rgba(234,88,12,0.25)",   // orange
@@ -47,6 +49,16 @@ function _channelColor(name) {
     _channelColorIdx++;
   }
   return _channelColorCache[name];
+}
+
+function _channelIcon(name) {
+  if (!name) return "\uD83D\uDD25"; // 🔥
+  const n = name.toLowerCase();
+  if (n.includes("top5") || n.includes("top 5") || n.includes("순위")) return "\uD83D\uDCCA"; // 📊
+  if (n.includes("코인") || n.includes("coin") || n.includes("crypto")) return "\u20BF"; // ₿
+  if (n.includes("뉴스") || n.includes("news") || n.includes("30초")) return "\uD83D\uDCF0"; // 📰
+  if (n.includes("이슈") || n.includes("issue")) return "\uD83D\uDD25"; // 🔥
+  return "\uD83D\uDD25"; // 🔥
 }
 
 const STATUS_TEXT = {
@@ -68,13 +80,36 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("job-detail-modal").addEventListener("click", (e) => {
     if (e.target === e.currentTarget) closeModal("job-detail-modal");
   });
+  document.getElementById("manual-modal").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeModal("manual-modal");
+  });
+  document.getElementById("news-browser-modal").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeModal("news-browser-modal");
+  });
 });
+
+let _prevDashboardHash = "";
 
 async function loadAll() {
   const res = await fetch("/api/dashboard");
-  channelsCache = await res.json();
-  renderChannels(channelsCache);
-  renderMain(channelsCache);
+  const data = await res.json();
+
+  // 변경 감지: 해시 비교로 불필요한 리렌더링 방지
+  const hash = JSON.stringify(data.map(ch => ({
+    id: ch.id, name: ch.name, jobs: (ch.jobs || []).map(j => ({ id: j.id, status: j.status, steps: j.steps }))
+  })));
+  const changed = hash !== _prevDashboardHash;
+  _prevDashboardHash = hash;
+
+  channelsCache = data;
+
+  if (changed) {
+    // 채널 사이드바: 입력 필드에 포커스 없을 때만 리렌더링
+    const reqFocused = document.activeElement?.id?.startsWith("req-");
+    if (!reqFocused) renderChannels(channelsCache);
+    renderMain(channelsCache);
+  }
+  updateHeaderStatus();
 
   // 상세 팝업이 열려있으면 자동 갱신 (스킵 조건: waiting_slides, 영상 재생 중)
   if (currentDetailJobId && !document.getElementById("job-detail-modal").classList.contains("hidden")) {
@@ -91,8 +126,26 @@ async function loadAll() {
 
 // ─── Sidebar ───
 
+function selectChannel(channelId) {
+  selectedChannelId = channelId;
+  renderChannels(channelsCache);
+  renderMain(channelsCache);
+}
+
 function renderChannels(channels) {
   const list = document.getElementById("channel-list");
+
+  // 입력 필드 값 & 포커스 보존
+  const savedInputs = {};
+  let focusedId = null;
+  channels.forEach(ch => {
+    const el = document.getElementById(`req-${ch.id}`);
+    if (el) {
+      if (el.value) savedInputs[ch.id] = el.value;
+      if (document.activeElement === el) focusedId = ch.id;
+    }
+  });
+
   list.innerHTML = channels.map(ch => {
     const hasRequest = (ch.default_topics || "").trim().length > 0;
     let statusText = "";
@@ -103,24 +156,45 @@ function renderChannels(channels) {
     else if (ch.total_jobs > 0) statusText = `${ch.total_jobs}개 작업`;
     else if (!hasRequest) statusText = "요청 미설정";
 
+    const isSelected = selectedChannelId === ch.id;
+    const icon = _channelIcon(ch.name);
+
     return `
-      <div class="channel-item" draggable="true" data-channel-id="${ch.id}" onclick="openChannelSettings('${ch.id}')">
+      <div class="channel-item ${isSelected ? 'selected' : ''}" draggable="true" data-channel-id="${ch.id}" onclick="selectChannel('${ch.id}')">
         <div class="flex items-center gap-2">
           <span class="drag-handle text-gray-600 cursor-grab text-xs select-none" title="드래그하여 순서 변경">⠿</span>
+          <span class="channel-icon">${icon}</span>
           <div class="flex-1 min-w-0">
             <div class="font-medium text-sm">${esc(ch.name)}</div>
-            <div class="text-xs text-gray-500 mt-1">${statusText}</div>
+            <div class="text-xs text-gray-500 mt-0.5">${statusText}</div>
           </div>
+          <button class="ch-settings-btn" onclick="event.stopPropagation(); openChannelSettings('${ch.id}')" title="채널 설정">⚙</button>
         </div>
-        <div class="flex justify-end mt-2 gap-2">
-          <button onclick="event.stopPropagation(); deleteChannelJobs('${ch.id}')"
-                  class="px-2 py-1 text-gray-600 hover:text-red-400 rounded text-xs transition" title="작업 삭제">초기화</button>
-          <button id="run-btn-${ch.id}" onclick="event.stopPropagation(); runChannel('${ch.id}', this)"
-                  class="px-3 py-1 bg-orange-600 hover:bg-orange-500 rounded text-xs font-medium transition">실행</button>
+        <div class="mt-2">
+          <textarea id="req-${ch.id}" rows="2" placeholder="${esc(ch.default_topics || '요청 입력...')}"
+                 onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();event.stopPropagation();runChannel('${ch.id}',document.getElementById('run-btn-${ch.id}'))}"
+                 class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-xs text-gray-300 placeholder-gray-600 mb-2 focus:border-orange-500 focus:outline-none resize-none leading-relaxed"></textarea>
+          <div class="flex justify-end gap-2">
+            <button onclick="event.stopPropagation(); deleteChannelJobs('${ch.id}')"
+                    class="px-2 py-1 text-gray-600 hover:text-red-400 rounded text-xs transition" title="작업 삭제">초기화</button>
+            <button onclick="event.stopPropagation(); openManualModal('${ch.id}')"
+                    class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">수동</button>
+            <button id="run-btn-${ch.id}" onclick="event.stopPropagation(); runChannel('${ch.id}', this)"
+                    class="px-3 py-1 bg-orange-600 hover:bg-orange-500 rounded text-xs font-medium transition">자동</button>
+          </div>
         </div>
       </div>
     `;
   }).join("");
+  // 입력 필드 값 & 포커스 복원
+  for (const [cid, val] of Object.entries(savedInputs)) {
+    const el = document.getElementById(`req-${cid}`);
+    if (el) el.value = val;
+  }
+  if (focusedId) {
+    const el = document.getElementById(`req-${focusedId}`);
+    if (el) el.focus();
+  }
   // 실행 중인 채널 버튼 로딩 상태 복원
   for (const cid of _runningChannels) {
     _setRunBtnLoading(cid, true);
@@ -134,9 +208,13 @@ function renderChannels(channels) {
 function renderMain(channels) {
   const container = document.getElementById("job-cards");
 
-  // 모든 채널의 job을 모아서 표시
+  // 선택된 채널이 있으면 해당 채널만, 없으면 전체 표시
+  const filteredChannels = selectedChannelId
+    ? channels.filter(ch => ch.id === selectedChannelId)
+    : channels;
+
   const allJobs = [];
-  for (const ch of channels) {
+  for (const ch of filteredChannels) {
     for (const job of (ch.jobs || [])) {
       allJobs.push({ ...job, channelName: ch.name });
     }
@@ -270,8 +348,29 @@ function renderJobCard(job, isCompleted = false) {
   const showCheck = isCompleted && _selectMode;
   const isChecked = _selectedJobs.has(job.id);
 
+  // 좌측 보더 색상 클래스
+  const borderClass = displayStatus === "rendered" ? "border-l-rendered"
+    : job.status === "running" ? "border-l-running"
+    : job.status === "completed" ? "border-l-completed"
+    : job.status === "failed" ? "border-l-failed"
+    : (job.status === "waiting_slides") ? "border-l-waiting"
+    : job.status === "queued" ? "border-l-queued" : "";
+
+  // 단계 아이콘 시퀀스
+  const CARD_STEPS = ["news_search", "script", "slides", "tts", "render", "upload"];
+  const CARD_ICONS = { news_search: "\uD83D\uDD0D", script: "\uD83D\uDCDD", slides: "\uD83D\uDDBC\uFE0F", tts: "\uD83D\uDD0A", render: "\uD83C\uDFAC", upload: "\uD83D\uDCE4" };
+  let stepSeqHtml = CARD_STEPS.map((s, i) => {
+    const st = job.steps[s];
+    let cls = "seq-pending";
+    if (st === "completed" || st === "skipped") cls = st === "skipped" ? "seq-skipped" : "seq-done";
+    else if (st === "running") cls = "seq-active";
+    else if (st === "failed") cls = "seq-failed";
+    const arrow = i < CARD_STEPS.length - 1 ? `<span class="step-seq-arrow">›</span>` : "";
+    return `<span class="step-seq-item ${cls}" title="${STEP_LABELS[s] || s}">${CARD_ICONS[s]}</span>${arrow}`;
+  }).join("");
+
   return `
-    <div class="job-card ${isChecked ? 'ring-1 ring-orange-500' : ''}" onclick="${showCheck ? `toggleJobSelect('${job.id}')` : `openJobDetail('${job.id}')`}">
+    <div class="job-card ${borderClass} ${isChecked ? 'ring-1 ring-orange-500' : ''}" onclick="${showCheck ? `toggleJobSelect('${job.id}')` : `openJobDetail('${job.id}')`}">
       <div class="flex items-start justify-between mb-2">
         ${showCheck ? `<input type="checkbox" ${isChecked ? 'checked' : ''} onclick="event.stopPropagation(); toggleJobSelect('${job.id}')" class="mt-1 mr-2 accent-orange-500 flex-shrink-0">` : ''}
         <div class="font-medium text-sm leading-tight flex-1 mr-2"><span class="text-gray-500 text-xs mr-1">${jobNum}</span>${esc(job.topic)}</div>
@@ -279,15 +378,17 @@ function renderJobCard(job, isCompleted = false) {
       </div>
       <div class="mb-1"><span class="channel-tag" style="background:${_channelColor(job.channelName)}">${esc(job.channelName || '')}</span></div>
       ${activeStep ? `<div class="text-xs text-gray-500 mb-2">${activeStep}</div>` : ""}
-      <div class="w-full bg-gray-800 rounded-full h-1.5">
-        <div class="h-1.5 rounded-full transition-all duration-500 ${job.status === 'failed' ? 'bg-red-500' : job.status === 'completed' ? 'bg-green-500' : job.status === 'waiting_slides' ? 'bg-yellow-500' : job.status === 'queued' ? 'bg-blue-500' : 'bg-orange-500'}"
-             style="width: ${pct}%"></div>
+      <div class="step-seq">${stepSeqHtml}</div>
+      <div class="flex items-center gap-2">
+        <div class="flex-1 bg-gray-800 rounded-full h-2">
+          <div class="h-2 rounded-full transition-all duration-500 ${job.status === 'failed' ? 'bg-red-500' : job.status === 'completed' ? 'bg-green-500' : job.status === 'waiting_slides' ? 'bg-yellow-500' : job.status === 'queued' ? 'bg-blue-500' : 'bg-orange-500'}"
+               style="width: ${pct}%"></div>
+        </div>
+        <span class="text-xs text-gray-500 w-8 text-right">${pct}%</span>
       </div>
       <div class="flex items-center justify-between mt-2">
         <div class="text-xs text-gray-600">${formatTime(job.created_at)}</div>
-        ${job.status !== "running"
-          ? `<button onclick="event.stopPropagation(); deleteJob('${job.id}')" class="text-xs text-gray-600 hover:text-red-400 transition">삭제</button>`
-          : ""}
+        <button onclick="event.stopPropagation(); deleteJob('${job.id}', '${job.status}')" class="text-xs text-gray-600 hover:text-red-400 transition">삭제</button>
       </div>
     </div>
   `;
@@ -299,20 +400,17 @@ async function openJobDetail(jobId) {
   currentDetailJobId = jobId;
   _lastDetailStatus = null;
   _lastDetailHadScript = false;
+  _wizardStep = 1; // will be auto-determined after data load
   document.getElementById("job-detail-modal").classList.remove("hidden");
   document.getElementById("job-detail-content").innerHTML = `
     <div class="text-center py-8 text-gray-500">로딩중...</div>`;
-  await refreshJobDetail(jobId);
+  await refreshJobDetail(jobId, true);
 }
 
 let _lastDetailStatus = null;
 let _lastDetailHadScript = false;
 
-async function refreshJobDetail(jobId) {
-  // 현재 활성 탭 기억
-  const activePanel = document.querySelector('.tab-panel:not(.hidden)');
-  const activePanelId = activePanel ? activePanel.id : null;
-
+async function refreshJobDetail(jobId, autoStep = false) {
   try {
     const [scriptRes, stepsRes] = await Promise.all([
       fetch(`/api/jobs/${jobId}/script`),
@@ -321,6 +419,10 @@ async function refreshJobDetail(jobId) {
     const scriptData = await scriptRes.json();
     const stepsData = await stepsRes.json();
 
+    // 캐시 저장
+    _lastScriptData = scriptData;
+    _lastStepsData = stepsData;
+
     const status = scriptData.status;
     const hasScript = !!scriptData.script;
     const isRunning = status === "running";
@@ -328,7 +430,6 @@ async function refreshJobDetail(jobId) {
     const scriptChanged = hasScript !== _lastDetailHadScript;
 
     // running → running 동일 상태: 부분 갱신 (깜박임 방지)
-    // 단, script 유무가 바뀌면 전체 리렌더
     if (isRunning && wasRunning && !scriptChanged && document.getElementById("pipeline-steps-live")) {
       _patchRunningDetail(scriptData, stepsData);
       _lastDetailStatus = status;
@@ -337,21 +438,13 @@ async function refreshJobDetail(jobId) {
 
     _lastDetailStatus = status;
     _lastDetailHadScript = hasScript;
-    renderJobDetail(scriptData, stepsData);
 
-    // 탭 복원
-    if (activePanelId) {
-      const panel = document.getElementById(activePanelId);
-      if (panel) {
-        document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        panel.classList.remove('hidden');
-        const tabs = document.querySelectorAll('.tab-btn');
-        const tabMap = {'tab-script': 0, 'tab-images': 1, 'tab-narration': 2};
-        const idx = tabMap[activePanelId];
-        if (idx !== undefined && tabs[idx]) tabs[idx].classList.add('active');
-      }
+    // 자동 스텝 결정 (최초 오픈 시)
+    if (autoStep) {
+      _wizardStep = determineWizardStep(scriptData, stepsData);
     }
+
+    renderJobDetail(scriptData, stepsData);
   } catch (e) {
     console.error("refreshJobDetail error:", e);
     document.getElementById("job-detail-content").innerHTML = `
@@ -403,7 +496,7 @@ function _patchRunningDetail(scriptData, stepsData) {
     const videoArea = document.getElementById("running-video-area");
     if (videoArea) {
       videoArea.innerHTML = `
-        <div class="flex flex-col items-center py-4 gap-3 border-t border-gray-800 mt-3">
+        <div class="flex flex-col items-center py-4 gap-3">
           <div class="text-sm font-semibold text-gray-300 w-full">영상 미리보기</div>
           <video class="video-preview" controls>
             <source src="/api/jobs/${job_id}/video" type="video/mp4">
@@ -413,148 +506,115 @@ function _patchRunningDetail(scriptData, stepsData) {
   }
 }
 
-function renderJobDetail(scriptData, stepsData) {
-  const { job_id, topic, status, script, uploaded_backgrounds, has_narration, has_thumbnail, image_prompts, genspark_prompts, auto_bg_source, slide_layout } = scriptData;
-  const jobId = job_id;
-  window._bgSource = auto_bg_source || "sd_image";
-  window._slideLayout = slide_layout || "full";
-  window._jobStatus = status;
+// ─── Wizard: Step Determination ───
+
+function determineWizardStep(scriptData, stepsData) {
+  const { status, script, uploaded_backgrounds } = scriptData;
   const steps = stepsData.steps || [];
-
-  // 단계별 상태 맵
   const stepStatus = {};
-  for (const s of steps) {
-    stepStatus[s.step_name] = s.status || "pending";
-  }
-  // waiting_slides 상태면 slides를 waiting으로 표시
+  for (const s of steps) stepStatus[s.step_name] = s.status || "pending";
+
+  if (status === "pending" || (status === "running" && !script)) return 1;
   if (status === "waiting_slides") {
-    stepStatus["slides"] = "waiting";
+    const bgCount = (script?.slides?.length || 1) - 1;
+    const uploadedCount = Object.keys(uploaded_backgrounds || {}).length;
+    return uploadedCount > 0 ? 2 : 1;
   }
-  // 누락된 단계 보정: 가장 늦은 완료 단계 이전은 모두 completed
-  {
-    let latestIdx = -1;
-    for (const name of Object.keys(stepStatus)) {
-      const st = stepStatus[name];
-      if (st === "completed" || st === "skipped") {
-        const idx = STEP_ORDER.indexOf(name);
-        if (idx > latestIdx) latestIdx = idx;
-      }
-    }
-    for (let i = 0; i < latestIdx; i++) {
-      if (!stepStatus[STEP_ORDER[i]]) stepStatus[STEP_ORDER[i]] = "completed";
-    }
+  if (status === "queued" || status === "completed") return 3;
+  if (status === "running" && script) {
+    // Phase B — check if slides step is done
+    if (stepStatus["slides"] === "completed" || stepStatus["tts"] === "running" || stepStatus["tts"] === "completed" ||
+        stepStatus["render"] === "running" || stepStatus["render"] === "completed") return 3;
+    return 2;
   }
-
-  const uploadDone = stepStatus["upload"] === "completed";
-  const displayStatus = (status === "completed" && !uploadDone) ? "rendered" : status;
-  const statusText = displayStatus === "rendered" ? "영상 완성" : (STATUS_TEXT[status] || status);
-  const statusClass = `status-${displayStatus}`;
-
-  // 파이프라인 단계 시각화
-  let pipelineHtml = "";
-  STEP_ORDER.forEach((name, idx) => {
-    if (idx > 0) {
-      const prevSt = stepStatus[STEP_ORDER[idx - 1]];
-      let arrowClass = "step-arrow";
-      if (prevSt === "completed" || prevSt === "skipped") arrowClass += " done";
-      if (stepStatus[name] === "running") arrowClass += " active";
-      pipelineHtml += `<div class="${arrowClass}">&#8594;</div>`;
-    }
-    const st = stepStatus[name] || "pending";
-    pipelineHtml += `
-      <div class="step-node step-${st}">
-        <div class="step-dot">${STEP_ICONS[name]}</div>
-        <div class="step-label">${STEP_LABELS[name]}</div>
-      </div>`;
-  });
-
-  // 본문 영역 (상태별)
-  let bodyHtml = "";
-
-  if (status === "running" && !script) {
-    // Phase A 진행중 (대본 작성중)
-    const runningStepA = steps.find(s => s.status === "running");
-    const labelA = runningStepA ? (STEP_LABELS[runningStepA.step_name] || runningStepA.step_name) : "대본";
-    bodyHtml = `<div id="running-status-msg" class="text-center py-8 text-gray-400">
-      <span class="inline-block animate-pulse">⏳</span> ${esc(labelA)} 진행 중...
-    </div>`;
-
-  } else if (status === "waiting_slides" && script) {
-    // 이미지 대기 — 핵심 UI
-    bodyHtml = renderWaitingSlidesBody(job_id, topic, script, uploaded_backgrounds || {}, has_narration, image_prompts, genspark_prompts, steps);
-
-  } else if (status === "running" && script) {
-    // Phase B 진행중 — waiting_slides와 동일한 탭 UI + 진행 상태 배너
-    bodyHtml = renderWaitingSlidesBody(job_id, topic, script, uploaded_backgrounds || {}, has_narration, image_prompts, genspark_prompts, steps);
-    const runningStep = steps.find(s => s.status === "running");
-    const runningLabel = runningStep ? (STEP_LABELS[runningStep.step_name] || runningStep.step_name) : "영상";
-    const renderDone = stepStatus["render"] === "completed";
-    const videoPreview = renderDone ? `
-      <div class="flex flex-col items-center py-4 gap-3 border-t border-gray-800 mt-3">
-        <div class="text-sm font-semibold text-gray-300 w-full">영상 미리보기</div>
-        <video class="video-preview" controls>
-          <source src="/api/jobs/${job_id}/video" type="video/mp4">
-        </video>
-      </div>` : "";
-    bodyHtml = `
-      <div id="running-status-msg" class="text-center py-3 text-gray-400 text-sm mb-3">
-        <span class="inline-block animate-pulse">⏳</span> ${esc(runningLabel)} 진행 중...
-      </div>
-      ${bodyHtml}
-      <div id="running-video-area">${videoPreview}</div>`;
-
-  } else if (status === "completed") {
-    bodyHtml = renderCompletedBody(job_id, topic, script, image_prompts, genspark_prompts, uploaded_backgrounds || {}, has_narration, steps, has_thumbnail);
-
-  } else if (status === "failed") {
+  if (status === "failed") {
     const failedStep = steps.find(s => s.status === "failed");
-    const failedStepName = failedStep ? failedStep.step_name : "";
-    const errMsg = failedStep ? failedStep.error_msg : "알 수 없는 오류";
-    // TTS 이후 단계 실패 → 재시도 가능 (이미지 대기로 되돌림)
-    const canRetry = script && ["tts", "render", "upload"].includes(failedStepName);
-    bodyHtml = `
-      <div class="text-center py-6">
-        <div class="text-red-400 text-lg mb-2">제작 실패</div>
-        <div class="text-sm text-gray-500 mb-4">${esc(errMsg || "")}</div>
-        <div class="flex justify-center gap-3">
-          ${canRetry ? `<button onclick="retryJob('${jobId}')" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">재시도</button>` : ''}
-          <button onclick="resetToWaiting('${jobId}')" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition">이미지 대기로 되돌리기</button>
-          <button onclick="deleteJob('${jobId}')" class="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-400 transition">삭제</button>
-        </div>
-      </div>`;
-
-  } else {
-    bodyHtml = `<div class="text-center py-8 text-gray-500">대기중</div>`;
+    const fn = failedStep ? failedStep.step_name : "";
+    if (["news_search", "script"].includes(fn)) return 1;
+    if (["slides", "tts"].includes(fn)) return 2;
+    return 3;
   }
-
-  document.getElementById("job-detail-content").innerHTML = `
-    <div class="flex items-start justify-between mb-3">
-      <div>
-        <h3 class="text-lg font-bold">${esc(topic)}</h3>
-        <span class="status-badge ${statusClass} mt-1 inline-block">${statusText}</span>
-      </div>
-      <button onclick="closeModal('job-detail-modal')" class="text-gray-500 hover:text-white text-lg transition">&times;</button>
-    </div>
-    <div class="pipeline-steps" id="pipeline-steps-live">${pipelineHtml}</div>
-    ${bodyHtml}
-  `;
+  return 1;
 }
 
-function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration, image_prompts, genspark_prompts, steps) {
+function renderWizardNav(step, scriptData, stepsData) {
+  const { status, script, uploaded_backgrounds } = scriptData;
+  const labels = ["대본 작성", "이미지 + 음성", "영상 제작"];
+  const icons = ["📝", "🖼️", "🎬"];
+
+  // determine "done" state for each step
+  const hasScript = !!script;
+  const slides = script?.slides || [];
+  const bgCount = slides.length > 0 ? slides.length - 1 : 0;
+  const uploadedCount = Object.keys(uploaded_backgrounds || {}).length;
+  const stepStatuses = {};
+  for (const s of (stepsData.steps || [])) stepStatuses[s.step_name] = s.status || "pending";
+  const renderDone = stepStatuses["render"] === "completed";
+
+  const isDone = [
+    hasScript, // step 1 done
+    hasScript && uploadedCount >= bgCount && bgCount > 0, // step 2 done
+    renderDone || status === "completed", // step 3 done
+  ];
+
+  let html = '<div class="wizard-nav">';
+  for (let i = 0; i < 3; i++) {
+    if (i > 0) {
+      html += `<div class="wizard-step-arrow ${isDone[i - 1] ? 'done' : ''}">→</div>`;
+    }
+    const cls = (i + 1 === step) ? "active" : (isDone[i] ? "done" : "");
+    html += `
+      <div class="wizard-step-item ${cls}" onclick="navigateWizard(${i + 1})">
+        <div class="wizard-step-num">${i + 1}</div>
+        <div class="wizard-step-label">${icons[i]} ${labels[i]}</div>
+      </div>`;
+  }
+  html += '</div>';
+  return html;
+}
+
+function navigateWizard(step) {
+  if (step < 1 || step > 3) return;
+  _wizardStep = step;
+  if (_lastScriptData && _lastStepsData) {
+    renderJobDetail(_lastScriptData, _lastStepsData);
+  }
+}
+
+// ─── Wizard: Step Renderers ───
+
+function renderWizardStep1(jobId, scriptData, stepsData) {
+  const { status, script } = scriptData;
+  const steps = stepsData.steps || [];
+
+  if (!script) {
+    // 대본 미생성 — 진행중 또는 대기
+    const runningStep = steps.find(s => s.status === "running");
+    const label = runningStep ? (STEP_LABELS[runningStep.step_name] || runningStep.step_name) : "대본";
+    if (status === "running") {
+      return `<div class="wizard-step-content">
+        <div id="running-status-msg" class="text-center py-12 text-gray-400">
+          <span class="inline-block animate-pulse text-2xl mb-2">⏳</span><br>
+          ${esc(label)} 진행 중...
+        </div>
+      </div>`;
+    }
+    if (status === "failed") {
+      const failedStep = steps.find(s => s.status === "failed");
+      const errMsg = failedStep ? failedStep.error_msg : "알 수 없는 오류";
+      return `<div class="wizard-step-content">
+        <div class="text-center py-6">
+          <div class="text-red-400 text-lg mb-2">제작 실패</div>
+          <div class="text-sm text-gray-500 mb-4">${esc(errMsg || "")}</div>
+        </div>
+      </div>`;
+    }
+    return `<div class="wizard-step-content"><div class="text-center py-8 text-gray-500">대기중</div></div>`;
+  }
+
   const slides = script.slides || [];
-  const slideCount = slides.length;
-  const bgCount = slideCount > 0 ? slideCount - 1 : 0;
-  const uploadedCount = Object.keys(uploadedBgs).length;
+  const sentences = script.sentences || [];
 
-  // ─── 탭 헤더 ───
-  const tabsHtml = `
-    <div class="tab-bar">
-      <button class="tab-btn active" onclick="switchTab('tab-script', this)">대본</button>
-      <button class="tab-btn" onclick="switchTab('tab-images', this)">배경 이미지 <span class="tab-badge">${uploadedCount}/${bgCount}</span></button>
-      <button class="tab-btn" onclick="switchTab('tab-narration', this)">나레이션</button>
-    </div>`;
-
-  // ─── 탭 1: 대본 ───
   // 슬라이드 보기
   let slideView = `<div class="script-panel" id="script-slide-view">`;
   slides.forEach((s, i) => {
@@ -572,8 +632,7 @@ function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration
   });
   slideView += `</div>`;
 
-  // 나레이션(TTS) 대본 보기 (편집 가능)
-  const sentences = script.sentences || [];
+  // 나레이션 대본
   let narrationView = `<div class="script-panel hidden" id="script-narration-view">`;
   let currentSlide = 0;
   sentences.forEach((sen, i) => {
@@ -582,7 +641,7 @@ function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration
       narrationView += `<div class="text-xs text-orange-400 font-bold mt-2 mb-1 ${i > 0 ? 'pt-2 border-t border-gray-800' : ''}">슬라이드 ${currentSlide}</div>`;
     }
     narrationView += `<div class="text-sm text-gray-300 py-0.5">
-      <input type="text" class="narration-edit-input" data-sen-idx="${i}"
+      <input type="text" class="narration-edit-input" data-sen-idx="${i}" data-sen-slide="${sen.slide}"
              value="${esc(sen.text)}" />
     </div>`;
   });
@@ -593,16 +652,31 @@ function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration
   </div>`;
   narrationView += `</div>`;
 
-  const tab1 = `
-    <div id="tab-script" class="tab-panel">
+  return `
+    <div class="wizard-step-content" id="tab-script">
       <div class="flex gap-2 mb-2">
         <button class="script-view-btn active" onclick="switchScriptView('slide', this)">슬라이드</button>
         <button class="script-view-btn" onclick="switchScriptView('narration', this)">나레이션 대본</button>
       </div>
       <div class="mb-3">${slideView}${narrationView}</div>
     </div>`;
+}
 
-  // 이미지 생성 프롬프트 (배경 이미지 탭에 표시)
+function renderWizardStep2(jobId, scriptData, stepsData) {
+  const { script, uploaded_backgrounds, has_narration, image_prompts, status } = scriptData;
+  window._bgSource = scriptData.auto_bg_source || "sd_image";
+  window._slideLayout = scriptData.slide_layout || "full";
+
+  if (!script) return `<div class="wizard-step-content"><div class="text-center py-8 text-gray-500">먼저 대본을 생성하세요</div></div>`;
+
+  const slides = script.slides || [];
+  const slideCount = slides.length;
+  const bgCount = slideCount > 0 ? slideCount - 1 : 0;
+  const uploadedBgs = uploaded_backgrounds || {};
+  const uploadedCount = Object.keys(uploadedBgs).length;
+  const steps = stepsData.steps || [];
+
+  // === Left column: Images ===
   const imgPrompts = image_prompts || [];
   const hasImgPrompts = imgPrompts.length > 0;
   let imgPromptsHtml = "";
@@ -618,21 +692,20 @@ function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration
     }).join("");
     imgPromptsHtml = `<details class="mb-3" open>
       <summary class="flex items-center justify-between text-xs font-semibold text-gray-400 cursor-pointer mb-1">
-        <span>이미지 생성 프롬프트 <span class="text-orange-400 font-normal">${(_slideLayout === "center" || _slideLayout === "top" || _slideLayout === "bottom") ? "📐 1080×960 (1:1)" : "📐 1080×1920 (9:16)"}</span></span>
+        <span>이미지 프롬프트 <span class="text-orange-400 font-normal">${(_slideLayout === "center" || _slideLayout === "top" || _slideLayout === "bottom") ? "📐 1080×960" : "📐 1080×1920"}</span></span>
         <button onclick="event.stopPropagation(); copyImagePrompts(this)" class="copy-icon-btn" title="복사">&#x1F4CB;</button>
       </summary>
       <div class="bg-gray-900 rounded p-2" id="image-prompts-box">${items}</div>
     </details>`;
   } else {
     imgPromptsHtml = `<div class="mb-3 flex items-center gap-2">
-      <span class="text-xs text-gray-500">이미지 프롬프트 미생성</span>
+      <span class="text-xs text-gray-500">프롬프트 미생성</span>
       <button onclick="generateImagePrompts('${jobId}')" id="btn-gen-img-prompts"
               class="px-3 py-1 bg-orange-700 hover:bg-orange-600 rounded text-xs font-medium transition">프롬프트 생성</button>
     </div>`;
   }
 
-  // ─── 탭 2: 배경 이미지 ───
-  const bgTypes = (script.slides || []).map(s => s.bg_type || "photo");
+  const bgTypes = slides.map(s => s.bg_type || "photo");
   let slotsHtml = `<div class="upload-grid">`;
   for (let i = 1; i <= bgCount; i++) {
     const bgUrl = uploadedBgs[i] || null;
@@ -690,8 +763,9 @@ function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration
       </div>
     </div>`;
 
-  const tab2 = `
-    <div id="tab-images" class="tab-panel hidden">
+  const leftCol = `
+    <div class="wizard-col" id="tab-images">
+      <div class="wizard-col-header">배경 이미지</div>
       <div class="btn-group-bar">
         <div class="btn-group">
           <span class="btn-group-label">AI</span>
@@ -714,25 +788,24 @@ function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration
       ${slotsHtml}
     </div>`;
 
-  // ─── 탭 3: 나레이션 ───
-  // 채널 TTS 설정 가져오기
+  // === Right column: TTS / Narration ===
   const jobCh = channelsCache.find(c => c.jobs?.some(j => j.id === jobId));
   let chCfg = {};
   try { chCfg = JSON.parse(jobCh?.config || "{}"); } catch {}
   const chTtsEngine = chCfg.tts_engine || "edge-tts";
   const chTtsVoice = chCfg.tts_voice || "ko-KR-SunHiNeural";
   const chTtsRate = parseInt((chCfg.tts_rate || "+0%").replace("%", "").replace("+", "")) || 0;
-  const chSovitsRef = chCfg.sovits_ref_voice || "";
+  const chGoogleVoice = chCfg.google_voice || "ko-KR-Wavenet-A";
+  const chGoogleRate = parseInt((chCfg.google_rate || "+0%").replace("%", "").replace("+", "")) || 0;
   const chSovitsText = chCfg.sovits_ref_text || "";
+  const narrationMode = has_narration ? "upload" : "tts";
 
-  const narrationMode = hasNarration ? "upload" : "tts";
-
-  // TTS 실패 에러 메시지 확인
-  const ttsStep = (steps || []).find(s => s.step_name === "tts");
+  const ttsStep = steps.find(s => s.step_name === "tts");
   const ttsError = (ttsStep && ttsStep.status === "failed") ? ttsStep.error_msg : "";
 
-  const tab3 = `
-    <div id="tab-narration" class="tab-panel hidden">
+  const rightCol = `
+    <div class="wizard-col" id="tab-narration">
+      <div class="wizard-col-header">음성 / 나레이션</div>
       ${ttsError ? `<div class="text-xs text-red-400 bg-red-900/20 rounded p-2 mb-3">TTS 실패: ${esc(ttsError)}</div>` : ''}
       <div class="flex gap-2 mb-3">
         <button onclick="switchNarrationMode('tts')" id="btn-mode-tts"
@@ -750,17 +823,17 @@ function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration
           <select id="tts-engine-select" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs"
                   onchange="toggleNarrationEngine()">
             <option value="edge-tts" ${chTtsEngine === 'edge-tts' ? 'selected' : ''}>Edge TTS</option>
+            <option value="google-cloud" ${chTtsEngine === 'google-cloud' ? 'selected' : ''}>Google Cloud TTS</option>
             <option value="gpt-sovits" ${chTtsEngine === 'gpt-sovits' ? 'selected' : ''}>GPT-SoVITS</option>
           </select>
         </div>
-        <div id="narration-edge-section" class="${chTtsEngine === 'gpt-sovits' ? 'hidden' : ''}">
+        <div id="narration-edge-section" class="${chTtsEngine === 'edge-tts' ? '' : 'hidden'}">
           <div class="flex gap-2 items-center">
             <select id="tts-voice-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
               <option value="ko-KR-SunHiNeural" ${chTtsVoice === 'ko-KR-SunHiNeural' ? 'selected' : ''}>선히 (여성)</option>
               <option value="ko-KR-InJoonNeural" ${chTtsVoice === 'ko-KR-InJoonNeural' ? 'selected' : ''}>인준 (남성)</option>
               <option value="ko-KR-HyunsuNeural" ${chTtsVoice === 'ko-KR-HyunsuNeural' ? 'selected' : ''}>현수 (남성)</option>
               <option value="ko-KR-HyunsuMultilingualNeural" ${chTtsVoice === 'ko-KR-HyunsuMultilingualNeural' ? 'selected' : ''}>현수 멀티링구얼 (남성)</option>
-              <option value="gtts" ${chTtsVoice === 'gtts' ? 'selected' : ''}>gTTS (구글 기본)</option>
             </select>
             <button onclick="previewVoice()" id="btn-preview-voice"
                     class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
@@ -770,6 +843,27 @@ function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration
             <input type="range" id="tts-rate" min="-30" max="50" value="${chTtsRate}" step="10"
                    class="flex-1 h-1 accent-orange-500" oninput="updateRateLabel()">
             <span id="tts-rate-label" class="text-xs text-gray-400 w-10 text-right">${chTtsRate}%</span>
+          </div>
+        </div>
+        <div id="narration-google-section" class="${chTtsEngine === 'google-cloud' ? '' : 'hidden'}">
+          <div class="flex gap-2 items-center">
+            <select id="google-voice-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+              <option value="ko-KR-Wavenet-A" ${chGoogleVoice === 'ko-KR-Wavenet-A' ? 'selected' : ''}>Wavenet A (여성)</option>
+              <option value="ko-KR-Wavenet-B" ${chGoogleVoice === 'ko-KR-Wavenet-B' ? 'selected' : ''}>Wavenet B (여성)</option>
+              <option value="ko-KR-Wavenet-C" ${chGoogleVoice === 'ko-KR-Wavenet-C' ? 'selected' : ''}>Wavenet C (남성)</option>
+              <option value="ko-KR-Wavenet-D" ${chGoogleVoice === 'ko-KR-Wavenet-D' ? 'selected' : ''}>Wavenet D (남성)</option>
+              <option value="ko-KR-Neural2-A" ${chGoogleVoice === 'ko-KR-Neural2-A' ? 'selected' : ''}>Neural2 A (여성)</option>
+              <option value="ko-KR-Neural2-B" ${chGoogleVoice === 'ko-KR-Neural2-B' ? 'selected' : ''}>Neural2 B (여성)</option>
+              <option value="ko-KR-Neural2-C" ${chGoogleVoice === 'ko-KR-Neural2-C' ? 'selected' : ''}>Neural2 C (남성)</option>
+            </select>
+            <button onclick="previewVoice()" id="btn-preview-google-popup"
+                    class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
+          </div>
+          <div class="flex items-center gap-2 mt-2">
+            <span class="text-xs text-gray-500 w-8">속도</span>
+            <input type="range" id="google-rate" min="-30" max="50" value="${chGoogleRate}" step="10"
+                   class="flex-1 h-1 accent-orange-500" oninput="updateGoogleRateLabel()">
+            <span id="google-rate-label" class="text-xs text-gray-400 w-10 text-right">${chGoogleRate}%</span>
           </div>
         </div>
         <div id="narration-sovits-section" class="${chTtsEngine === 'gpt-sovits' ? '' : 'hidden'}">
@@ -796,493 +890,325 @@ function renderWaitingSlidesBody(jobId, topic, script, uploadedBgs, hasNarration
         <div class="flex gap-2 items-center">
           <button onclick="document.getElementById('narration-file').click()"
                   class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">
-            ${hasNarration ? '다시 업로드' : '파일 선택'}
+            ${has_narration ? '다시 업로드' : '파일 선택'}
           </button>
           <input type="file" accept="audio/*" class="hidden" id="narration-file"
                  onchange="uploadNarration('${jobId}', this)">
-          <span id="narration-status" class="text-xs ${hasNarration ? 'text-green-400' : 'text-gray-500'}">
-            ${hasNarration ? '업로드됨' : '음성 파일을 선택하세요 (mp3, wav 등)'}
+          <span id="narration-status" class="text-xs ${has_narration ? 'text-green-400' : 'text-gray-500'}">
+            ${has_narration ? '업로드됨' : '음성 파일을 선택하세요'}
           </span>
         </div>
-        ${hasNarration ? `
+        ${has_narration ? `
         <div class="flex items-center gap-2 mt-2">
           <audio id="narration-preview" controls src="/api/jobs/${jobId}/narration" class="h-8 flex-1"></audio>
           <button onclick="deleteNarration('${jobId}')" class="text-xs text-gray-500 hover:text-red-400 transition">삭제</button>
         </div>` : ''}
       </div>
-      <div class="flex items-center justify-between pt-4 border-t border-gray-800 mt-4">
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-gray-500">${uploadedCount}/${bgCount}장 준비됨</span>
-          <button onclick="deleteJob('${jobId}')" class="text-xs text-gray-500 hover:text-red-400 transition">삭제</button>
-        </div>
-        <button id="btn-resume-job" onclick="resumeJob('${jobId}')"
-          class="px-6 py-2 ${window._jobStatus === 'running' ? 'bg-gray-600 opacity-50 cursor-not-allowed' : uploadedCount >= bgCount ? 'bg-orange-600 hover:bg-orange-500' : 'bg-gray-700 hover:bg-gray-600'} rounded-lg text-sm font-medium transition"
-          ${window._jobStatus === 'running' ? 'disabled' : ''}>
-          ${window._jobStatus === 'running' ? '영상 제작 중...' : '영상 제작 시작'}
-        </button>
-      </div>
     </div>`;
 
-  return tabsHtml + tab1 + tab2 + tab3;
-}
-
-function switchTab(tabId, btn) {
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById(tabId).classList.remove('hidden');
-  btn.classList.add('active');
-  // 나레이션 탭 열릴 때 GPT-SoVITS 참조 음성 목록 로드
-  if (tabId === 'tab-narration') {
-    const eng = document.getElementById("tts-engine-select");
-    if (eng && eng.value === "gpt-sovits") loadNarrationRefVoices();
-  }
-}
-
-function switchScriptView(mode, btn) {
-  const slideView = document.getElementById('script-slide-view');
-  const narrationView = document.getElementById('script-narration-view');
-  if (!slideView || !narrationView) return;
-  document.querySelectorAll('.script-view-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  if (mode === 'narration') {
-    slideView.classList.add('hidden');
-    narrationView.classList.remove('hidden');
-  } else {
-    narrationView.classList.add('hidden');
-    slideView.classList.remove('hidden');
-  }
-}
-
-async function saveNarrationScript(jobId) {
-  const inputs = document.querySelectorAll('.narration-edit-input');
-  if (!inputs.length) return;
-  const btn = document.getElementById('btn-save-narration');
-  const msg = document.getElementById('narration-save-msg');
-  btn.disabled = true; btn.textContent = '저장 중...';
-  msg.classList.add('hidden');
-
-  // 현재 script의 sentences 구조 유지하면서 text만 업데이트
-  const detail = await fetch(`/api/jobs/${jobId}/script`).then(r => r.json());
-  const sentences = (detail.script && detail.script.sentences) || [];
-  inputs.forEach(inp => {
-    const idx = parseInt(inp.dataset.senIdx);
-    if (idx < sentences.length) sentences[idx].text = inp.value;
-  });
-
-  try {
-    const res = await fetch(`/api/jobs/${jobId}/script`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sentences })
-    });
-    if (!res.ok) throw new Error(await res.text());
-    msg.textContent = '저장 완료';
-    msg.classList.remove('hidden');
-    setTimeout(() => msg.classList.add('hidden'), 3000);
-  } catch (e) {
-    msg.textContent = '저장 실패: ' + e.message;
-    msg.classList.remove('hidden');
-    msg.classList.replace('text-green-400', 'text-red-400');
-  } finally {
-    btn.disabled = false; btn.textContent = '저장';
-  }
-}
-
-async function generateThumbnail(jobId) {
-  const btn = document.getElementById('btn-gen-thumb');
-  const status = document.getElementById(`thumb-status-${jobId}`);
-  btn.disabled = true; btn.textContent = '생성 중...';
-  status.textContent = '';
-  try {
-    const res = await fetch(`/api/jobs/${jobId}/generate-thumbnail`, { method: 'POST' });
-    if (!res.ok) throw new Error(await res.text());
-    _lastDetailStatus = null;
-    refreshJobDetail(jobId);
-  } catch (e) {
-    status.textContent = '썸네일 생성 실패: ' + e.message;
-    status.className = 'text-xs mt-1 text-red-400';
-  } finally {
-    btn.disabled = false; btn.textContent = '재생성';
-  }
-}
-
-async function uploadThumbnail(jobId, file) {
-  if (!file) return;
-  const status = document.getElementById(`thumb-status-${jobId}`);
-  status.textContent = '업로드 중...';
-  try {
-    const fd = new FormData();
-    fd.append('file', file);
-    const res = await fetch(`/api/jobs/${jobId}/thumbnail`, { method: 'POST', body: fd });
-    if (!res.ok) throw new Error(await res.text());
-    _lastDetailStatus = null;
-    refreshJobDetail(jobId);
-  } catch (e) {
-    status.textContent = '업로드 실패: ' + e.message;
-    status.className = 'text-xs mt-1 text-red-400';
-  }
-}
-
-function toggleNarrationEngine() {
-  const engine = document.getElementById("tts-engine-select").value;
-  const edgeSection = document.getElementById("narration-edge-section");
-  const sovitsSection = document.getElementById("narration-sovits-section");
-  if (engine === "gpt-sovits") {
-    edgeSection?.classList.add("hidden");
-    sovitsSection?.classList.remove("hidden");
-    loadNarrationRefVoices();
-  } else {
-    edgeSection?.classList.remove("hidden");
-    sovitsSection?.classList.add("hidden");
-  }
-}
-
-async function loadNarrationRefVoices() {
-  const sel = document.getElementById("sovits-ref-select");
-  if (!sel) return;
-  try {
-    const res = await fetch("/api/ref-voices");
-    const voices = await res.json();
-    // 채널 설정에서 기본 참조 음성 가져오기
-    const jobCh = channelsCache.find(c => c.jobs?.some(j => j.id === currentDetailJobId));
-    let chCfg = {};
-    try { chCfg = JSON.parse(jobCh?.config || "{}"); } catch {}
-    const defaultRef = chCfg.sovits_ref_voice || "";
-
-    sel.innerHTML = voices.map(v =>
-      `<option value="${esc(v.filename)}" ${v.filename === defaultRef ? 'selected' : ''}>${esc(v.name)}</option>`
-    ).join("");
-  } catch {}
-}
-
-async function previewSovitsNarration() {
-  const refSel = document.getElementById("sovits-ref-select");
-  const refText = document.getElementById("sovits-ref-text");
-  const statusEl = document.getElementById("sovits-status-narration");
-  const btn = document.getElementById("btn-preview-sovits");
-  if (!refSel?.value) { statusEl.textContent = "참조 음성을 선택하세요"; return; }
-  btn.disabled = true; btn.textContent = "생성중...";
-  statusEl.textContent = "";
-  try {
-    const res = await fetch("/api/tts/preview-sovits", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref_voice: refSel.value, ref_text: refText?.value || "",
-                             text: "안녕하세요, 오늘의 뉴스 브리핑을 시작하겠습니다." }),
-    });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      statusEl.textContent = errData.detail || "미리듣기 실패 (GPT-SoVITS 서버 확인 필요)";
-      return;
-    }
-    const blob = await res.blob();
-    const audio = document.getElementById("voice-preview-popup");
-    audio.src = URL.createObjectURL(blob);
-    audio.classList.remove("hidden");
-    audio.play();
-  } catch (e) { statusEl.textContent = "미리듣기 오류"; }
-  finally { btn.disabled = false; btn.textContent = "미리듣기"; }
-}
-
-function renderCompletedBody(jobId, topic, script, image_prompts, genspark_prompts, uploadedBgs, hasNarration, steps, hasThumbnail) {
-  const slides = script ? (script.slides || []) : [];
-  const slideCount = slides.length;
-  const bgCount = slideCount > 0 ? slideCount - 1 : 0;
-  const uploadedCount = Object.keys(uploadedBgs || {}).length;
-
-  // ─── 영상 미리보기 (상단 고정) ───
-  const videoHtml = `
-    <div class="flex flex-col items-center py-3 gap-3 border-b border-gray-800 mb-3">
-      <div class="flex items-center justify-between w-full">
-        <div class="text-sm font-semibold text-gray-300">완성 영상</div>
-        <div class="flex gap-2">
-          <a href="/api/jobs/${jobId}/video" download class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition">다운로드</a>
-          <button onclick="manualUpload('${jobId}')" id="btn-manual-upload"
-                  class="px-3 py-1.5 bg-red-700 hover:bg-red-600 rounded text-xs transition">YouTube 업로드</button>
-          <button onclick="resetToWaiting('${jobId}')" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs text-gray-400 transition">재작업</button>
-        </div>
-      </div>
-      <video class="video-preview" controls>
-        <source src="/api/jobs/${jobId}/video" type="video/mp4">
-      </video>
-      <div id="upload-status-${jobId}" class="text-xs"></div>
+  // Running status banner
+  let bannerHtml = "";
+  if (status === "running") {
+    const runningStep = steps.find(s => s.status === "running");
+    const runningLabel = runningStep ? (STEP_LABELS[runningStep.step_name] || runningStep.step_name) : "영상";
+    bannerHtml = `<div id="running-status-msg" class="text-center py-2 text-gray-400 text-sm mb-2">
+      <span class="inline-block animate-pulse">⏳</span> ${esc(runningLabel)} 진행 중...
     </div>`;
+  }
 
-  // ─── 썸네일 미리보기 ───
-  const thumbTs = Date.now();
-  const thumbnailHtml = `
-    <div class="border-b border-gray-800 pb-3 mb-3">
-      <div class="flex items-center justify-between mb-2">
-        <div class="text-sm font-semibold text-gray-300">썸네일</div>
-        <div class="flex gap-2">
-          <button onclick="generateThumbnail('${jobId}')" id="btn-gen-thumb"
-                  class="px-3 py-1 bg-orange-700 hover:bg-orange-600 rounded text-xs transition">${hasThumbnail ? '재생성' : '생성'}</button>
-          <label class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs transition cursor-pointer">
-            교체 <input type="file" accept="image/*" class="hidden" onchange="uploadThumbnail('${jobId}', this.files[0])">
-          </label>
-        </div>
-      </div>
-      ${hasThumbnail
-        ? `<img src="/api/jobs/${jobId}/thumbnail?t=${thumbTs}" class="w-full rounded" style="max-height:200px; object-fit:contain;" />`
-        : `<div class="text-xs text-gray-500 py-4 text-center">썸네일 미생성 — "생성" 버튼을 클릭하세요</div>`}
-      <div id="thumb-status-${jobId}" class="text-xs mt-1"></div>
+  return `
+    <div class="wizard-step-content">
+      ${bannerHtml}
+      <div class="wizard-two-col">${leftCol}${rightCol}</div>
     </div>`;
+}
 
-  // ─── 탭 헤더 ───
-  const tabsHtml = `
-    <div class="tab-bar">
-      <button class="tab-btn active" onclick="switchTab('tab-script', this)">대본</button>
-      <button class="tab-btn" onclick="switchTab('tab-images', this)">배경 이미지 <span class="tab-badge">${uploadedCount}/${bgCount}</span></button>
-      <button class="tab-btn" onclick="switchTab('tab-narration', this)">나레이션</button>
-    </div>`;
+function renderWizardStep3(jobId, scriptData, stepsData) {
+  const { status, script, has_thumbnail } = scriptData;
+  const steps = stepsData.steps || [];
+  const stepStatus = {};
+  for (const s of steps) stepStatus[s.step_name] = s.status || "pending";
 
-  // ─── 탭 1: 대본 ───
-  let slideView = `<div class="script-panel" id="script-slide-view">`;
-  slides.forEach((s, i) => {
-    const isClosing = i === slides.length - 1;
-    slideView += `
-      <div class="slide-item">
-        <div class="flex items-center gap-2 mb-1">
-          <span class="text-xs font-bold text-orange-400">${i + 1}</span>
-          <span class="text-xs text-gray-500">${esc(s.category || "")}</span>
+  const renderDone = stepStatus["render"] === "completed";
+  const isRunning = status === "running" || status === "queued";
+
+  // Running / Queued state
+  if (isRunning && !renderDone) {
+    const runningStep = steps.find(s => s.status === "running");
+    const label = runningStep ? (STEP_LABELS[runningStep.step_name] || runningStep.step_name) : "영상";
+    const isQueued = status === "queued";
+    return `
+      <div class="wizard-step-content">
+        <div id="running-status-msg" class="text-center py-12 text-gray-400">
+          <span class="inline-block animate-pulse text-2xl mb-2">${isQueued ? '⏳' : '🎬'}</span><br>
+          <span class="text-lg">${isQueued ? '큐 대기 중...' : esc(label) + ' 진행 중...'}</span>
         </div>
-        <div class="text-sm text-gray-200">${s.main || ""}</div>
-        ${s.sub ? `<div class="text-xs text-gray-500 mt-1">${s.sub}</div>` : ""}
-        ${isClosing ? `<span class="text-xs text-gray-600">(클로징)</span>` : ""}
+        <div id="running-video-area"></div>
       </div>`;
-  });
-  slideView += `</div>`;
+  }
 
-  const sens = script ? (script.sentences || []) : [];
-  let narrView = `<div class="script-panel hidden" id="script-narration-view">`;
-  let curSlide = 0;
-  sens.forEach((sen, i) => {
-    if (sen.slide !== curSlide) {
-      curSlide = sen.slide;
-      narrView += `<div class="text-xs text-orange-400 font-bold mt-2 mb-1 ${i > 0 ? 'pt-2 border-t border-gray-800' : ''}">슬라이드 ${curSlide}</div>`;
-    }
-    narrView += `<div class="text-sm text-gray-300 py-0.5">
-      <input type="text" class="narration-edit-input" data-sen-idx="${i}"
-             value="${esc(sen.text)}" />
-    </div>`;
-  });
-  narrView += `<div class="mt-3 flex gap-2">
-    <button onclick="saveNarrationScript('${jobId}')" id="btn-save-narration"
-            class="px-4 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xs font-medium transition">저장</button>
-    <span id="narration-save-msg" class="text-xs text-green-400 self-center hidden">저장 완료</span>
-  </div>`;
-  narrView += `</div>`;
+  // Video ready or completed
+  let videoHtml = "";
+  if (renderDone || status === "completed") {
+    const thumbTs = Date.now();
+    videoHtml = `
+      <div class="flex flex-col items-center gap-3 mb-3">
+        <video class="video-preview" controls>
+          <source src="/api/jobs/${jobId}/video" type="video/mp4">
+        </video>
+        <div id="upload-status-${jobId}" class="text-xs"></div>
+      </div>`;
 
-  const tab1 = `
-    <div id="tab-script" class="tab-panel">
-      <div class="flex gap-2 mb-2">
-        <button class="script-view-btn active" onclick="switchScriptView('slide', this)">슬라이드</button>
-        <button class="script-view-btn" onclick="switchScriptView('narration', this)">나레이션 대본</button>
-      </div>
-      <div class="mb-3">${slideView}${narrView}</div>
-    </div>`;
+    // Thumbnail
+    videoHtml += `
+      <div class="border-b border-gray-800 pb-3 mb-3">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-xs font-semibold text-gray-400">썸네일</div>
+          <div class="flex gap-2">
+            <button onclick="generateThumbnail('${jobId}')" id="btn-gen-thumb"
+                    class="px-2 py-1 bg-orange-700 hover:bg-orange-600 rounded text-xs transition">${has_thumbnail ? '재생성' : '생성'}</button>
+            <label class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs transition cursor-pointer">
+              교체 <input type="file" accept="image/*" class="hidden" onchange="uploadThumbnail('${jobId}', this.files[0])">
+            </label>
+          </div>
+        </div>
+        ${has_thumbnail
+          ? `<img src="/api/jobs/${jobId}/thumbnail?t=${thumbTs}" class="w-full rounded" style="max-height:150px; object-fit:contain;" />`
+          : `<div class="text-xs text-gray-500 py-3 text-center">썸네일 미생성</div>`}
+        <div id="thumb-status-${jobId}" class="text-xs mt-1"></div>
+      </div>`;
 
-  // ─── 탭 2: 배경 이미지 ───
-  const imgPrompts = image_prompts || [];
-  let imgPromptsHtml = "";
-  if (imgPrompts.length > 0) {
-    const items = imgPrompts.map((p, i) => {
-      const ko = typeof p === "object" ? (p.ko || "") : "";
-      const en = typeof p === "object" ? (p.en || "") : String(p);
-      return `<div class="text-xs py-1 border-b border-gray-800">
-        <span class="text-orange-400 font-bold mr-1">${i+1}.</span>
-        ${ko ? `<span class="text-gray-300">${esc(ko)}</span><br>` : ""}
-        <span class="text-gray-500">${esc(en)}</span>
+    // QA Checklist
+    videoHtml += renderQAChecklist(steps);
+  }
+
+  // Failed state
+  if (status === "failed") {
+    const failedStep = steps.find(s => s.status === "failed");
+    const errMsg = failedStep ? failedStep.error_msg : "알 수 없는 오류";
+    videoHtml = `
+      <div class="text-center py-6">
+        <div class="text-red-400 text-lg mb-2">제작 실패</div>
+        <div class="text-sm text-gray-500 mb-4">${esc(errMsg || "")}</div>
+      </div>`;
+  }
+
+  return `<div class="wizard-step-content">${videoHtml}</div>`;
+}
+
+function renderQAChecklist(steps) {
+  const qaStep = steps.find(s => s.step_name === "qa");
+  if (!qaStep || qaStep.status !== "completed") return "";
+
+  let outputData = {};
+  try {
+    outputData = JSON.parse(qaStep.output_data || "{}");
+  } catch { return ""; }
+
+  const passed = outputData.passed;
+  const score = outputData.score;
+  const issues = outputData.issues || [];
+  const rawDetails = outputData.details;
+  const details = Array.isArray(rawDetails) ? rawDetails : [];
+  const detailText = typeof rawDetails === "string" ? rawDetails : "";
+
+  let html = `<div class="qa-checklist">
+    <div class="qa-checklist-title">QA 검사 결과</div>`;
+
+  if (score !== undefined) {
+    html += `<div class="qa-score ${passed ? 'pass' : 'fail'}">${passed ? '✅' : '❌'} ${score}점</div>`;
+  }
+
+  if (detailText) {
+    html += `<div class="qa-item qa-detail-text"><span class="qa-text text-xs text-gray-300">${esc(detailText)}</span></div>`;
+  }
+
+  if (details.length > 0) {
+    html += details.map(d => {
+      const ok = d.passed !== false;
+      return `<div class="qa-item ${ok ? 'qa-passed' : 'qa-failed'}">
+        <span class="qa-icon">${ok ? '✓' : '✕'}</span>
+        <span class="qa-text">${esc(d.name || d.check || '')}: ${esc(d.message || d.result || '')}</span>
       </div>`;
     }).join("");
-    imgPromptsHtml = `<details class="mb-3">
-      <summary class="flex items-center justify-between text-xs font-semibold text-gray-400 cursor-pointer mb-1">
-        <span>이미지 생성 프롬프트 <span class="text-orange-400 font-normal">${(_slideLayout === "center" || _slideLayout === "top" || _slideLayout === "bottom") ? "📐 1080×960 (1:1)" : "📐 1080×1920 (9:16)"}</span></span>
-        <button onclick="event.stopPropagation(); copyImagePrompts(this)" class="copy-icon-btn" title="복사">&#x1F4CB;</button>
-      </summary>
-      <div class="bg-gray-900 rounded p-2" id="image-prompts-box">${items}</div>
-    </details>`;
+  } else if (issues.length > 0) {
+    html += issues.map(issue => `
+      <div class="qa-item qa-failed">
+        <span class="qa-icon">✕</span>
+        <span class="qa-text">${esc(typeof issue === 'string' ? issue : issue.message || JSON.stringify(issue))}</span>
+      </div>`).join("");
   }
 
-  const bgTypes2 = (script.slides || []).map(s => s.bg_type || "photo");
-  let slotsHtml = `<div class="upload-grid">`;
-  for (let i = 1; i <= bgCount; i++) {
-    const bgUrl = (uploadedBgs || {})[i] || null;
-    const hasImage = bgUrl ? "has-image" : "";
-    const bgType = bgTypes2[i - 1] || "photo";
-    const bgTypeLabel = {photo:"📷",broll:"🎬",graph:"📊",logo:"🏢",closing:"✕"}[bgType] || "📷";
-    slotsHtml += `
-      <div class="upload-slot-wrap" id="slot-wrap-${i}">
-        <div class="upload-slot ${hasImage}" onclick="triggerUpload('${jobId}', ${i})" id="slot-${i}" title="슬라이드 ${i} (${bgType})" data-bg-type="${bgType}">
-          ${bgUrl ? (bgUrl.includes('.mp4') || bgUrl.includes('.gif') ? `<video src="${bgUrl}" autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;"></video>` : `<img src="${bgUrl}" alt="bg_${i}">`) : ""}
-          <div class="slot-icon">+</div>
-          <div class="slot-number">${bgTypeLabel} ${i}</div>
-          <div class="slot-label">클릭하여 업로드</div>
-          <input type="file" accept="image/*,video/mp4" class="hidden" id="file-${i}"
-                 onchange="uploadSlideImage('${jobId}', ${i}, this)">
-          <div class="slot-actions-overlay">
-            ${bgUrl ? `<button onclick="event.stopPropagation(); previewImage('${bgUrl}', ${i})"
-                    class="text-white" title="크게 보기">
-              <span class="act-icon">&#128269;</span><span class="act-label">보기</span>
-            </button>` : ''}
-            <button onclick="event.stopPropagation(); sdRegenerateSingle('${jobId}', ${i}, 'image')"
-                    class="text-purple-300" title="재생성">
-              <span class="act-icon">&#9638;</span><span class="act-label">${_bgSource === 'gemini' ? '재생성' : '이미지'}</span>
-            </button>
-            ${_bgSource !== 'gemini' ? `<button onclick="event.stopPropagation(); sdRegenerateSingle('${jobId}', ${i}, 'video')"
-                    class="text-indigo-300" title="SD 영상 재생성">
-              <span class="act-icon">&#9654;</span><span class="act-label">영상</span>
-            </button>` : ''}
-            <button onclick="event.stopPropagation(); togglePromptEdit('${jobId}', ${i})"
-                    class="text-gray-300" title="프롬프트 편집">
-              <span class="act-icon">&#9998;</span><span class="act-label">프롬프트</span>
-            </button>
-          </div>
-        </div>
+  html += `</div>`;
+  return html;
+}
+
+// ─── Wizard: Footer ───
+
+function renderWizardFooter(step, jobId, scriptData, stepsData) {
+  const { status, script, uploaded_backgrounds } = scriptData;
+  const slides = script?.slides || [];
+  const bgCount = slides.length > 0 ? slides.length - 1 : 0;
+  const uploadedBgs = uploaded_backgrounds || {};
+  const uploadedCount = Object.keys(uploadedBgs).length;
+  const stepStatus = {};
+  for (const s of (stepsData.steps || [])) stepStatus[s.step_name] = s.status || "pending";
+  const uploadDone = stepStatus["upload"] === "completed";
+
+  const prevBtn = step > 1
+    ? `<button onclick="navigateWizard(${step - 1})" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition">← 이전</button>`
+    : `<div></div>`;
+
+  let centerHtml = "";
+  let rightBtn = "";
+
+  if (step === 1) {
+    centerHtml = script ? `<span class="text-xs text-gray-500">${slides.length}개 슬라이드</span>` : "";
+    rightBtn = script
+      ? `<button onclick="navigateWizard(2)" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">이미지 생성 →</button>`
+      : "";
+  } else if (step === 2) {
+    centerHtml = `<span class="text-xs text-gray-500">${uploadedCount}/${bgCount}장 준비됨</span>`;
+    const isRunning = status === "running";
+    rightBtn = `<button id="btn-resume-job" onclick="resumeJob('${jobId}')"
+      class="px-4 py-2 ${isRunning ? 'bg-gray-600 opacity-50 cursor-not-allowed' : uploadedCount >= bgCount ? 'bg-orange-600 hover:bg-orange-500' : 'bg-gray-700 hover:bg-gray-600'} rounded-lg text-sm font-medium transition"
+      ${isRunning ? 'disabled' : ''}>
+      ${isRunning ? '영상 제작 중...' : '영상 제작 →'}
+    </button>`;
+  } else if (step === 3) {
+    const renderDone = stepStatus["render"] === "completed" || status === "completed";
+    if (renderDone) {
+      rightBtn = `
+        <div class="flex gap-2">
+          <button onclick="resetToWaiting('${jobId}')" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition">재작업</button>
+          <a href="/api/jobs/${jobId}/video" download class="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition inline-block">다운로드</a>
+          <button onclick="manualUpload('${jobId}')" id="btn-manual-upload"
+                  class="px-3 py-2 bg-red-700 hover:bg-red-600 rounded-lg text-xs font-medium transition">YouTube 업로드</button>
+        </div>`;
+    } else if (status === "failed") {
+      const failedStep = (stepsData.steps || []).find(s => s.status === "failed");
+      const fn = failedStep ? failedStep.step_name : "";
+      const isPhaseA = ["news_search", "script"].includes(fn);
+      rightBtn = `<div class="flex gap-2">
+        <button onclick="retryJob('${jobId}')" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">재시도</button>
+        ${!isPhaseA ? `<button onclick="resetToWaiting('${jobId}')" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition">이미지 대기로</button>` : ''}
       </div>`;
+    }
   }
-  slotsHtml += `</div>
-    <div id="prompt-edit-area" class="prompt-edit-area hidden">
-      <div class="prompt-edit-header">
-        <span class="text-xs text-gray-400">슬롯 <span id="prompt-edit-index"></span> 이미지 프롬프트 <span id="prompt-size-hint" class="text-orange-400 ml-2"></span></span>
-        <button onclick="closePromptEdit()" class="text-xs text-gray-500 hover:text-white">&times;</button>
-      </div>
-      <label class="text-xs text-gray-500 mb-1 block">한국어 설명</label>
-      <textarea id="prompt-text-ko" rows="2" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-xs text-gray-300 resize-y mb-2"
-                placeholder="한국어 장면 설명..."></textarea>
-      <label class="text-xs text-gray-500 mb-1 block">English Prompt</label>
-      <textarea id="prompt-text-en" rows="3" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-xs text-gray-300 resize-y"
-                placeholder="English image generation prompt..."></textarea>
-      <div class="flex gap-2 mt-2">
-        <button onclick="saveImagePrompt()" class="prompt-save-btn">저장</button>
-        <button onclick="regenerateFromEdit()" class="prompt-save-btn" style="background:rgba(147,51,234,0.2);color:#c084fc;">이미지 생성</button>
-      </div>
+
+  return `
+    <div class="wizard-footer">
+      ${prevBtn}
+      <div class="wizard-footer-center">${centerHtml}</div>
+      ${rightBtn || '<div></div>'}
     </div>`;
+}
 
-  const tab2 = `
-    <div id="tab-images" class="tab-panel hidden">
-      <div class="btn-group-bar">
-        <div class="btn-group">
-          <span class="btn-group-label">AI</span>
-          <button onclick="sdGenerateAuto('${jobId}')" id="btn-sd-auto"
-                  class="btn-grouped btn-sd" style="background:#059669">
-            ${_bgSource === 'gemini' ? 'Gemini 생성' : _bgSource === 'sd_video' ? 'SD 영상 생성' : 'SD 이미지 생성'}
-          </button>
-        </div>
-        <div class="btn-group-sep"></div>
-        <div class="btn-group">
-          <span class="btn-group-label">수동</span>
-          <button onclick="document.getElementById('bulk-upload').click()"
-                  class="btn-grouped btn-upload">전체 업로드</button>
-          <input type="file" accept="image/*" multiple class="hidden" id="bulk-upload"
-                 onchange="bulkUploadImages('${jobId}', this)">
-        </div>
-      </div>
-      <div id="sd-status"></div>
-      ${imgPromptsHtml}
-      ${slotsHtml}
-    </div>`;
+// ─── Wizard: Main Render ───
 
-  // ─── 탭 3: 나레이션 ───
-  const jobCh = channelsCache.find(c => c.jobs?.some(j => j.id === jobId));
-  let chCfg = {};
-  try { chCfg = JSON.parse(jobCh?.config || "{}"); } catch {}
-  const chTtsEngine = chCfg.tts_engine || "edge-tts";
-  const chTtsVoice = chCfg.tts_voice || "ko-KR-SunHiNeural";
-  const chTtsRate = parseInt((chCfg.tts_rate || "+0%").replace("%", "").replace("+", "")) || 0;
-  const chSovitsText = chCfg.sovits_ref_text || "";
-  const narrationMode = hasNarration ? "upload" : "tts";
-  const ttsStep = (steps || []).find(s => s.step_name === "tts");
-  const ttsError = (ttsStep && ttsStep.status === "failed") ? ttsStep.error_msg : "";
+function renderJobDetail(scriptData, stepsData) {
+  const { job_id, topic, status, auto_bg_source, slide_layout } = scriptData;
+  const jobId = job_id;
+  window._bgSource = auto_bg_source || "sd_image";
+  window._slideLayout = slide_layout || "full";
+  window._jobStatus = status;
+  const steps = stepsData.steps || [];
 
-  const tab3 = `
-    <div id="tab-narration" class="tab-panel hidden">
-      ${ttsError ? `<div class="text-xs text-red-400 bg-red-900/20 rounded p-2 mb-3">TTS 실패: ${esc(ttsError)}</div>` : ''}
-      <div class="flex gap-2 mb-3">
-        <button onclick="switchNarrationMode('tts')" id="btn-mode-tts"
-                class="px-3 py-1.5 rounded text-xs font-medium transition ${narrationMode === 'tts' ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}">
-          TTS 생성
-        </button>
-        <button onclick="switchNarrationMode('upload')" id="btn-mode-upload"
-                class="px-3 py-1.5 rounded text-xs font-medium transition ${narrationMode === 'upload' ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}">
-          음성 업로드
-        </button>
-      </div>
-      <div id="narration-tts" class="${narrationMode === 'tts' ? '' : 'hidden'}">
-        <div class="mb-3">
-          <label class="text-xs text-gray-500 mb-1 block">TTS 엔진</label>
-          <select id="tts-engine-select" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs"
-                  onchange="toggleNarrationEngine()">
-            <option value="edge-tts" ${chTtsEngine === 'edge-tts' ? 'selected' : ''}>Edge TTS</option>
-            <option value="gpt-sovits" ${chTtsEngine === 'gpt-sovits' ? 'selected' : ''}>GPT-SoVITS</option>
-          </select>
-        </div>
-        <div id="narration-edge-section" class="${chTtsEngine === 'gpt-sovits' ? 'hidden' : ''}">
-          <div class="flex gap-2 items-center">
-            <select id="tts-voice-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
-              <option value="ko-KR-SunHiNeural" ${chTtsVoice === 'ko-KR-SunHiNeural' ? 'selected' : ''}>선히 (여성)</option>
-              <option value="ko-KR-InJoonNeural" ${chTtsVoice === 'ko-KR-InJoonNeural' ? 'selected' : ''}>인준 (남성)</option>
-              <option value="ko-KR-HyunsuNeural" ${chTtsVoice === 'ko-KR-HyunsuNeural' ? 'selected' : ''}>현수 (남성)</option>
-              <option value="ko-KR-HyunsuMultilingualNeural" ${chTtsVoice === 'ko-KR-HyunsuMultilingualNeural' ? 'selected' : ''}>현수 멀티링구얼 (남성)</option>
-              <option value="gtts" ${chTtsVoice === 'gtts' ? 'selected' : ''}>gTTS (구글 기본)</option>
-            </select>
-            <button onclick="previewVoice()" id="btn-preview-voice"
-                    class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
-          </div>
-          <div class="flex items-center gap-2 mt-2">
-            <span class="text-xs text-gray-500 w-8">속도</span>
-            <input type="range" id="tts-rate" min="-30" max="50" value="${chTtsRate}" step="10"
-                   class="flex-1 h-1 accent-orange-500" oninput="updateRateLabel()">
-            <span id="tts-rate-label" class="text-xs text-gray-400 w-10 text-right">${chTtsRate}%</span>
-          </div>
-        </div>
-        <div id="narration-sovits-section" class="${chTtsEngine === 'gpt-sovits' ? '' : 'hidden'}">
-          <div class="mb-2">
-            <label class="text-xs text-gray-500 mb-1 block">참조 음성</label>
-            <div class="flex gap-2 items-center">
-              <select id="sovits-ref-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
-              </select>
-              <button onclick="previewSovitsNarration()" id="btn-preview-sovits"
-                      class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
-            </div>
-          </div>
-          <div>
-            <label class="text-xs text-gray-500 mb-1 block">참조 텍스트 (선택)</label>
-            <input type="text" id="sovits-ref-text" value="${esc(chSovitsText)}"
-                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs"
-                   placeholder="참조 음성의 텍스트 내용">
-          </div>
-          <div id="sovits-status-narration" class="text-xs mt-2"></div>
-        </div>
-        <audio id="voice-preview-popup" class="hidden mt-2"></audio>
-      </div>
-      <div id="narration-upload" class="${narrationMode === 'upload' ? '' : 'hidden'}">
-        <div class="flex gap-2 items-center">
-          <button onclick="document.getElementById('narration-file').click()"
-                  class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">
-            ${hasNarration ? '다시 업로드' : '파일 선택'}
-          </button>
-          <input type="file" accept="audio/*" class="hidden" id="narration-file"
-                 onchange="uploadNarration('${jobId}', this)">
-          <span id="narration-status" class="text-xs ${hasNarration ? 'text-green-400' : 'text-gray-500'}">
-            ${hasNarration ? '업로드됨' : '음성 파일을 선택하세요 (mp3, wav 등)'}
-          </span>
-        </div>
-        ${hasNarration ? `
-        <div class="flex items-center gap-2 mt-2">
-          <audio id="narration-preview" controls src="/api/jobs/${jobId}/narration" class="h-8 flex-1"></audio>
-          <button onclick="deleteNarration('${jobId}')" class="text-xs text-gray-500 hover:text-red-400 transition">삭제</button>
-        </div>` : ''}
-      </div>
-      <div class="flex items-center justify-between pt-4 border-t border-gray-800 mt-4">
-        <button onclick="deleteJob('${jobId}')" class="text-xs text-gray-500 hover:text-red-400 transition">작업 삭제</button>
-        <button onclick="resetToWaiting('${jobId}')" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition">
-          재작업 (이미지 대기로)
-        </button>
-      </div>
-    </div>`;
+  // 단계별 상태 맵
+  const stepStatus = {};
+  for (const s of steps) {
+    stepStatus[s.step_name] = s.status || "pending";
+  }
+  if (status === "waiting_slides") {
+    stepStatus["slides"] = "waiting";
+  }
+  // 누락된 단계 보정
+  {
+    let latestIdx = -1;
+    for (const name of Object.keys(stepStatus)) {
+      const st = stepStatus[name];
+      if (st === "completed" || st === "skipped") {
+        const idx = STEP_ORDER.indexOf(name);
+        if (idx > latestIdx) latestIdx = idx;
+      }
+    }
+    for (let i = 0; i < latestIdx; i++) {
+      if (!stepStatus[STEP_ORDER[i]]) stepStatus[STEP_ORDER[i]] = "completed";
+    }
+  }
 
-  return videoHtml + thumbnailHtml + tabsHtml + tab1 + tab2 + tab3;
+  const uploadDone = stepStatus["upload"] === "completed";
+  const displayStatus = (status === "completed" && !uploadDone) ? "rendered" : status;
+  const statusText = displayStatus === "rendered" ? "영상 완성" : (STATUS_TEXT[status] || status);
+  const statusClass = `status-${displayStatus}`;
+
+  // 파이프라인 단계 시각화
+  let pipelineHtml = "";
+  STEP_ORDER.forEach((name, idx) => {
+    if (idx > 0) {
+      const prevSt = stepStatus[STEP_ORDER[idx - 1]];
+      let arrowClass = "step-arrow";
+      if (prevSt === "completed" || prevSt === "skipped") arrowClass += " done";
+      if (stepStatus[name] === "running") arrowClass += " active";
+      pipelineHtml += `<div class="${arrowClass}">&#8594;</div>`;
+    }
+    const st = stepStatus[name] || "pending";
+    pipelineHtml += `
+      <div class="step-node step-${st}">
+        <div class="step-dot">${STEP_ICONS[name]}</div>
+        <div class="step-label">${STEP_LABELS[name]}</div>
+      </div>`;
+  });
+
+  // Wizard body
+  let bodyHtml = "";
+  if (_wizardStep === 1) bodyHtml = renderWizardStep1(jobId, scriptData, stepsData);
+  else if (_wizardStep === 2) bodyHtml = renderWizardStep2(jobId, scriptData, stepsData);
+  else if (_wizardStep === 3) bodyHtml = renderWizardStep3(jobId, scriptData, stepsData);
+
+  const wizardNav = renderWizardNav(_wizardStep, scriptData, stepsData);
+  const wizardFooter = renderWizardFooter(_wizardStep, jobId, scriptData, stepsData);
+
+  document.getElementById("job-detail-content").innerHTML = `
+    <div class="flex items-start justify-between mb-1">
+      <div>
+        <h3 class="text-lg font-bold"><span class="text-gray-500 text-sm mr-1">${job_id.replace(/^job-\d+-0*/, "#")}</span>${esc(topic)}</h3>
+        <span class="status-badge ${statusClass} mt-1 inline-block">${statusText}</span>
+        ${["running","failed","queued"].includes(status) ? `
+        <select onchange="forceJobStatus('${jobId}', this.value)" class="ml-2 mt-1 text-xs bg-gray-800 text-gray-300 border border-gray-600 rounded px-1 py-0.5">
+          <option value="">상태 수정</option>
+          <option value="completed">완료 처리</option>
+          <option value="failed">실패 처리</option>
+          <option value="waiting_slides">대기 복귀</option>
+        </select>` : ''}
+      </div>
+      <button onclick="closeModal('job-detail-modal')" class="text-gray-500 hover:text-white text-lg transition">&times;</button>
+    </div>
+    <div class="pipeline-steps" id="pipeline-steps-live">${pipelineHtml}</div>
+    ${wizardNav}
+    <div class="wizard-body">
+      ${bodyHtml}
+      ${wizardFooter}
+    </div>
+  `;
+}
+
+/* OLD TAB FUNCTIONS REMOVED — replaced by wizard */
+
+async function forceJobStatus(jobId, newStatus) {
+  if (!newStatus) return;
+  if (!confirm(`작업 상태를 "${newStatus}"로 변경하시겠습니까?`)) return;
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/force-status`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({status: newStatus})
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    openJobDetail(jobId);
+  } catch (e) {
+    alert("상태 변경 실패: " + e.message);
+  }
 }
 
 async function manualUpload(jobId) {
@@ -1414,16 +1340,51 @@ function previewImage(url, index) {
 
 // ─── Voice Preview ───
 
+function toggleNarrationEngine() {
+  const engine = document.getElementById("tts-engine-select").value;
+  const edgeSection = document.getElementById("narration-edge-section");
+  const googleSection = document.getElementById("narration-google-section");
+  const sovitsSection = document.getElementById("narration-sovits-section");
+
+  edgeSection.classList.add("hidden");
+  googleSection.classList.add("hidden");
+  sovitsSection.classList.add("hidden");
+
+  if (engine === "google-cloud") {
+    googleSection.classList.remove("hidden");
+  } else if (engine === "gpt-sovits") {
+    sovitsSection.classList.remove("hidden");
+  } else {
+    edgeSection.classList.remove("hidden");
+  }
+}
+
 function updateRateLabel() {
   const val = document.getElementById("tts-rate").value;
   const sign = val >= 0 ? "+" : "";
   document.getElementById("tts-rate-label").textContent = `${sign}${val}%`;
 }
 
+function updateGoogleRateLabel() {
+  const val = document.getElementById("google-rate").value;
+  const sign = val >= 0 ? "+" : "";
+  document.getElementById("google-rate-label").textContent = `${sign}${val}%`;
+}
+
 async function previewVoice() {
-  const voice = document.getElementById("tts-voice-select").value;
-  const rate = document.getElementById("tts-rate").value;
-  const btn = document.getElementById("btn-preview-voice");
+  const engineEl = document.getElementById("tts-engine-select");
+  const engine = engineEl ? engineEl.value : "edge-tts";
+  let voice, rate, btn;
+
+  if (engine === "google-cloud") {
+    voice = document.getElementById("google-voice-select").value;
+    rate = document.getElementById("google-rate").value;
+    btn = document.getElementById("btn-preview-google-popup");
+  } else {
+    voice = document.getElementById("tts-voice-select").value;
+    rate = document.getElementById("tts-rate").value;
+    btn = document.getElementById("btn-preview-voice");
+  }
   const audio = document.getElementById("voice-preview-popup");
 
   btn.textContent = "생성중...";
@@ -1471,15 +1432,20 @@ function toggleGeminiSection() {
 function toggleTtsEngine() {
   const engine = document.getElementById("cs-tts-engine").value;
   const edgeSection = document.getElementById("cs-tts-edge-section");
+  const googleSection = document.getElementById("cs-tts-google-section");
   const sovitsSection = document.getElementById("cs-tts-sovits-section");
 
-  if (engine === "gpt-sovits") {
-    edgeSection.classList.add("hidden");
+  edgeSection.classList.add("hidden");
+  googleSection.classList.add("hidden");
+  sovitsSection.classList.add("hidden");
+
+  if (engine === "google-cloud") {
+    googleSection.classList.remove("hidden");
+  } else if (engine === "gpt-sovits") {
     sovitsSection.classList.remove("hidden");
     checkSovitsStatus();
   } else {
     edgeSection.classList.remove("hidden");
-    sovitsSection.classList.add("hidden");
   }
 }
 
@@ -1544,15 +1510,25 @@ async function uploadRefVoiceFile(input) {
 }
 
 async function previewChannelVoice() {
-  const voice = document.getElementById("cs-tts-voice").value;
-  const btn = document.getElementById("btn-cs-preview-voice");
-  const audio = document.getElementById("cs-voice-preview");
+  const engine = document.getElementById("cs-tts-engine").value;
+  let voice, rateVal, btn, audio;
+
+  if (engine === "google-cloud") {
+    voice = document.getElementById("cs-google-voice").value;
+    rateVal = document.getElementById("cs-google-rate")?.value || 0;
+    btn = document.getElementById("btn-cs-preview-google");
+    audio = document.getElementById("cs-google-preview");
+  } else {
+    voice = document.getElementById("cs-tts-voice").value;
+    rateVal = document.getElementById("cs-tts-rate")?.value || 0;
+    btn = document.getElementById("btn-cs-preview-voice");
+    audio = document.getElementById("cs-voice-preview");
+  }
 
   btn.textContent = "생성중...";
   btn.disabled = true;
 
   try {
-    const rateVal = document.getElementById("cs-tts-rate")?.value || 0;
     const url = `/api/tts/preview?voice=${encodeURIComponent(voice)}&rate=${rateVal}&t=${Date.now()}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error("생성 실패");
@@ -2232,6 +2208,52 @@ async function deleteNarration(jobId) {
   }
 }
 
+// ─── Script Edit (나레이션 대본 수정) ───
+
+function switchScriptView(view, btn) {
+  const slideView = document.getElementById("script-slide-view");
+  const narrationView = document.getElementById("script-narration-view");
+  if (!slideView || !narrationView) return;
+  if (view === "narration") {
+    slideView.classList.add("hidden");
+    narrationView.classList.remove("hidden");
+  } else {
+    slideView.classList.remove("hidden");
+    narrationView.classList.add("hidden");
+  }
+  document.querySelectorAll(".script-view-btn").forEach(b => b.classList.remove("active"));
+  if (btn) btn.classList.add("active");
+}
+
+async function saveNarrationScript(jobId) {
+  const inputs = document.querySelectorAll(".narration-edit-input");
+  if (!inputs.length) return;
+  const sentences = Array.from(inputs).map(el => ({
+    text: el.value,
+    slide: parseInt(el.dataset.senSlide || "0", 10),
+  }));
+  const btn = document.getElementById("btn-save-narration");
+  const msg = document.getElementById("narration-save-msg");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/script`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sentences }),
+    });
+    if (res.ok) {
+      if (msg) { msg.classList.remove("hidden"); setTimeout(() => msg.classList.add("hidden"), 2000); }
+    } else {
+      const err = await res.json();
+      alert(err.detail || "저장 실패");
+    }
+  } catch (e) {
+    alert("저장 요청 실패");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // ─── Retry / Reset Job ───
 
 async function retryJob(jobId) {
@@ -2264,10 +2286,44 @@ async function resetToWaiting(jobId) {
   }
 }
 
+// ─── Thumbnail ───
+
+async function generateThumbnail(jobId) {
+  const btn = document.getElementById("btn-gen-thumb");
+  if (btn) { btn.textContent = "생성중..."; btn.disabled = true; }
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/generate-thumbnail`, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "생성 실패");
+    }
+    await refreshJobDetail(jobId);
+  } catch (e) {
+    alert("썸네일 생성 실패: " + e.message);
+  }
+  if (btn) { btn.textContent = "생성"; btn.disabled = false; }
+}
+
+async function uploadThumbnail(jobId, file) {
+  if (!file) return;
+  const formData = new FormData();
+  formData.append("file", file);
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/thumbnail`, { method: "POST", body: formData });
+    if (!res.ok) throw new Error("업로드 실패");
+    await refreshJobDetail(jobId);
+  } catch (e) {
+    alert("썸네일 업로드 실패: " + e.message);
+  }
+}
+
 // ─── Delete Job ───
 
-async function deleteJob(jobId) {
-  if (!confirm("이 작업을 삭제하시겠습니까?")) return;
+async function deleteJob(jobId, status) {
+  const msg = status === "running"
+    ? "⚠️ 진행 중인 작업입니다. 정말 삭제하시겠습니까?"
+    : "이 작업을 삭제하시겠습니까?";
+  if (!confirm(msg)) return;
   try {
     await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
     closeModal("job-detail-modal");
@@ -2298,6 +2354,11 @@ async function resumeJob(jobId) {
     const refText = document.getElementById("sovits-ref-text");
     payload.sovits_ref_voice = refSel ? refSel.value : "";
     payload.sovits_ref_text = refText ? refText.value : "";
+  } else if (engine === "google-cloud") {
+    const voiceSelect = document.getElementById("google-voice-select");
+    const rateInput = document.getElementById("google-rate");
+    payload.tts_voice = voiceSelect ? voiceSelect.value : "ko-KR-Wavenet-A";
+    payload.tts_rate = rateInput ? rateInput.value : "0";
   } else {
     const voiceSelect = document.getElementById("tts-voice-select");
     const rateInput = document.getElementById("tts-rate");
@@ -2312,6 +2373,7 @@ async function resumeJob(jobId) {
       body: JSON.stringify(payload),
     });
     if (res.ok) {
+      _wizardStep = 3; // 영상 제작 시작 → step 3으로 이동
       await refreshJobDetail(jobId);
       loadAll();
     } else {
@@ -2327,7 +2389,9 @@ async function resumeJob(jobId) {
 
 async function runChannel(channelId, btnEl) {
   const ch = channelsCache.find(c => c.id === channelId);
-  const request = (ch?.default_topics || "").trim();
+  const inputEl = document.getElementById(`req-${channelId}`);
+  const customRequest = (inputEl?.value || "").trim();
+  const request = customRequest || (ch?.default_topics || "").trim();
   if (!request) {
     alert("요청이 설정되지 않았습니다.\n채널을 클릭해서 요청을 추가하세요.");
     return;
@@ -2340,7 +2404,12 @@ async function runChannel(channelId, btnEl) {
   const prevJobCount = ch?.jobs?.length || 0;
 
   try {
-    const res = await fetch(`/api/channels/${channelId}/run`, { method: "POST" });
+    const fetchOpts = { method: "POST" };
+    if (customRequest) {
+      fetchOpts.headers = {"Content-Type": "application/json"};
+      fetchOpts.body = JSON.stringify({request: customRequest});
+    }
+    const res = await fetch(`/api/channels/${channelId}/run`, fetchOpts);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       alert("실행 실패: " + (err.detail || res.statusText));
@@ -2375,9 +2444,39 @@ function _setRunBtnLoading(channelId, loading) {
     btn.disabled = true;
     btn.classList.add("opacity-50", "cursor-not-allowed", "animate-pulse-btn");
   } else {
-    btn.textContent = "실행";
+    btn.textContent = "자동";
     btn.disabled = false;
     btn.classList.remove("opacity-50", "cursor-not-allowed", "animate-pulse-btn");
+  }
+}
+
+// ─── Header Status ───
+
+function updateHeaderStatus() {
+  const el = document.getElementById("header-queue-status");
+  if (!el) return;
+  let running = 0, queued = 0, waiting = 0;
+  for (const ch of channelsCache) {
+    running += ch.running_jobs || 0;
+    queued += ch.queued_jobs || 0;
+    waiting += ch.waiting_jobs || 0;
+  }
+  const parts = [];
+  if (running > 0) parts.push(`<span class="text-orange-400">● ${running} 진행</span>`);
+  if (queued > 0) parts.push(`<span class="text-blue-400">◌ ${queued} 대기</span>`);
+  if (waiting > 0) parts.push(`<span class="text-yellow-400">◎ ${waiting} 이미지</span>`);
+  el.innerHTML = parts.length > 0 ? parts.join("") : `<span class="text-gray-600">대기 없음</span>`;
+}
+
+async function runAllChannels() {
+  const runnableChannels = channelsCache.filter(ch => (ch.default_topics || "").trim().length > 0);
+  if (runnableChannels.length === 0) {
+    alert("실행 가능한 채널이 없습니다. 채널 요청을 먼저 설정하세요.");
+    return;
+  }
+  if (!confirm(`${runnableChannels.length}개 채널을 모두 실행하시겠습니까?`)) return;
+  for (const ch of runnableChannels) {
+    runChannel(ch.id, null);
   }
 }
 
@@ -2452,6 +2551,12 @@ async function openChannelSettings(channelId) {
   const rateVal = parseInt((cfg.tts_rate || "+0%").replace("%", "").replace("+", "")) || 0;
   document.getElementById("cs-tts-rate").value = rateVal;
   document.getElementById("cs-tts-rate-label").textContent = rateVal + "%";
+  // Google Cloud TTS
+  document.getElementById("cs-google-voice").value = cfg.google_voice || "ko-KR-Wavenet-A";
+  const googleRate = parseInt((cfg.google_rate || "+0%").replace("%", "").replace("+", "")) || 0;
+  document.getElementById("cs-google-rate").value = googleRate;
+  document.getElementById("cs-google-rate-label").textContent = googleRate + "%";
+  toggleTtsEngine();
   document.getElementById("cs-sovits-ref-text").value = cfg.sovits_ref_text || "";
   const sovitsSpeed = cfg.sovits_speed || 1.0;
   document.getElementById("cs-sovits-speed").value = sovitsSpeed;
@@ -2506,6 +2611,10 @@ async function saveChannelSettings() {
   cfg.tts_voice = document.getElementById("cs-tts-voice").value;
   const rateN = parseInt(document.getElementById("cs-tts-rate").value) || 0;
   cfg.tts_rate = (rateN >= 0 ? "+" : "") + rateN + "%";
+  // Google Cloud TTS
+  cfg.google_voice = document.getElementById("cs-google-voice").value;
+  const googleRateN = parseInt(document.getElementById("cs-google-rate").value) || 0;
+  cfg.google_rate = (googleRateN >= 0 ? "+" : "") + googleRateN + "%";
   cfg.sovits_ref_voice = document.getElementById("cs-sovits-ref-voice").value;
   cfg.sovits_ref_text = document.getElementById("cs-sovits-ref-text").value.trim();
   cfg.sovits_speed = parseFloat(document.getElementById("cs-sovits-speed").value) || 1.0;
@@ -2769,6 +2878,463 @@ async function saveChannelSettingsSilent() {
   channelsCache = await dashRes.json();
 }
 
+// ─── Manual Script Modal ───
+
+let _manualSlides = [];
+let _manualSentences = [];
+let _manualChannelId = null;
+let _manualCategory = "";
+
+function _buildManualPrompt(channelId) {
+  const ch = channelsCache.find(c => c.id === channelId);
+  const cfg = ch ? JSON.parse(ch.config || "{}") : {};
+  const duration = cfg.target_duration || 60;
+  const fmt = cfg.format || "single";
+  const instructions = (ch && ch.instructions) ? ch.instructions : "";
+  const slideLayout = cfg.slide_layout || "full";
+  const imageStyle = cfg.image_style || "mixed";
+  const imagePromptStyle = cfg.image_prompt_style || "";
+
+  const isShort = duration <= 30;
+  const slideCount = isShort ? 5 : 10;
+  const sentenceLen = isShort ? "15~25자" : "15~30자";
+  const mainTextLen = isShort ? "12~15자" : "12~20자";
+  const subTextLen = isShort ? "20~25자" : "20~30자";
+  const durationLabel = duration + "초";
+
+  let prompt = `너는 유튜브 쇼츠 뉴스 제작 전문가다.
+
+사용자가 입력한 뉴스 주제를 기반으로
+${durationLabel} 분량의 유튜브 쇼츠 뉴스를 제작한다.
+`;
+
+  if (instructions) {
+    prompt += `
+[채널 지침]
+
+${instructions}
+`;
+  }
+
+  if (instructions) {
+    // 채널 지침이 있으면 구조/슬라이드 수는 지침에 위임
+    prompt += `
+다음 규칙을 반드시 지켜라.
+채널 지침의 구성/슬라이드 수를 따르되, 아래 작성 규칙도 준수한다.`;
+  } else {
+    // 채널 지침 없으면 기본 규칙 제공
+    prompt += `
+다음 규칙을 반드시 지켜라.
+
+[뉴스 구성 규칙]
+
+1. 전체 길이: 약 ${durationLabel}
+2. 슬라이드 개수: ${slideCount}개
+3. 첫 슬라이드는 강력한 훅(Hook) 문장
+4. 뉴스 톤 유지 (객관적, 간결)
+5. 과장 표현 금지`;
+
+    if (fmt === "roundup") {
+      prompt += `
+6. 라운드업 형식: 여러 뉴스를 한 영상에 묶어서 전달
+7. 첫 슬라이드에 주제 목록 소개`;
+    }
+  }
+
+  prompt += `
+
+[슬라이드 작성 규칙]
+
+메인 텍스트
+- ${mainTextLen} 이내
+- 강한 키워드 중심
+
+보조 텍스트
+- ${subTextLen} 이내
+- 핵심 설명
+
+bg_type: ${imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 사진 스타일)' : imageStyle === 'infographic' ? '모든 슬라이드 "graph" 고정 (인포그래픽/일러스트/차트 스타일)' : '슬라이드별 배경 유형 선택 (photo=실사, graph=인포그래픽, broll=B-roll, logo=로고)'}
+
+accent_color: 뉴스 주제와 분위기에 맞는 색상을 추천해라 (예: #FF4D4D, #3B82F6, #10B981 등). 모든 슬라이드에 동일하게 적용.
+
+슬라이드 레이아웃: ${slideLayout}
+이미지 스타일: ${imageStyle === 'photo' ? '포토 (실사)' : imageStyle === 'infographic' ? '인포그래픽 (일러스트/차트/다이어그램)' : '혼합 (슬라이드별 자동)'}${imagePromptStyle ? `
+
+[이미지 프롬프트 스타일]
+${imagePromptStyle}` : ''}
+
+[나레이션 규칙]
+
+1. 슬라이드와 동일한 순서
+2. 한 항목당 1~3문장 (자연스럽게 이어지는 분량)
+3. 전체 나레이션을 읽었을 때 영상 길이에 맞도록 조절
+4. 자연스러운 뉴스 톤
+
+[출력 형식]
+
+반드시 아래 JSON 형식으로만 출력한다.
+설명문은 절대 출력하지 않는다.
+
+{
+  "topic": "",
+  "youtube_title": "",
+  "category": "",
+  "slides": [
+    {
+      "bg_type": "${imageStyle === 'photo' ? 'photo' : imageStyle === 'infographic' ? 'graph' : ''}",
+      "main_text": "",
+      "sub_text": "",
+      "accent_color": "",
+      "image_prompt_ko": "",
+      "image_prompt_en": ""
+    }
+  ],
+  "narration": [
+    {
+      "slide": 1,
+      "text": ""
+    }
+  ]
+}
+
+category: 속보인 경우에만 "속보", 아니면 빈 문자열 "". 영상 전체에 적용되는 상위 분류.
+
+image_prompt_ko: 해당 슬라이드의 배경 이미지를 설명하는 한국어 프롬프트 (30~50자, 구체적 장면 묘사)
+image_prompt_en: 같은 내용의 영어 프롬프트 (30~60 words, subject+setting+lighting+camera+style 포함)
+
+[생성 요청 뉴스 주제]
+
+`;
+  return prompt;
+}
+
+function openManualModal(channelId) {
+  _manualChannelId = channelId;
+  _manualCategory = "";
+  _manualSlides = [{ main: "", sub: "", accent: "#ff4444", bg_type: "photo", image_prompt_ko: "", image_prompt_en: "" }];
+  _manualSentences = [{ text: "", slide: 1 }];
+  document.getElementById("manual-modal").classList.remove("hidden");
+  renderManualModal(channelId);
+}
+
+function copyManualPrompt(btnEl) {
+  const text = _buildManualPrompt(_manualChannelId);
+  const done = () => {
+    btnEl.textContent = "✅ 복사됨";
+    setTimeout(() => { btnEl.textContent = "지침 복사"; }, 1500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => { _copyFallback(text); done(); });
+  } else {
+    _copyFallback(text); done();
+  }
+}
+
+function toggleJsonPaste() {
+  const el = document.getElementById("manual-json-paste-area");
+  if (el.classList.contains("hidden")) {
+    el.classList.remove("hidden");
+    el.querySelector("textarea").focus();
+  } else {
+    el.classList.add("hidden");
+  }
+}
+
+function applyJsonPaste() {
+  const raw = document.getElementById("manual-json-input").value.trim();
+  if (!raw) { alert("JSON을 붙여넣어 주세요."); return; }
+  try {
+    const data = JSON.parse(raw);
+
+    // topic, youtube_title
+    if (data.topic) {
+      const el = document.getElementById("manual-topic");
+      if (el) el.value = data.topic;
+    }
+    if (data.youtube_title) {
+      const el = document.getElementById("manual-yt-title");
+      if (el) el.value = data.youtube_title;
+    }
+
+    // top-level category
+    _manualCategory = data.category || "";
+
+    // slides
+    if (Array.isArray(data.slides) && data.slides.length > 0) {
+      _manualSlides = data.slides.map(s => ({
+        main: s.main_text || s.main || "",
+        sub: s.sub_text || s.sub || "",
+        accent: s.accent_color || s.accent || "#ff4444",
+        bg_type: s.bg_type || "photo",
+        image_prompt_ko: s.image_prompt_ko || "",
+        image_prompt_en: s.image_prompt_en || "",
+      }));
+    }
+
+    // narration
+    if (Array.isArray(data.narration) && data.narration.length > 0) {
+      _manualSentences = data.narration.map(n => ({
+        text: n.text || "",
+        slide: n.slide || 1,
+      }));
+    } else if (Array.isArray(data.sentences) && data.sentences.length > 0) {
+      _manualSentences = data.sentences.map(s => ({
+        text: s.text || "",
+        slide: s.slide || 1,
+      }));
+    }
+
+    document.getElementById("manual-json-paste-area").classList.add("hidden");
+    renderManualModal(_manualChannelId);
+
+    // 다시 topic/title 값 복원 (renderManualModal이 input을 재생성하므로)
+    if (data.topic) document.getElementById("manual-topic").value = data.topic;
+    if (data.youtube_title) document.getElementById("manual-yt-title").value = data.youtube_title;
+  } catch (e) {
+    alert("JSON 파싱 오류: " + e.message);
+  }
+}
+
+function renderManualModal(channelId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const ch = channelsCache.find(c => c.id === channelId);
+
+  let slidesHtml = _manualSlides.map((s, i) => `
+    <div class="border border-gray-700 rounded-lg p-3 mb-2">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-bold text-orange-400">#${i + 1}</span>
+        ${_manualSlides.length > 1 ? `<button onclick="removeManualSlide(${i}, '${channelId}')" class="text-xs text-gray-600 hover:text-red-400">삭제</button>` : ''}
+      </div>
+      <div class="mb-2">
+        <label class="block text-xs text-gray-500 mb-1">bg_type</label>
+        <select data-field="bg_type" data-idx="${i}"
+                onchange="updateManualSlide(${i}, 'bg_type', this.value)"
+                class="w-40 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+          <option value="photo" ${s.bg_type === 'photo' ? 'selected' : ''}>photo</option>
+          <option value="broll" ${s.bg_type === 'broll' ? 'selected' : ''}>broll</option>
+          <option value="graph" ${s.bg_type === 'graph' ? 'selected' : ''}>graph</option>
+          <option value="logo" ${s.bg_type === 'logo' ? 'selected' : ''}>logo</option>
+        </select>
+      </div>
+      <div class="mb-2">
+        <label class="block text-xs text-gray-500 mb-1">메인 텍스트</label>
+        <input type="text" value="${esc(s.main)}" placeholder="메인 텍스트 (필수)"
+               onchange="updateManualSlide(${i}, 'main', this.value)"
+               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+      </div>
+      <div class="mb-2">
+        <label class="block text-xs text-gray-500 mb-1">보조 텍스트</label>
+        <input type="text" value="${esc(s.sub)}" placeholder="보조 텍스트 (선택)"
+               onchange="updateManualSlide(${i}, 'sub', this.value)"
+               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+      </div>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">이미지 프롬프트 (한)</label>
+          <textarea rows="2" placeholder="배경 이미지 한국어 프롬프트"
+                    onchange="updateManualSlide(${i}, 'image_prompt_ko', this.value)"
+                    class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">${esc(s.image_prompt_ko || '')}</textarea>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">이미지 프롬프트 (영)</label>
+          <textarea rows="2" placeholder="Background image English prompt"
+                    onchange="updateManualSlide(${i}, 'image_prompt_en', this.value)"
+                    class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">${esc(s.image_prompt_en || '')}</textarea>
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1">강조 색상</label>
+        <input type="color" value="${s.accent}"
+               onchange="updateManualSlide(${i}, 'accent', this.value)"
+               class="w-8 h-6 bg-gray-800 border border-gray-700 rounded cursor-pointer">
+      </div>
+    </div>
+  `).join("");
+
+  let sentencesHtml = _manualSentences.map((sen, i) => `
+    <div class="flex items-center gap-2 mb-2">
+      <span class="text-xs text-gray-500 w-6 flex-shrink-0">${i + 1}.</span>
+      <input type="text" value="${esc(sen.text)}" placeholder="나레이션 문장"
+             onchange="updateManualSentence(${i}, 'text', this.value)"
+             class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+      <div class="flex items-center gap-1 flex-shrink-0">
+        <label class="text-xs text-gray-500">슬라이드</label>
+        <input type="number" value="${sen.slide}" min="1" max="${_manualSlides.length}"
+               onchange="updateManualSentence(${i}, 'slide', parseInt(this.value) || 1)"
+               class="w-12 bg-gray-800 border border-gray-700 rounded px-1 py-1 text-xs text-center">
+      </div>
+      ${_manualSentences.length > 1 ? `<button onclick="removeManualSentence(${i}, '${channelId}')" class="text-xs text-gray-600 hover:text-red-400 flex-shrink-0">✕</button>` : ''}
+    </div>
+  `).join("");
+
+  document.getElementById("manual-modal-content").innerHTML = `
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-lg font-bold">수동 대본 작성</h3>
+      <div class="flex items-center gap-2">
+        <button onclick="copyManualPrompt(this)" class="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg transition">지침 복사</button>
+        <button onclick="toggleJsonPaste()" class="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg transition">JSON 붙여넣기</button>
+        <button onclick="closeModal('manual-modal')" class="text-gray-500 hover:text-white text-lg transition ml-1">&times;</button>
+      </div>
+    </div>
+    <div id="manual-json-paste-area" class="hidden mb-3 p-3 bg-gray-900 border border-gray-700 rounded-lg">
+      <label class="block text-xs text-gray-400 mb-1">AI가 생성한 JSON을 붙여넣으세요</label>
+      <textarea id="manual-json-input" rows="6" placeholder='{"topic": "...", "slides": [...], "narration": [...]}'
+                class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono"></textarea>
+      <div class="flex justify-end mt-2">
+        <button onclick="applyJsonPaste()" class="px-3 py-1.5 text-xs bg-orange-600 hover:bg-orange-500 rounded transition font-medium">적용</button>
+      </div>
+    </div>
+    <div class="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+      <div class="grid grid-cols-3 gap-3">
+        <div class="col-span-2">
+          <label class="block text-xs text-gray-400 mb-1">주제 (필수)</label>
+          <input id="manual-topic" type="text" placeholder="예: 반도체 수출 역대 최고"
+                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">뉴스 날짜</label>
+          <input id="manual-date" type="date" value="${today}"
+                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">YouTube 제목 (필수)</label>
+        <input id="manual-yt-title" type="text" placeholder="예: 반도체 수출 역대 최고치 경신!"
+               class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+      </div>
+      <div class="flex items-center gap-3 mt-1">
+        <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+          <input id="manual-category-cb" type="checkbox" ${_manualCategory === '속보' ? 'checked' : ''}
+                 onchange="_manualCategory = this.checked ? '속보' : ''"
+                 class="w-4 h-4 rounded border-gray-600 bg-gray-800 text-orange-500 focus:ring-orange-500">
+          <span class="text-gray-300">속보</span>
+        </label>
+      </div>
+
+      <div class="border-t border-gray-800 pt-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-semibold text-gray-300">슬라이드</span>
+          <button onclick="addManualSlide('${channelId}')"
+                  class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs transition">+ 추가</button>
+        </div>
+        ${slidesHtml}
+      </div>
+
+      <div class="border-t border-gray-800 pt-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-semibold text-gray-300">나레이션 문장</span>
+          <button onclick="addManualSentence('${channelId}')"
+                  class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs transition">+ 추가</button>
+        </div>
+        ${sentencesHtml}
+      </div>
+    </div>
+    <div class="flex justify-end gap-3 mt-4 pt-3 border-t border-gray-800">
+      <button onclick="closeModal('manual-modal')" class="px-4 py-2 text-sm text-gray-400 hover:text-white transition">취소</button>
+      <button onclick="submitManualJob('${channelId}')" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">작업 생성</button>
+    </div>
+  `;
+}
+
+function updateManualSlide(idx, field, value) {
+  _manualSlides[idx][field] = value;
+}
+
+function updateManualSentence(idx, field, value) {
+  _manualSentences[idx][field] = value;
+}
+
+function addManualSlide(channelId) {
+  _manualSlides.push({ main: "", sub: "", accent: "#ff4444", bg_type: "photo", image_prompt_ko: "", image_prompt_en: "" });
+  renderManualModal(channelId);
+}
+
+function removeManualSlide(idx, channelId) {
+  _manualSlides.splice(idx, 1);
+  renderManualModal(channelId);
+}
+
+function addManualSentence(channelId) {
+  _manualSentences.push({ text: "", slide: 1 });
+  renderManualModal(channelId);
+}
+
+function removeManualSentence(idx, channelId) {
+  _manualSentences.splice(idx, 1);
+  renderManualModal(channelId);
+}
+
+async function submitManualJob(channelId) {
+  const topic = document.getElementById("manual-topic")?.value?.trim();
+  const ytTitle = document.getElementById("manual-yt-title")?.value?.trim();
+  const newsDate = document.getElementById("manual-date")?.value || new Date().toISOString().slice(0, 10);
+
+  if (!topic) { alert("주제를 입력하세요."); return; }
+  if (!ytTitle) { alert("YouTube 제목을 입력하세요."); return; }
+
+  // 빈 메인 텍스트 검증
+  for (let i = 0; i < _manualSlides.length; i++) {
+    if (!_manualSlides[i].main.trim()) {
+      alert(`슬라이드 #${i + 1}의 메인 텍스트를 입력하세요.`);
+      return;
+    }
+  }
+  for (let i = 0; i < _manualSentences.length; i++) {
+    if (!_manualSentences[i].text.trim()) {
+      alert(`문장 #${i + 1}의 내용을 입력하세요.`);
+      return;
+    }
+  }
+
+  // closing 슬라이드 자동 추가
+  const slides = _manualSlides.map(s => ({
+    category: _manualCategory,
+    main: s.main,
+    sub: s.sub,
+    accent: s.accent,
+    bg_type: s.bg_type,
+    image_prompt_ko: s.image_prompt_ko || "",
+    image_prompt_en: s.image_prompt_en || "",
+  }));
+  slides.push({ category: "", main: "", sub: "", accent: "#ff4444", bg_type: "closing", image_prompt_ko: "", image_prompt_en: "" });
+
+  const sentences = _manualSentences.map(s => ({
+    text: s.text,
+    slide: s.slide,
+  }));
+
+  const scriptJson = {
+    news_date: newsDate,
+    youtube_title: ytTitle,
+    category: _manualCategory,
+    slides: slides,
+    sentences: sentences,
+  };
+
+  try {
+    const res = await fetch("/api/jobs/create-manual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channel_id: channelId,
+        topic: topic,
+        script_json: scriptJson,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert("작업 생성 실패: " + (err.detail || res.statusText));
+      return;
+    }
+    const data = await res.json();
+    closeModal("manual-modal");
+    await loadAll();
+    openJobDetail(data.id);
+  } catch (e) {
+    alert("작업 생성 실패: " + e.message);
+  }
+}
+
 function closeModal(id) {
   document.getElementById(id).classList.add("hidden");
   if (id === "job-detail-modal") currentDetailJobId = null;
@@ -2786,4 +3352,185 @@ function esc(str) {
   const d = document.createElement("div");
   d.textContent = str;
   return d.innerHTML;
+}
+
+// ─── News Browser ───
+
+let _newsBrowserItems = [];  // 복사용 텍스트 배열
+let _nbCache = {};           // API 캐시 {category: data}
+let _nbSource = "news";      // 현재 소스 탭
+let _nbCategory = "";        // 현재 뉴스 카테고리
+
+function openNewsBrowser() {
+  _nbCache = {};
+  _nbSource = "news";
+  _nbCategory = "";
+  document.getElementById("news-browser-modal").classList.remove("hidden");
+  _nbFetchAndRender("");
+}
+
+function _nbSwitchSource(src) {
+  _nbSource = src;
+  if (src === "news") {
+    // 뉴스 탭: 현재 카테고리 캐시 있으면 바로 렌더, 없으면 fetch
+    if (_nbCache[_nbCategory]) { _nbRender(_nbCache[_nbCategory]); }
+    else { _nbFetchAndRender(_nbCategory); }
+  } else {
+    // 트렌드/유튜브: "" 캐시 사용 (항상 category="" 로 가져옴)
+    if (_nbCache[""]) { _nbRender(_nbCache[""]); }
+    else { _nbFetchAndRender(""); }
+  }
+}
+
+async function _nbFetchAndRender(category) {
+  _nbCategory = category;
+  const container = document.getElementById("news-browser-content");
+  container.innerHTML = _nbBuildHeader() + '<div class="text-gray-500 text-sm py-8 text-center">불러오는 중...</div>';
+  _nbBindTabs(container);
+
+  try {
+    const res = await fetch("/api/news/browse?category=" + encodeURIComponent(category));
+    if (!res.ok) throw new Error("서버 응답 오류 (" + res.status + ")");
+    const data = await res.json();
+    _nbCache[category] = data;
+    _nbRender(data);
+  } catch (e) {
+    container.innerHTML = _nbBuildHeader()
+      + '<div class="text-red-400 text-sm py-4 text-center">오류: ' + esc(e.message) + '</div>';
+    _nbBindTabs(container);
+  }
+}
+
+function _nbBuildHeader() {
+  const sources = [
+    { code: "news", label: "뉴스" },
+    { code: "trends", label: "트렌드" },
+    { code: "youtube", label: "유튜브" },
+  ];
+  const srcTabs = sources.map(s =>
+    '<button data-nb-src="' + s.code + '" class="px-4 py-1.5 text-sm font-medium rounded-lg transition '
+    + (s.code === _nbSource ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white')
+    + '">' + s.label + '</button>'
+  ).join("");
+
+  let sub = "";
+  if (_nbSource === "news") {
+    const cats = [
+      { code: "", label: "종합" },
+      { code: "BUSINESS", label: "경제" },
+      { code: "TECHNOLOGY", label: "기술" },
+      { code: "NATION", label: "국내" },
+    ];
+    sub = '<div class="flex gap-1.5 mt-3">' + cats.map(c =>
+      '<button data-nb-cat="' + c.code + '" class="px-2.5 py-1 text-xs rounded transition '
+      + (c.code === _nbCategory ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800')
+      + '">' + c.label + '</button>'
+    ).join("") + '</div>';
+  }
+
+  return '<div class="flex items-center justify-between mb-3">'
+    + '<h3 class="text-lg font-bold">탐색</h3>'
+    + '<button onclick="closeModal(\'news-browser-modal\')" class="text-gray-500 hover:text-white text-lg transition">&times;</button>'
+    + '</div>'
+    + '<div class="flex gap-2">' + srcTabs + '</div>'
+    + sub;
+}
+
+function _nbRender(data) {
+  const container = document.getElementById("news-browser-content");
+  _newsBrowserItems = [];
+  let idx = 0;
+  let body = '<div class="space-y-1 overflow-y-auto mt-3 pr-1" style="flex:1; min-height:0;">';
+
+  if (_nbSource === "news") {
+    const news = data.google_news || [];
+    if (news.length > 0) {
+      for (const item of news) {
+        _newsBrowserItems.push(item.title);
+        body += '<div class="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-gray-800/50">'
+          + '<button data-nb-copy="' + idx + '" class="text-gray-500 hover:text-orange-400 transition text-sm mt-0.5 shrink-0" title="복사">📋</button>'
+          + '<div class="min-w-0"><div class="text-sm text-gray-200 leading-snug">' + esc(item.title) + '</div>'
+          + (item.source ? '<div class="text-xs text-gray-500 mt-0.5">' + esc(item.source) + '</div>' : '')
+          + '</div></div>';
+        idx++;
+      }
+    } else {
+      body += '<div class="text-gray-600 text-sm py-8 text-center">뉴스를 불러올 수 없습니다</div>';
+    }
+  } else if (_nbSource === "trends") {
+    const trends = data.google_trends || [];
+    if (trends.length > 0) {
+      for (const kw of trends) {
+        _newsBrowserItems.push(kw);
+        body += '<div class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-gray-800/50">'
+          + '<button data-nb-copy="' + idx + '" class="text-gray-500 hover:text-orange-400 transition text-sm shrink-0" title="복사">📋</button>'
+          + '<span class="text-sm text-gray-200">' + esc(kw) + '</span></div>';
+        idx++;
+      }
+    } else {
+      body += '<div class="text-gray-600 text-sm py-8 text-center">트렌드를 불러올 수 없습니다</div>';
+    }
+  } else if (_nbSource === "youtube") {
+    const yt = data.youtube_trending || [];
+    if (yt.length > 0) {
+      for (const title of yt) {
+        _newsBrowserItems.push(title);
+        body += '<div class="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-gray-800/50">'
+          + '<button data-nb-copy="' + idx + '" class="text-gray-500 hover:text-orange-400 transition text-sm shrink-0" title="복사">📋</button>'
+          + '<span class="text-sm text-gray-200">' + esc(title) + '</span></div>';
+        idx++;
+      }
+    } else {
+      body += '<div class="text-gray-600 text-sm py-8 text-center">YouTube API 키가 설정된 채널이 없습니다</div>';
+    }
+  }
+
+  body += '</div>';
+  container.innerHTML = _nbBuildHeader() + body;
+  _nbBindTabs(container);
+  container.querySelectorAll("[data-nb-copy]").forEach(btn =>
+    btn.addEventListener("click", () => _copyNewsItem(parseInt(btn.dataset.nbCopy), btn))
+  );
+}
+
+function _nbBindTabs(container) {
+  container.querySelectorAll("[data-nb-src]").forEach(btn =>
+    btn.addEventListener("click", () => _nbSwitchSource(btn.dataset.nbSrc))
+  );
+  container.querySelectorAll("[data-nb-cat]").forEach(btn =>
+    btn.addEventListener("click", () => {
+      _nbCategory = btn.dataset.nbCat;
+      if (_nbCache[_nbCategory]) { _nbRender(_nbCache[_nbCategory]); }
+      else { _nbFetchAndRender(_nbCategory); }
+    })
+  );
+}
+
+function _copyNewsItem(idx, btnEl) {
+  const text = _newsBrowserItems[idx];
+  if (!text) return;
+  const done = () => {
+    btnEl.textContent = "✅";
+    setTimeout(() => { btnEl.textContent = "📋"; }, 1000);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => {
+      _copyFallback(text);
+      done();
+    });
+  } else {
+    _copyFallback(text);
+    done();
+  }
+}
+
+function _copyFallback(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
 }

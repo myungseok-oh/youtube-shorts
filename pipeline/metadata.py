@@ -1,4 +1,5 @@
 """영상 메타데이터 생성"""
+from __future__ import annotations
 import json
 import os
 import re

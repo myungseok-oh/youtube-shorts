@@ -1,4 +1,5 @@
 """Google Trends + YouTube Trending 데이터 수집"""
+from __future__ import annotations
 import logging
 import xml.etree.ElementTree as ET
 
@@ -85,6 +86,99 @@ def _fetch_youtube_trending(api_key: str) -> list[str]:
         if title:
             titles.append(title)
     return titles
+
+
+_GOOGLE_NEWS_CATEGORIES = {
+    "": "",
+    "BUSINESS": "BUSINESS",
+    "TECHNOLOGY": "TECHNOLOGY",
+    "NATION": "NATION",
+}
+
+
+def _fetch_google_news(category: str = "") -> list[dict]:
+    """Google News RSS 피드로 한국 뉴스 상위 20건 수집.
+
+    Args:
+        category: "" (종합), "BUSINESS", "TECHNOLOGY", "NATION"
+
+    Returns:
+        [{"title": "...", "source": "...", "link": "...", "pub_date": "..."}]
+    """
+    if category and category in _GOOGLE_NEWS_CATEGORIES:
+        url = f"https://news.google.com/rss/headlines/section/topic/{category}?hl=ko&gl=KR&ceid=KR:ko"
+    else:
+        url = "https://news.google.com/rss?hl=ko&gl=KR&ceid=KR:ko"
+
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+
+    root = ET.fromstring(resp.text)
+    items = []
+    for item in root.iter("item"):
+        raw_title = item.findtext("title", "").strip()
+        if not raw_title:
+            continue
+        # Google News <title> 형식: "뉴스 제목 - 출처"
+        if " - " in raw_title:
+            title, source = raw_title.rsplit(" - ", 1)
+        else:
+            title, source = raw_title, ""
+        link = item.findtext("link", "").strip()
+        pub_date = item.findtext("pubDate", "").strip()
+        items.append({
+            "title": title.strip(),
+            "source": source.strip(),
+            "link": link,
+            "pub_date": pub_date,
+        })
+        if len(items) >= 20:
+            break
+    return items
+
+
+def collect_news(
+    sources: list[str] | None = None,
+    youtube_api_key: str = "",
+    category: str = "",
+) -> dict:
+    """뉴스 탐색용 통합 수집.
+
+    Args:
+        sources: ["google_news", "google_trends", "youtube_trending"]
+        youtube_api_key: YouTube Data API v3 키
+        category: Google News 카테고리 ("", "BUSINESS", "TECHNOLOGY", "NATION")
+
+    Returns:
+        {"google_news": [...], "google_trends": [...], "youtube_trending": [...]}
+    """
+    if not sources:
+        sources = ["google_news", "google_trends"]
+
+    results = {}
+
+    if "google_news" in sources:
+        try:
+            results["google_news"] = _fetch_google_news(category)
+        except Exception as e:
+            logger.warning("Google News 수집 실패: %s", e)
+            results["google_news"] = []
+
+    if "google_trends" in sources:
+        try:
+            results["google_trends"] = _fetch_google_trends()
+        except Exception as e:
+            logger.warning("Google Trends 수집 실패: %s", e)
+            results["google_trends"] = []
+
+    if "youtube_trending" in sources and youtube_api_key:
+        try:
+            results["youtube_trending"] = _fetch_youtube_trending(youtube_api_key)
+        except Exception as e:
+            logger.warning("YouTube Trending 수집 실패: %s", e)
+            results["youtube_trending"] = []
+
+    return results
 
 
 def format_trend_context(trends: dict[str, list[str]]) -> str:

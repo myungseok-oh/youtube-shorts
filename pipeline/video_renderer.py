@@ -1,4 +1,5 @@
 """ffmpeg 기반 영상 합성기"""
+from __future__ import annotations
 import glob
 import os
 import random

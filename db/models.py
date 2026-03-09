@@ -1,4 +1,5 @@
 """Channel, Job, JobStep 모델 헬퍼"""
+from __future__ import annotations
 import json
 from datetime import datetime
 

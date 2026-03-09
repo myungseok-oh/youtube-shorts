@@ -1,4 +1,5 @@
 """이미지 라이브러리 — 카테고리/키워드 기반 이미지 관리 + 자동 매칭"""
+from __future__ import annotations
 import json
 import os
 import re

@@ -1,4 +1,5 @@
 """CCL(Creative Commons) 이미지 검색 — Openverse API 활용"""
+from __future__ import annotations
 import os
 import re
 from pathlib import Path
