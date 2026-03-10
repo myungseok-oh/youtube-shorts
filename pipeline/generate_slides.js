@@ -266,13 +266,13 @@ function zonedStyles(accent) {
       background: linear-gradient(180deg, rgba(5,8,20,0.92) 0%, rgba(5,8,20,0.75) 100%);
     }
     .main-text {
-      font-size: 72px; font-weight: 900;
-      text-align: center; line-height: 1.35;
+      font-size: 100px; font-weight: 900;
+      text-align: center; line-height: 1.25;
       padding: 0 20px;
       text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 40px rgba(0,0,0,0.7);
     }
     .sub-text {
-      font-size: 44px; color: rgba(255,255,255,0.6);
+      font-size: 56px; color: rgba(255,255,255,0.6);
       text-align: center; font-weight: 400; padding: 0 30px;
       margin-top: 30px;
       text-shadow: 0 2px 8px rgba(0,0,0,0.8);
@@ -629,7 +629,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
 // ──── Zoned Opening 슬라이드 ────
 function buildZonedOpening(slide, accent, bgData, progressPct) {
   const textHTML = `
-    <div class="main-text" style="font-size:100px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
+    <div class="main-text" style="font-size:120px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text" style="font-size:44px;">${slide.sub}</div>` : ''}
   `;
 
@@ -637,7 +637,7 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
   if (layout === 'center') {
     bodyContent = `
       <div class="text-zone" style="height:35%;justify-content:flex-end;padding-bottom:20px;">
-        <div class="main-text" style="font-size:96px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
+        <div class="main-text" style="font-size:120px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
       </div>
       ${imageZoneHTML(bgData, 40)}
       <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">
@@ -683,7 +683,7 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
   if (layout === 'center') {
     bodyContent = `
       <div class="text-zone" style="height:25%;justify-content:flex-end;padding-bottom:20px;">
-        <div class="main-text" style="font-size:68px;">${slide.main}</div>
+        <div class="main-text" style="font-size:100px;">${slide.main}</div>
       </div>
       ${imageZoneHTML(bgData, 50)}
       <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">

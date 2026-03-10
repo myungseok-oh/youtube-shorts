@@ -172,37 +172,6 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
                     [json.dumps(script_json, ensure_ascii=False), _now(), job_id]
                 )
 
-                # 이미지 프롬프트 별도 생성 (웹 검색 불필요, 빠름)
-                try:
-                    slides = script_json.get("slides", [])
-                    slide_layout_a = ch_config.get("slide_layout", "full")
-                    image_style_a = ch_config.get("image_style", "mixed")
-
-                    # script_json 슬라이드에 image_prompt_en이 있으면 그대로 사용
-                    _existing_a = [
-                        {"ko": s.get("image_prompt_ko", ""), "en": s.get("image_prompt_en", "")}
-                        for s in slides if s.get("bg_type") != "closing"
-                    ]
-                    if all(p.get("en") for p in _existing_a):
-                        image_prompts = _existing_a
-                        print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing_a)}개)")
-                    else:
-                        image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a)
-                    if image_prompts:
-                        meta = {}
-                        existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
-                        if existing and existing.get("meta_json"):
-                            try:
-                                meta = json.loads(existing["meta_json"])
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                        meta["image_prompts"] = image_prompts
-                        db.execute(
-                            "UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
-                            [json.dumps(meta, ensure_ascii=False), _now(), job_id]
-                        )
-                except Exception:
-                    pass  # 이미지 프롬프트 실패해도 대본은 유지
             except Exception as e:
                 _update_step(db, job_id, "news_search", "failed", error_msg=str(e))
                 raise
@@ -211,6 +180,37 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
                          output_data={"message": "script 직접 제공"})
             _update_step(db, job_id, "script", "skipped",
                          output_data={"message": "script 직접 제공"})
+
+        # 이미지 프롬프트 생성 (자동/수동 대본 모두)
+        try:
+            slides = script_json.get("slides", [])
+            slide_layout_a = ch_config.get("slide_layout", "full")
+            image_style_a = ch_config.get("image_style", "mixed")
+
+            _existing_a = [
+                {"ko": s.get("image_prompt_ko", ""), "en": s.get("image_prompt_en", "")}
+                for s in slides if s.get("bg_type") != "closing"
+            ]
+            if all(p.get("en") for p in _existing_a):
+                image_prompts = _existing_a
+                print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing_a)}개)")
+            else:
+                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a)
+            if image_prompts:
+                meta = {}
+                existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
+                if existing and existing.get("meta_json"):
+                    try:
+                        meta = json.loads(existing["meta_json"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                meta["image_prompts"] = image_prompts
+                db.execute(
+                    "UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
+                    [json.dumps(meta, ensure_ascii=False), _now(), job_id]
+                )
+        except Exception:
+            pass  # 이미지 프롬프트 실패해도 대본은 유지
 
         # Phase A 완료 → waiting_slides
         db.execute(

@@ -18,7 +18,7 @@ IMAGE_MODELS = [
 
 
 def generate_image(prompt: str, output_path: str, api_key: str,
-                   aspect_ratio: str = "9:16", max_retries: int = 2) -> bool:
+                   aspect_ratio: str = "9:16", max_retries: int = 1) -> bool:
     """Gemini 이미지 생성.
 
     Args:
@@ -26,7 +26,7 @@ def generate_image(prompt: str, output_path: str, api_key: str,
         output_path: 저장 경로 (.png)
         api_key: Google AI Studio API key
         aspect_ratio: 비율 (9:16, 1:1, 4:3 등)
-        max_retries: 재시도 횟수
+        max_retries: 재시도 횟수 (429 시 즉시 중단)
 
     Returns:
         성공 여부
@@ -61,14 +61,12 @@ def generate_image(prompt: str, output_path: str, api_key: str,
             except Exception as e:
                 err_msg = str(e)
                 if "400" in err_msg and "modalities" in err_msg.lower():
-                    # 이 모델은 IMAGE modality 미지원 → 다음 모델로
                     print(f"[gemini] {model_name} does not support IMAGE modality, trying next")
                     break
                 print(f"[gemini] {model_name} failed (attempt {attempt + 1}): {err_msg[:200]}")
                 if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg.upper():
-                    wait = 15 * (attempt + 1)
-                    print(f"[gemini] rate limit -- waiting {wait}s")
-                    time.sleep(wait)
+                    print(f"[gemini] quota exhausted — skipping (수동 업로드로 대체)")
+                    return False
                 elif attempt < max_retries:
                     time.sleep(3)
 

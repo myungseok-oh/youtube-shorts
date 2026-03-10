@@ -1648,13 +1648,24 @@ async def api_dashboard():
         waiting = sum(1 for j in jobs if j["status"] == "waiting_slides")
         queued = sum(1 for j in jobs if j["status"] == "queued")
 
-        # job별 상세 (카드용)
+        # job별 상세 (카드용) + 단계별 집계 — 1회 쿼리로 통합
         job_cards = []
+        steps_agg = {}
+        for step_def in STEP_DEFINITIONS:
+            steps_agg[step_def["name"]] = {
+                "order": step_def["order"],
+                "completed": 0, "running": 0,
+                "failed": 0, "pending": 0, "skipped": 0,
+            }
         for job in jobs:
             steps = get_job_steps(db, job["id"])
             steps_info = {}
             for s in steps:
-                steps_info[s["step_name"]] = s["status"] or "pending"
+                name = s["step_name"]
+                st = s["status"] or "pending"
+                steps_info[name] = st
+                if name in steps_agg and st in steps_agg[name]:
+                    steps_agg[name][st] += 1
 
             card = {
                 "id": job["id"],
@@ -1669,23 +1680,6 @@ async def api_dashboard():
             if job["status"] == "queued":
                 card["queue_position"] = get_queue_position(job["id"])
             job_cards.append(card)
-
-        # 파이프라인 단계별 집계 (기존 호환)
-        steps_agg = {}
-        for step_def in STEP_DEFINITIONS:
-            steps_agg[step_def["name"]] = {
-                "order": step_def["order"],
-                "completed": 0, "running": 0,
-                "failed": 0, "pending": 0, "skipped": 0,
-            }
-        for job in jobs:
-            steps = get_job_steps(db, job["id"])
-            for s in steps:
-                name = s["step_name"]
-                if name in steps_agg:
-                    st = s["status"] or "pending"
-                    if st in steps_agg[name]:
-                        steps_agg[name][st] += 1
 
         last_job = jobs[0] if jobs else None
         result.append({
