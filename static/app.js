@@ -112,8 +112,8 @@ async function loadAll() {
   }
   updateHeaderStatus();
 
-  // 상세 팝업이 열려있으면 자동 갱신 (스킵 조건: waiting_slides, 영상 재생 중)
-  if (currentDetailJobId && !document.getElementById("job-detail-modal").classList.contains("hidden")) {
+  // 상세 팝업이 열려있으면 자동 갱신 (스킵 조건: 초기 로딩 중, waiting_slides, 영상 재생 중)
+  if (currentDetailJobId && !_detailLoading && !document.getElementById("job-detail-modal").classList.contains("hidden")) {
     const video = document.querySelector("#job-detail-content video");
     const isPlaying = video && !video.paused && !video.ended;
     if (isPlaying) return; // 영상 재생 중이면 새로고침 스킵
@@ -397,15 +397,19 @@ function renderJobCard(job, isCompleted = false) {
 
 // ─── Job Detail Popup ───
 
+let _detailLoading = false;
+
 async function openJobDetail(jobId) {
   currentDetailJobId = jobId;
   _lastDetailStatus = null;
   _lastDetailHadScript = false;
+  _detailLoading = true;
   _wizardStep = 1; // will be auto-determined after data load
   document.getElementById("job-detail-modal").classList.remove("hidden");
   document.getElementById("job-detail-content").innerHTML = `
     <div class="text-center py-8 text-gray-500">로딩중...</div>`;
   await refreshJobDetail(jobId, true);
+  _detailLoading = false;
 }
 
 let _lastDetailStatus = null;
@@ -417,6 +421,10 @@ async function refreshJobDetail(jobId, autoStep = false) {
       fetch(`/api/jobs/${jobId}/script`),
       fetch(`/api/jobs/${jobId}/steps`),
     ]);
+
+    // fetch 도중 다른 작업이 열렸으면 렌더링 스킵 (stale 응답 방지)
+    if (jobId !== currentDetailJobId) return;
+
     const scriptData = await scriptRes.json();
     const stepsData = await stepsRes.json();
 
@@ -456,6 +464,9 @@ async function refreshJobDetail(jobId, autoStep = false) {
 function _patchRunningDetail(scriptData, stepsData) {
   const steps = stepsData.steps || [];
   const { status, script, job_id } = scriptData;
+
+  // 다른 작업 팝업으로 바뀌었으면 패치 스킵
+  if (currentDetailJobId && job_id !== currentDetailJobId) return;
 
   const stepStatus = {};
   for (const s of steps) stepStatus[s.step_name] = s.status || "pending";
@@ -1110,6 +1121,10 @@ function renderWizardFooter(step, jobId, scriptData, stepsData) {
 function renderJobDetail(scriptData, stepsData) {
   const { job_id, topic, status, auto_bg_source, slide_layout } = scriptData;
   const jobId = job_id;
+
+  // 다른 작업 팝업으로 바뀌었으면 렌더링 스킵
+  if (currentDetailJobId && jobId !== currentDetailJobId) return;
+
   window._bgSource = auto_bg_source || "sd_image";
   window._slideLayout = slide_layout || "full";
   window._jobStatus = status;

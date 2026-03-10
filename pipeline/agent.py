@@ -264,13 +264,34 @@ def _build_roundup_schema(p: dict) -> str:
 SCRIPT_JSON_SCHEMA = _build_script_schema(60)
 
 
+def _is_specific_topic(request: str) -> bool:
+    """요청이 구체적 뉴스 헤드라인인지 판별.
+
+    '만들어줘', 'N개', '뉴스 찾아줘' 등 일반 요청 패턴이 없고
+    충분히 길면(15자+) 구체적 주제로 판단.
+    """
+    general_patterns = [
+        r'\d+\s*개', r'만들어', r'찾아', r'검색', r'알려',
+        r'뉴스\s*줘', r'소식\s*줘', r'브리핑', r'최신',
+    ]
+    for pat in general_patterns:
+        if re.search(pat, request):
+            return False
+    # 충분히 구체적인 길이 (15자 이상)
+    return len(request.strip()) >= 15
+
+
 def parse_request(request: str, instructions: str = "", trend_context: str = "",
                    recent_topics: list[str] | None = None) -> list[str]:
     """자유 형식 요청을 개별 뉴스 주제 리스트로 변환.
 
     예: "오늘 경제 뉴스 3개 만들어줘" → ["원/달러 환율 급등", "코스피 하락", "금리 동결"]
-    예: "이란 전쟁 뉴스" → ["이란 전쟁 뉴스"]
+    예: "'반도체 호황' 삼성전자 연봉 역대 최대" → ["'반도체 호황' 삼성전자 연봉 역대 최대"]
     """
+    # 구체적 헤드라인이면 Claude 호출 스킵 → 즉시 반환
+    if _is_specific_topic(request):
+        return [request.strip()]
+
     trend_section = ""
     if trend_context:
         trend_section = f"""
@@ -297,10 +318,13 @@ def parse_request(request: str, instructions: str = "", trend_context: str = "",
 요청: {request}
 {f"채널 지침: {instructions[:300]}" if instructions else ""}
 {trend_section}{recent_section}규칙:
+- ★ 요청이 이미 구체적인 뉴스 헤드라인/주제이면 그대로 반환. 절대 다른 주제로 바꾸지 마라.
+- "N개 만들어줘", "뉴스 N개" 등 일반적 요청일 때만 웹 검색으로 주제를 찾아라
 - 구체적 뉴스 토픽 (예: "원/달러 환율 1500원 돌파")
 - "N개" 명시 시 정확히 N개, 없으면 1개
+- 요청에 특정 분야가 명시되면(예: "연예 뉴스", "코인 뉴스") 해당 분야 내에서만 주제 선정
 {("- 트렌딩 데이터를 최우선 활용, 없으면 웹 검색 보완" + chr(10)) if trend_context else ""}- 오늘({date_str}) 발행 기사만 사용. 어제 이전/날짜 불명 금지
-- 기존 주제와 중복 금지 (다른 각도도 불가). 주제끼리 다른 분야여야 함
+- 기존 주제와 중복 금지 (다른 각도도 불가)
 
 JSON 배열만 출력: ["주제1", "주제2"]"""
 
@@ -371,7 +395,10 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
         topic_section = f"""주제: {topic}
 
 위 지침에 따라 이 주제에 대한 최신 뉴스를 웹에서 검색하고,
-{duration_label} 쇼츠 뉴스 브리핑 영상용 script_json을 생성해줘."""
+{duration_label} 쇼츠 뉴스 브리핑 영상용 script_json을 생성해줘.
+
+★ 검색 시 반드시 "{topic} {date_str}" 또는 "{topic} 오늘"로 검색할 것.
+★ 검색 결과에서 기사 발행일이 오늘({date_str})인 것만 사용."""
 
     prompt = f"""{instructions}
 
@@ -383,8 +410,10 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
 
 {topic_section}
 
-### ★ 뉴스 선별 기준 (필수)
+### ★★ 뉴스 선별 기준 (필수, 위반 시 전체 폐기)
+- 현재 연도는 {now.year}년이다. {now.year - 1}년 이전 기사는 절대 사용 금지
 - 오늘({date_str}) 발행 기사만 사용. 검색 시 "{date_str}" 키워드 포함
+- 검색 결과의 기사 날짜를 반드시 확인. URL이나 본문에서 발행일 체크
 - 어제 이전/날짜 불명/과거 분석 기사 사용 금지
 - 오늘 기사 못 찾으면 youtube_title에 "최신 뉴스를 찾을 수 없습니다" 명시
 
@@ -398,7 +427,7 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
 brand 값은 "{brand}"로 설정해.
 """
 
-    raw = _run_claude(prompt, timeout=300)
+    raw = _run_claude(prompt, timeout=300, model="claude-sonnet-4-6")
     script = _parse_response(raw, brand)
 
     # 날짜 검증: 오래된 뉴스 차단
@@ -473,8 +502,7 @@ ALL prompts in English, 30-60 words, 5요소 포함: subject, setting, lighting,
 - **closing**: 빈 문자열 "" 출력
 
 ## BANNED
-- people, faces, body parts, hands
-- text, letters, numbers in the image
+- text, letters, numbers rendered in the image
 - dark, moody, horror themes → always bright/professional
 - low quality, blurry, watermark"""
 
@@ -573,7 +601,7 @@ Output ONLY a JSON array with exactly {len(slide_descs)} items, no other text:
 [{{"ko":"한국어 설명", "en":"English prompt"}}, ...]"""
 
     raw = _run_claude(prompt, timeout=60, use_web=False,
-                      model="claude-haiku-4-5-20251001")
+                      model="claude-opus-4-6")
 
     try:
         wrapper = json.loads(raw)
