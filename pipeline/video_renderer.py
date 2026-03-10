@@ -397,7 +397,7 @@ def _mix_audio(input_path: str, output_path: str,
         bgm_path = _get_audio_path("bgm", cfg.get("bgm_file", ""))
         if bgm_path:
             bgm_vol = (cfg.get("bgm_volume", 10) or 10) / 100.0
-            narr_delay = cfg.get("narration_delay") or 2  # 나레이션 시작 시점
+            narr_delay = cfg.get("narration_delay") if cfg.get("narration_delay") is not None else 2
             bgm_start_ms = int(narr_delay * 1000)
 
             # 마지막 슬라이드(클로징) 시작 시점 = 페이드아웃 시작
@@ -405,15 +405,17 @@ def _mix_audio(input_path: str, output_path: str,
             last_content_end = cumulative[-2] if len(cumulative) >= 2 else total_dur
             bgm_end = last_content_end  # 클로징 시작 시점에서 BGM 종료
             bgm_dur = bgm_end - narr_delay
-            fade_in_dur = min(3, bgm_dur * 0.1)
-            fade_out_dur = min(5, bgm_dur * 0.2)  # 넉넉한 페이드아웃
+            bgm_fade_in = cfg.get("bgm_fade_in", 0)  # 0이면 페이드인 없음
+            fade_out_dur = min(5, bgm_dur * 0.2)
             fade_out_start = max(0, bgm_dur - fade_out_dur)
+
+            fade_in_filter = f"afade=t=in:st=0:d={bgm_fade_in:.2f}," if bgm_fade_in > 0 else ""
 
             extra_inputs.append(bgm_path)
             filter_parts.append(
                 f"[{input_idx}:a]aloop=loop=-1:size=2e+09,"
                 f"atrim=0:{bgm_dur:.2f},"
-                f"afade=t=in:st=0:d={fade_in_dur:.2f},"
+                f"{fade_in_filter}"
                 f"afade=t=out:st={fade_out_start:.2f}:d={fade_out_dur:.2f},"
                 f"volume={bgm_vol},"
                 f"adelay={bgm_start_ms}|{bgm_start_ms}[bgm]"

@@ -889,14 +889,18 @@ async def api_manual_youtube_upload(job_id: str):
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
+    import re
+    def _strip_html(text: str) -> str:
+        return re.sub(r"<[^>]+>", "", text)
+
     thumb_path = os.path.join(job_dir, "thumbnail.png")
 
     try:
         result = await asyncio.to_thread(
             upload_video,
             video_path=final_path,
-            title=meta["title"][:100],
-            description=meta["description"],
+            title=_strip_html(meta["title"])[:100],
+            description=_strip_html(meta["description"]),
             tags=meta.get("tags", []),
             client_id=yt_client_id,
             client_secret=yt_client_secret,
@@ -905,6 +909,8 @@ async def api_manual_youtube_upload(job_id: str):
             thumbnail_path=thumb_path if os.path.isfile(thumb_path) else "",
         )
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"YouTube 업로드 실패: {e}")
 
     # upload 스텝 상태 업데이트 (없으면 INSERT)
@@ -1569,13 +1575,15 @@ async def api_reset_job(job_id: str):
     db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
                ["waiting_slides", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id])
     db.execute(
-        "UPDATE job_steps SET status = 'pending', error_msg = NULL, output_data = NULL, started_at = NULL, completed_at = NULL WHERE job_id = ? AND step_name IN ('tts', 'render', 'qa', 'upload')",
+        "UPDATE job_steps SET status = 'pending', error_msg = NULL, output_data = NULL, started_at = NULL, completed_at = NULL WHERE job_id = ? AND step_name IN ('slides', 'tts', 'render', 'qa', 'upload')",
         [job_id])
 
-    # 기존 오디오 삭제
-    audio_dir = os.path.join(config.output_dir(), job_id, "audio")
-    if os.path.isdir(audio_dir):
-        shutil.rmtree(audio_dir, ignore_errors=True)
+    # 기존 슬라이드/오디오/영상 삭제 (재생성)
+    job_out = os.path.join(config.output_dir(), job_id)
+    for sub in ("images", "audio", "video", "segments"):
+        d = os.path.join(job_out, sub)
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
 
     return {"ok": True, "message": "Reset to waiting_slides"}
 

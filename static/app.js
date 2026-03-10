@@ -500,7 +500,7 @@ function _patchRunningDetail(scriptData, stepsData) {
         <div class="flex flex-col items-center py-4 gap-3">
           <div class="text-sm font-semibold text-gray-300 w-full">영상 미리보기</div>
           <video class="video-preview" controls>
-            <source src="/api/jobs/${job_id}/video" type="video/mp4">
+            <source src="/api/jobs/${job_id}/video?t=${Date.now()}" type="video/mp4">
           </video>
         </div>`;
     }
@@ -955,7 +955,7 @@ function renderWizardStep3(jobId, scriptData, stepsData) {
     videoHtml = `
       <div class="flex flex-col items-center gap-3 mb-3">
         <video class="video-preview" controls>
-          <source src="/api/jobs/${jobId}/video" type="video/mp4">
+          <source src="/api/jobs/${jobId}/video?t=${Date.now()}" type="video/mp4">
         </video>
         <div id="upload-status-${jobId}" class="text-xs"></div>
       </div>`;

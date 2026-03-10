@@ -182,6 +182,15 @@ function commonStyles(accent, bgImg) {
       display: flex; flex-direction: column;
       justify-content: center; align-items: center;
     }
+    .text-bg {
+      background: rgba(0,0,0,0.45);
+      backdrop-filter: blur(8px);
+      border-radius: 20px;
+      padding: 50px 60px;
+      max-width: 95%;
+      display: flex; flex-direction: column;
+      align-items: center;
+    }
   `;
 }
 
@@ -320,15 +329,15 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
   .top-bar { display: none; }
   .accent-stripe { display: none; }
   .main-text {
-    font-size: 110px; font-weight: 900;
-    text-align: center; line-height: 1.2;
-    padding: 0 60px;
-    text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 50px rgba(0,0,0,0.7);
-    letter-spacing: -2px;
+    font-size: 140px; font-weight: 900;
+    text-align: center; line-height: 1.25;
+    padding: 0 50px;
+    text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 50px rgba(0,0,0,0.7);
+    letter-spacing: -3px;
   }
   .sub-text {
-    font-size: 46px; color: rgba(255,255,255,0.65);
-    text-align: center; font-weight: 400; padding: 0 100px;
+    font-size: 72px; color: rgba(255,255,255,0.65);
+    text-align: center; font-weight: 400; padding: 0 60px;
     margin-top: 50px;
     text-shadow: 0 2px 10px rgba(0,0,0,0.9);
   }
@@ -340,9 +349,10 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
   <div class="top-bar"></div>
   <div class="accent-stripe"></div>
   <div class="content-wrap">
-    ${badgeHTML(slide.category)}
-    <div class="main-text">${slide.main}</div>
-    ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
+    <div class="text-bg">
+      <div class="main-text">${slide.main}</div>
+      ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
+    </div>
   </div>
   ${sourceLabel(bgSource)}
   ${progressBar(progressPct)}
@@ -362,16 +372,16 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
   .divider-top { margin-bottom: 50px; }
   .divider-bottom { margin-top: 50px; }
   .main-text {
-    font-size: 76px; font-weight: 900;
-    text-align: center; line-height: 1.35;
-    padding: 0 80px;
-    text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 40px rgba(0,0,0,0.7);
+    font-size: 130px; font-weight: 900;
+    text-align: center; line-height: 1.25;
+    padding: 0 50px;
+    text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 40px rgba(0,0,0,0.7);
   }
   .sub-text {
-    font-size: 44px; color: rgba(255,255,255,0.6);
-    text-align: center; font-weight: 400; padding: 0 90px;
-    margin-top: 36px;
-    text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+    font-size: 72px; color: rgba(255,255,255,0.7);
+    text-align: center; font-weight: 400; padding: 0 50px;
+    margin-top: 40px;
+    text-shadow: 0 3px 10px rgba(0,0,0,0.9);
   }
   .badge { margin-bottom: 24px; }
   .slide-num {
@@ -400,11 +410,10 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
   <div class="corner-tl"></div>
   <div class="corner-br"></div>
   <div class="content-wrap">
-    ${badgeHTML(slide.category)}
-    <div class="divider-top"></div>
-    <div class="main-text">${slide.main}</div>
-    ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
-    <div class="divider-bottom"></div>
+    <div class="text-bg">
+      <div class="main-text">${slide.main}</div>
+      ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
+    </div>
   </div>
   <div class="slide-num">${String(index).padStart(2, '0')}</div>
   ${sourceLabel(bgSource)}
@@ -600,7 +609,6 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   <div class="bg-overlay"></div>
   ${grainSVG()}
   <div class="content-wrap">
-    ${badgeHTML(slide.category)}
     <div class="title-area">
       <div class="main-title">${slide.main}</div>
     </div>
@@ -621,7 +629,6 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
 // ──── Zoned Opening 슬라이드 ────
 function buildZonedOpening(slide, accent, bgData, progressPct) {
   const textHTML = `
-    ${badgeHTML(slide.category, 'margin-bottom:40px')}
     <div class="main-text" style="font-size:100px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text" style="font-size:44px;">${slide.sub}</div>` : ''}
   `;
@@ -630,8 +637,7 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
   if (layout === 'center') {
     bodyContent = `
       <div class="text-zone" style="height:35%;justify-content:flex-end;padding-bottom:20px;">
-        ${badgeHTML(slide.category)}
-        <div class="main-text" style="font-size:96px;line-height:1.2;letter-spacing:-2px;margin-top:16px;">${slide.main}</div>
+        <div class="main-text" style="font-size:96px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
       </div>
       ${imageZoneHTML(bgData, 40)}
       <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">
@@ -669,7 +675,6 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
 // ──── Zoned Content 슬라이드 ────
 function buildZonedContent(slide, accent, bgData, progressPct, index) {
   const textHTML = `
-    ${badgeHTML(slide.category, 'margin-bottom:20px')}
     <div class="main-text">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
   `;
@@ -678,7 +683,6 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
   if (layout === 'center') {
     bodyContent = `
       <div class="text-zone" style="height:25%;justify-content:flex-end;padding-bottom:20px;">
-        ${badgeHTML(slide.category)}
         <div class="main-text" style="font-size:68px;">${slide.main}</div>
       </div>
       ${imageZoneHTML(bgData, 50)}
