@@ -194,6 +194,57 @@ async def dashboard(request: Request):
     })
 
 
+# ─── Usage API ───
+
+import subprocess as _sp
+import time as _time
+
+_CCUSAGE_CMD = shutil.which("ccusage") or "ccusage"
+_PLAN_LIMITS = {"session_cost": 49.0, "weekly_cost": 203.0}
+_usage_cache: dict = {"data": None, "ts": 0}
+
+def _run_ccusage(args: list[str], timeout: int = 15) -> dict | None:
+    try:
+        result = _sp.run([_CCUSAGE_CMD] + args + ["--json"],
+                         capture_output=True, text=True, timeout=timeout)
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout)
+    except Exception:
+        pass
+    return None
+
+@app.get("/api/usage")
+async def api_usage():
+    now = _time.time()
+    if _usage_cache["data"] and now - _usage_cache["ts"] < 30:
+        return _usage_cache["data"]
+
+    from datetime import date, timedelta
+    week_start = (date.today() - timedelta(days=date.today().weekday())).strftime("%Y%m%d")
+
+    block = _run_ccusage(["blocks", "--active", "--token-limit", "max"])
+    daily = _run_ccusage(["daily", "--since", week_start, "--breakdown"])
+
+    active_block = None
+    session_pct = 0
+    if block and block.get("blocks"):
+        for b in block["blocks"]:
+            if b.get("isActive"):
+                active_block = b
+                cost = b.get("costUSD", 0)
+                session_pct = round(cost / _PLAN_LIMITS["session_cost"] * 100)
+                break
+
+    weekly_pct = 0
+    if daily and daily.get("totals"):
+        weekly_pct = round(daily["totals"].get("totalCost", 0) / _PLAN_LIMITS["weekly_cost"] * 100)
+
+    result = {"session_pct": session_pct, "weekly_pct": weekly_pct}
+    _usage_cache["data"] = result
+    _usage_cache["ts"] = now
+    return result
+
+
 # ─── Channel API ───
 
 @app.get("/api/channels")
@@ -1844,12 +1895,12 @@ async def api_oauth_youtube(request: Request):
         raise HTTPException(400, "client_id와 client_secret이 필요합니다")
 
     client_config = {
-        "web": {
+        "installed": {
             "client_id": client_id,
             "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": ["http://localhost:8090/"]
+            "redirect_uris": ["http://localhost"]
         }
     }
 

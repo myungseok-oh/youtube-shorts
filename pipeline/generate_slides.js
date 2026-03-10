@@ -5,7 +5,7 @@
  * input.json 형식:
  * {
  *   "slides": [
- *     { "category": "속보", "main": "...", "sub": "...", "accent": "#ff4444" },
+ *     { "category": "속보", "main": "...", "sub": "..." },
  *     ...
  *   ],
  *   "backgrounds": [{"path": "bg1.png", "source": "MBC"}, ...],
@@ -86,7 +86,7 @@ function badgeHTML(category, style = '') {
 }
 
 function buildHTML(slide, index) {
-  const accent = slide.accent || '#ff6b35';
+  const accent = '#ff6b35';
   const bgData = bgInfo(index);
   const progressPct = total > 1 ? ((index + 1) / total * 100).toFixed(1) : 100;
 

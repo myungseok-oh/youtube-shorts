@@ -821,6 +821,24 @@
   50% { opacity: 0.8; }
 }
 
+.header-pulse {
+  animation: header-blink 1.2s ease-in-out infinite;
+}
+@keyframes header-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+#claude-dot.active {
+  background: #22c55e;
+  box-shadow: 0 0 6px #22c55e88;
+  animation: claude-pulse 1.5s ease-in-out infinite;
+}
+@keyframes claude-pulse {
+  0%, 100% { box-shadow: 0 0 4px #22c55e88; }
+  50% { box-shadow: 0 0 10px #22c55ecc; }
+}
+
 /* ─── Video Preview ─── */
 .video-preview {
   width: 100%;

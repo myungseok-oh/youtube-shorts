@@ -17,6 +17,11 @@
       <h1 class="text-xl font-bold">YouTube Shorts <span class="text-gray-500 font-normal text-sm">Dashboard</span></h1>
     </div>
     <div class="flex items-center gap-4">
+      <div id="header-claude-status" class="flex items-center gap-1.5 text-xs text-gray-500">
+        <span id="claude-dot" class="w-2 h-2 rounded-full bg-gray-600"></span>
+        <span>Claude</span>
+        <span id="claude-usage" class="text-gray-500"></span>
+      </div>
       <div id="header-queue-status" class="flex items-center gap-3 text-xs text-gray-400"></div>
       <button onclick="openNewsBrowser()" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white hover:bg-gray-800 border border-gray-700 rounded-lg transition">탐색</button>
     </div>
@@ -289,29 +294,10 @@
           </div>
         </details>
 
-        <!-- 트렌드 소스 설정 -->
-        <details class="border border-gray-700 rounded-lg">
-          <summary class="px-3 py-2 text-sm text-gray-400 cursor-pointer hover:text-gray-200 transition">트렌드 수집 설정</summary>
-          <div class="p-3 pt-0 space-y-3">
-            <p class="text-xs text-gray-500">실행 시 트렌드 데이터를 미리 수집하여 Claude에게 컨텍스트로 전달합니다</p>
-            <div class="flex flex-col gap-2">
-              <label class="flex items-center gap-2 text-sm text-gray-300">
-                <input id="cs-trend-google" type="checkbox" class="accent-orange-500"> Google Trends (한국 실시간)
-              </label>
-              <label class="flex items-center gap-2 text-sm text-gray-300">
-                <input id="cs-trend-youtube" type="checkbox" class="accent-orange-500"> YouTube Trending (한국)
-              </label>
-            </div>
-            <div id="cs-yt-apikey-row" class="hidden">
-              <label class="block text-xs text-gray-500 mb-1">YouTube Data API Key</label>
-              <input id="cs-youtube-api-key" type="password" placeholder="AIzaSy..."
-                     class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono">
-            </div>
-            <button onclick="previewTrends()" id="btn-preview-trends"
-                    class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">현재 트렌드 미리보기</button>
-            <div id="trend-preview-result" class="hidden text-xs bg-gray-900 rounded p-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-gray-400"></div>
-          </div>
-        </details>
+        <!-- 트렌드 소스 설정 (뉴스 RSS만 유지) -->
+        <input id="cs-trend-google" type="hidden" value="">
+        <input id="cs-trend-youtube" type="hidden" value="">
+        <input id="cs-youtube-api-key" type="hidden" value="">
 
         <!-- 배경 음악 / 음향 설정 -->
         <details class="border border-gray-700 rounded-lg">

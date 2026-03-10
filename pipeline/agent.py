@@ -168,7 +168,7 @@ def _build_script_schema(target_duration: int = 60, channel_format: str = "singl
   "news_date": "2026-03-09",
   "youtube_title": "제목 (100자 이내)",
   "sentences": [{{"text": "문장 (15~25자)", "slide": 1}}, ...],
-  "slides": [{{"category": "카테고리", "main": "핵심 <span class=\\"hl\\">강조</span>", "sub": "보조 설명", "accent": "#ff4444", "bg_type": "photo"}}, ...]
+  "slides": [{{"category": "카테고리", "main": "핵심 <span class=\\"hl\\">강조</span>", "sub": "보조 설명", "bg_type": "photo"}}, ...]
 }}
 
 규칙:
@@ -207,14 +207,14 @@ def _build_roundup_schema(p: dict) -> str:
       "category": "오늘의 뉴스",
       "main": "오늘의 핵심 뉴스 <span class=\\"hl\\">5선</span>",
       "sub": "① 주제1 ② 주제2 ③ 주제3 ④ 주제4 ⑤ 주제5",
-      "accent": "#2563eb",
+
       "bg_type": "overview"
     }},
     {{
       "category": "1️⃣ 카테고리",
       "main": "핵심 키워드 <span class=\\"hl\\">강조</span>",
       "sub": "보조 설명",
-      "accent": "#ff4444",
+
       "bg_type": "photo"
     }},
     ...

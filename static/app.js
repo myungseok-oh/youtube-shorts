@@ -75,6 +75,7 @@ const STATUS_TEXT = {
 document.addEventListener("DOMContentLoaded", () => {
   loadAll();
   startPolling();
+  startUsagePolling();
 
   // 모달 바깥 클릭으로 닫기
   document.getElementById("job-detail-modal").addEventListener("click", (e) => {
@@ -2520,10 +2521,42 @@ function updateHeaderStatus() {
     waiting += ch.waiting_jobs || 0;
   }
   const parts = [];
-  if (running > 0) parts.push(`<span class="text-orange-400">● ${running} 진행</span>`);
+  if (running > 0) parts.push(`<span class="text-orange-400 header-pulse">● ${running} 진행</span>`);
   if (queued > 0) parts.push(`<span class="text-blue-400">◌ ${queued} 대기</span>`);
   if (waiting > 0) parts.push(`<span class="text-yellow-400">◎ ${waiting} 이미지</span>`);
   el.innerHTML = parts.length > 0 ? parts.join("") : `<span class="text-gray-600">대기 없음</span>`;
+
+  // Claude 상태 표시
+  const dot = document.getElementById("claude-dot");
+  const claudeEl = document.getElementById("header-claude-status");
+  if (dot && claudeEl) {
+    if (running > 0) {
+      dot.classList.add("active");
+      claudeEl.classList.remove("text-gray-500");
+      claudeEl.classList.add("text-gray-300");
+    } else {
+      dot.classList.remove("active");
+      claudeEl.classList.remove("text-gray-300");
+      claudeEl.classList.add("text-gray-500");
+    }
+  }
+}
+
+// ─── Claude 사용량 ───
+let _usageTimer = null;
+async function fetchUsage() {
+  try {
+    const r = await fetch("/api/usage");
+    if (!r.ok) return;
+    const d = await r.json();
+    const el = document.getElementById("claude-usage");
+    if (el) el.textContent = d.session_pct != null ? `${d.session_pct}%` : "";
+  } catch {}
+}
+function startUsagePolling() {
+  fetchUsage();
+  if (_usageTimer) clearInterval(_usageTimer);
+  _usageTimer = setInterval(fetchUsage, 60_000);
 }
 
 async function runAllChannels() {
@@ -2640,14 +2673,10 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-crossfade-label").textContent = xfDur;
   loadSfxFiles(cfg);
 
-  // 트렌드 소스 설정
-  const trendSources = cfg.trend_sources || [];
-  document.getElementById("cs-trend-google").checked = trendSources.includes("google_trends");
-  document.getElementById("cs-trend-youtube").checked = trendSources.includes("youtube_trending");
-  document.getElementById("cs-youtube-api-key").value = cfg.youtube_api_key || "";
-  toggleYtApiKeyRow();
-  // 미리보기 결과 초기화
-  document.getElementById("trend-preview-result").classList.add("hidden");
+  // 트렌드 소스 설정 (UI 제거됨, hidden input 호환용)
+  document.getElementById("cs-trend-google").value = "";
+  document.getElementById("cs-trend-youtube").value = "";
+  document.getElementById("cs-youtube-api-key").value = "";
 
   // 복사 버튼: 원본 채널(cloned_from이 없는)에서만 표시
   const cloneBtn = document.getElementById("btn-clone-channel");
@@ -2711,11 +2740,8 @@ async function saveChannelSettings() {
   cfg.crossfade_duration = parseFloat(document.getElementById("cs-crossfade-duration").value) || 0;
 
   // 트렌드 소스 저장
-  const trendSources = [];
-  if (document.getElementById("cs-trend-google").checked) trendSources.push("google_trends");
-  if (document.getElementById("cs-trend-youtube").checked) trendSources.push("youtube_trending");
-  cfg.trend_sources = trendSources;
-  _setIfPresent("youtube_api_key", document.getElementById("cs-youtube-api-key").value.trim());
+  cfg.trend_sources = [];
+  cfg.youtube_api_key = "";
 
   _setIfPresent("youtube_client_id", document.getElementById("cs-yt-client-id").value.trim());
   _setIfPresent("youtube_client_secret", document.getElementById("cs-yt-client-secret").value.trim());
@@ -2861,64 +2887,7 @@ async function requestYoutubeToken() {
   setTimeout(() => { btn.textContent = "토큰 발급"; }, 3000);
 }
 
-// ─── Trend Preview ───
-
-function toggleYtApiKeyRow() {
-  const row = document.getElementById("cs-yt-apikey-row");
-  if (document.getElementById("cs-trend-youtube").checked) {
-    row.classList.remove("hidden");
-  } else {
-    row.classList.add("hidden");
-  }
-}
-
-// YouTube 체크박스 토글 이벤트 (DOM 로드 후 연결)
-document.addEventListener("DOMContentLoaded", () => {
-  const cb = document.getElementById("cs-trend-youtube");
-  if (cb) cb.addEventListener("change", toggleYtApiKeyRow);
-});
-
-async function previewTrends() {
-  const modal = document.getElementById("channel-settings-modal");
-  const channelId = modal.dataset.channelId;
-  const btn = document.getElementById("btn-preview-trends");
-  const resultEl = document.getElementById("trend-preview-result");
-
-  // 먼저 현재 설정을 저장해야 API에서 올바른 소스를 읽음
-  // → 대신 저장 없이 직접 소스를 체크해서 쿼리
-  const sources = [];
-  if (document.getElementById("cs-trend-google").checked) sources.push("google_trends");
-  if (document.getElementById("cs-trend-youtube").checked) sources.push("youtube_trending");
-
-  if (sources.length === 0) {
-    resultEl.textContent = "트렌드 소스를 선택해주세요.";
-    resultEl.classList.remove("hidden");
-    return;
-  }
-
-  btn.textContent = "수집중...";
-  btn.disabled = true;
-
-  try {
-    // 설정이 아직 저장 안됐을 수 있으므로 먼저 저장
-    await saveChannelSettingsSilent();
-    const res = await fetch(`/api/channels/${channelId}/trends`);
-    const data = await res.json();
-
-    if (data.formatted) {
-      resultEl.textContent = data.formatted;
-    } else {
-      resultEl.textContent = data.message || "트렌드 데이터 없음";
-    }
-    resultEl.classList.remove("hidden");
-  } catch (e) {
-    resultEl.textContent = "수집 실패: " + e.message;
-    resultEl.classList.remove("hidden");
-  }
-
-  btn.textContent = "현재 트렌드 미리보기";
-  btn.disabled = false;
-}
+// ─── Trend Preview (제거됨) ───
 
 async function saveChannelSettingsSilent() {
   const modal = document.getElementById("channel-settings-modal");
@@ -2940,11 +2909,8 @@ async function saveChannelSettingsSilent() {
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _set("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
 
-  const trendSources = [];
-  if (document.getElementById("cs-trend-google").checked) trendSources.push("google_trends");
-  if (document.getElementById("cs-trend-youtube").checked) trendSources.push("youtube_trending");
-  cfg.trend_sources = trendSources;
-  _set("youtube_api_key", document.getElementById("cs-youtube-api-key").value.trim());
+  cfg.trend_sources = [];
+  cfg.youtube_api_key = "";
 
   _set("youtube_client_id", document.getElementById("cs-yt-client-id").value.trim());
   _set("youtube_client_secret", document.getElementById("cs-yt-client-secret").value.trim());
@@ -3046,8 +3012,6 @@ ${instructions}
 
 bg_type: ${imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 사진 스타일)' : imageStyle === 'infographic' ? '모든 슬라이드 "graph" 고정 (인포그래픽/일러스트/차트 스타일)' : '슬라이드별 배경 유형 선택 (photo=실사, graph=인포그래픽, broll=B-roll, logo=로고)'}
 
-accent_color: 뉴스 주제와 분위기에 맞는 색상을 추천해라 (예: #FF4D4D, #3B82F6, #10B981 등). 모든 슬라이드에 동일하게 적용.
-
 슬라이드 레이아웃: ${slideLayout}
 이미지 스타일: ${imageStyle === 'photo' ? '포토 (실사)' : imageStyle === 'infographic' ? '인포그래픽 (일러스트/차트/다이어그램)' : '혼합 (슬라이드별 자동)'}${imagePromptStyle ? `
 
@@ -3075,7 +3039,6 @@ ${imagePromptStyle}` : ''}
       "bg_type": "${imageStyle === 'photo' ? 'photo' : imageStyle === 'infographic' ? 'graph' : ''}",
       "main_text": "",
       "sub_text": "",
-      "accent_color": "",
       "image_prompt_ko": "",
       "image_prompt_en": ""
     }
@@ -3102,7 +3065,7 @@ image_prompt_en: 같은 내용의 영어 프롬프트 (30~60 words, subject+sett
 function openManualModal(channelId) {
   _manualChannelId = channelId;
   _manualCategory = "";
-  _manualSlides = [{ main: "", sub: "", accent: "#ff4444", bg_type: "photo", image_prompt_ko: "", image_prompt_en: "" }];
+  _manualSlides = [{ main: "", sub: "", bg_type: "photo", image_prompt_ko: "", image_prompt_en: "" }];
   _manualSentences = [{ text: "", slide: 1 }];
   document.getElementById("manual-modal").classList.remove("hidden");
   renderManualModal(channelId);
@@ -3155,7 +3118,6 @@ function applyJsonPaste() {
       _manualSlides = data.slides.map(s => ({
         main: s.main_text || s.main || "",
         sub: s.sub_text || s.sub || "",
-        accent: s.accent_color || s.accent || "#ff4444",
         bg_type: s.bg_type || "photo",
         image_prompt_ko: s.image_prompt_ko || "",
         image_prompt_en: s.image_prompt_en || "",
@@ -3232,12 +3194,6 @@ function renderManualModal(channelId) {
                     onchange="updateManualSlide(${i}, 'image_prompt_en', this.value)"
                     class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">${esc(s.image_prompt_en || '')}</textarea>
         </div>
-      </div>
-      <div>
-        <label class="block text-xs text-gray-500 mb-1">강조 색상</label>
-        <input type="color" value="${s.accent}"
-               onchange="updateManualSlide(${i}, 'accent', this.value)"
-               class="w-8 h-6 bg-gray-800 border border-gray-700 rounded cursor-pointer">
       </div>
     </div>
   `).join("");
@@ -3336,7 +3292,7 @@ function updateManualSentence(idx, field, value) {
 }
 
 function addManualSlide(channelId) {
-  _manualSlides.push({ main: "", sub: "", accent: "#ff4444", bg_type: "photo", image_prompt_ko: "", image_prompt_en: "" });
+  _manualSlides.push({ main: "", sub: "", bg_type: "photo", image_prompt_ko: "", image_prompt_en: "" });
   renderManualModal(channelId);
 }
 
@@ -3382,12 +3338,11 @@ async function submitManualJob(channelId) {
     category: _manualCategory,
     main: s.main,
     sub: s.sub,
-    accent: s.accent,
     bg_type: s.bg_type,
     image_prompt_ko: s.image_prompt_ko || "",
     image_prompt_en: s.image_prompt_en || "",
   }));
-  slides.push({ category: "", main: "", sub: "", accent: "#ff4444", bg_type: "closing", image_prompt_ko: "", image_prompt_en: "" });
+  slides.push({ category: "", main: "", sub: "", bg_type: "closing", image_prompt_ko: "", image_prompt_en: "" });
 
   const sentences = _manualSentences.map(s => ({
     text: s.text,
@@ -3495,8 +3450,6 @@ async function _nbFetchAndRender(category) {
 function _nbBuildHeader() {
   const sources = [
     { code: "news", label: "뉴스" },
-    { code: "trends", label: "트렌드" },
-    { code: "youtube", label: "유튜브" },
   ];
   const srcTabs = sources.map(s =>
     '<button data-nb-src="' + s.code + '" class="px-4 py-1.5 text-sm font-medium rounded-lg transition '
