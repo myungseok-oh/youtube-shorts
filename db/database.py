@@ -118,3 +118,8 @@ class Database:
         placeholders = ", ".join("?" for _ in data)
         sql = f"INSERT INTO {table} ({cols}) VALUES ({placeholders})"
         self.execute(sql, list(data.values()))
+
+    def checkpoint(self):
+        """WAL을 메인 DB 파일로 플러시. 복사 전 호출하면 .db 파일만으로 완전."""
+        conn = self._get_conn()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

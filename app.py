@@ -2097,6 +2097,15 @@ async def api_get_video(job_id: str):
     return FileResponse(job["output_path"], media_type="video/mp4")
 
 
+@app.get("/api/channels-db")
+async def api_export_channels_db():
+    """channels.db 다운로드 (WAL 체크포인트 후 단일 파일)"""
+    db_ch.checkpoint()
+    return FileResponse(config.channels_db_path(),
+                        media_type="application/octet-stream",
+                        filename="channels.db")
+
+
 if __name__ == "__main__":
     cfg = config.load()
     uvicorn.run(app,
