@@ -11,7 +11,8 @@ from pipeline import config
 def generate_slides(slides_data: list[dict], output_dir: str,
                     date: str = "", brand: str = "이슈60초",
                     backgrounds: list[dict] | None = None,
-                    layout: str = "full") -> list[str]:
+                    layout: str = "full",
+                    bg_display_mode: str = "zone") -> list[str]:
     """슬라이드 데이터를 받아 PNG 이미지 생성.
 
     Args:
@@ -40,6 +41,7 @@ def generate_slides(slides_data: list[dict], output_dir: str,
         "brand": brand,
         "backgrounds": norm_bgs,
         "layout": layout,
+        "bgDisplayMode": bg_display_mode,
     }
 
     # 임시 JSON 파일에 입력 데이터 저장

@@ -18,6 +18,7 @@
   - `image_generator.py` — Openverse CC 배경 이미지 검색
   - `image_library.py` — 이미지 라이브러리 매칭
   - `sd_generator.py` — ComfyUI API 클라이언트 (SD 이미지/영상 생성)
+  - `market_crawler.py` — 시장 데이터 크롤러 (네이버 증시, CoinGecko, 공포탐욕지수)
   - `youtube_uploader.py` — YouTube 업로드
 - `templates/dashboard.html` — Jinja2 + Tailwind 대시보드
 - `static/app.js` — 폴링 기반 프론트엔드 (큐 상태, 완료/활성 분리, OAuth 토큰 발급)
@@ -192,6 +193,9 @@ POST http://127.0.0.1:9880/tts
   - OAuth 토큰 발급 완료
 - **코인시황 TOP5** (ch-0003) — 코인 라운드업
 - **30초 뉴스** (ch-0004) — 짧은 뉴스
+- **코인 브리핑** (ch-0005) — 데일리 시장 브리핑 (글로벌→국내→코인 고정 3섹션)
+  - `fixed_topic: true` — parse_request 스킵, 고정 주제로 대본 생성
+  - `market_data_sources` — 시장 데이터 자동 크롤링 → 프롬프트 주입
 
 ---
 
@@ -218,6 +222,13 @@ POST http://127.0.0.1:9880/tts
 - **이미지 상태 표시 개선**: 이미지 업로드 완료 시 "영상 제작 대기" 표시 (기존: 항상 "이미지 업로드 필요")
 - **영상 미리보기 개선**: video 태그에 poster/thumbnail 추가, 렌더 완료 시 UI 자동 전환
 - **면책 문구 조건부 적용**: 투자/금융 관련 뉴스일 때만 면책 문구 포함 (일반 경제 뉴스 제외)
+- **시장 데이터 크롤러** (`pipeline/market_crawler.py`): 채널 config에 `market_data_sources` 설정 시 자동 크롤링 → instructions에 주입
+  - 소스: 네이버 해외지수(다우/S&P/나스닥), 네이버 국내지수(코스피/코스닥), 투자자별 매매동향(외국인/기관/개인), CoinGecko(BTC), 공포탐욕지수(전일 대비 변화)
+  - 크롤링 수치 우선 사용 지시 (WebSearch 시세 검색 금지)
+- **고정 주제 채널**: `fixed_topic: true` 설정 시 `parse_request` 스킵, `default_topics`를 그대로 topic으로 사용
+- **인트로 나레이션 템플릿**: `{날짜}` → "3월 11일", `{요일}` → "수요일" 자동 치환
+- **인트로 나레이션 대본 연결**: 인트로 나레이션이 있으면 첫 슬라이드 sentences가 인트로에 자연스럽게 이어지도록 지시
+- **이미지 프롬프트 bg_display_mode 반영**: `bg_display_mode: fullscreen`이면 레이아웃과 무관하게 1080×1920(9:16) 이미지 생성
 
 ---
 
@@ -311,6 +322,29 @@ POST http://127.0.0.1:9880/tts
 
 ---
 
+## 시장 데이터 크롤러 (`pipeline/market_crawler.py`)
+
+### 데이터 소스 (무료, 인증 불필요)
+| 데이터 | 소스 | 함수 |
+|--------|------|------|
+| 다우/S&P/나스닥 | 네이버 해외지수 API | `fetch_global_indices()` |
+| 코스피/코스닥 | 네이버 국내지수 API (m.stock) | `fetch_kr_indices()` |
+| 외국인/기관/개인 순매수 | 네이버 투자자 동향 API | `fetch_investor_trends()` |
+| BTC 시세 + 거래량 | CoinGecko API | `fetch_btc()` |
+| 공포탐욕지수 (전일 대비) | alternative.me API | `fetch_fear_greed()` |
+
+### 채널 config 설정
+```json
+"market_data_sources": ["global_stocks", "kr_stocks", "investor_trends", "crypto", "fear_greed"]
+```
+
+### 인트로 나레이션 템플릿 변수
+- `{날짜}` → "3월 12일"
+- `{요일}` → "목요일"
+- 예: `"{날짜} {요일} 코인 브리핑 시작합니다."`
+
+---
+
 ## 남은 과제
 
 1. **GPT-SoVITS 파이프라인 통합** — tts_generator.py에 GPT-SoVITS 엔진 추가 (위 상세 참조)
@@ -322,3 +356,4 @@ POST http://127.0.0.1:9880/tts
 # 피드백
 
 - [2026-03-10] 서버 재시작: `kill $(lsof -ti :9999)` 로 포트만 종료할 것. 파이어폭스 등 다른 프로세스 kill 금지
+- [2026-03-11] 변수명 충돌 주의: `_now()`는 runner.py 모듈 함수. 로컬 변수로 `_now = datetime.now()` 사용 금지 → `_dt` 등 다른 이름 사용

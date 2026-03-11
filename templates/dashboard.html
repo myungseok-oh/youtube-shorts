@@ -151,7 +151,7 @@
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">슬라이드 레이아웃</label>
-          <select id="cs-slide-layout"
+          <select id="cs-slide-layout" onchange="toggleBgDisplayMode()"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
             <option value="full">전체 배경 — 이미지가 화면 전체를 덮음</option>
             <option value="center">가운데 — 이미지 중앙, 텍스트 상/하단</option>
@@ -159,6 +159,15 @@
             <option value="bottom">하단 — 이미지 하단, 텍스트 상단</option>
           </select>
           <p class="text-xs text-gray-500 mt-1">전체 배경은 큰 이미지 필요, 나머지는 작은 이미지로 빠르게 생성</p>
+        </div>
+        <div id="bg-display-mode-section">
+          <label class="block text-sm text-gray-400 mb-1">배경 표시 모드</label>
+          <select id="cs-bg-display-mode"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+            <option value="zone">영역 — 이미지를 지정 영역에만 표시</option>
+            <option value="fullscreen">전체 화면 — 이미지를 배경 전체에 표시</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">전체 화면은 9:16 이미지 생성, 텍스트 영역에 반투명 오버레이 적용</p>
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">영상 형식</label>
@@ -256,6 +265,13 @@
           <textarea id="cs-image-prompt-style" rows="8"
                     class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed"
                     placeholder="비워두면 기본 뉴스 B-roll 스타일 적용"></textarea>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">주제별 현장 레퍼런스</label>
+          <p class="text-xs text-gray-500 mb-2">이 채널의 주제에 맞는 현장/장소 매핑 테이블. 추상적 표현 대신 구체적 촬영 장소를 지정</p>
+          <textarea id="cs-image-scene-references" rows="8"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed"
+                    placeholder="| 메시지 | ✗ 피하기 | ✓ 이렇게 |&#10;|-------|---------|---------|&#10;| 주가 상승 | 차트 화면 | 여의도 증권가 빌딩 아침 햇살 |"></textarea>
         </div>
       </div>
 

@@ -10,20 +10,44 @@ from pipeline import config
 # Ken Burns 효과 프리셋 (zoompan 필터용)
 # 각 프리셋: (zoom_expr, x_expr, y_expr, 설명)
 # 출력 해상도 1080x1920, 입력은 여유 있게 스케일 (1.15배)
-_KB_PRESETS = [
-    # 느린 줌인 (중앙)
-    ("min(1.15,1+0.0015*in)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
-    # 느린 줌아웃
-    ("if(eq(in,1),1.15,max(1,zoom-0.0015))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
-    # 줌인 + 좌→우 패닝
-    ("min(1.15,1+0.001*in)", "iw/2-(iw/zoom/2)+in*0.3", "ih/2-(ih/zoom/2)"),
-    # 줌인 + 우→좌 패닝
-    ("min(1.15,1+0.001*in)", "iw/2-(iw/zoom/2)-in*0.3", "ih/2-(ih/zoom/2)"),
-    # 줌인 + 상→하 패닝
-    ("min(1.15,1+0.001*in)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)+in*0.2"),
-    # 줌아웃 + 하→상 패닝
-    ("if(eq(in,1),1.15,max(1,zoom-0.001))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)-in*0.2"),
-]
+_KB_PRESETS = {
+    "zoom_in": ("min(1.15,1+0.0015*in)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+    "zoom_out": ("if(eq(in,1),1.15,max(1,zoom-0.0015))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+    "pan_right": ("min(1.15,1+0.001*in)", "iw/2-(iw/zoom/2)+in*0.3", "ih/2-(ih/zoom/2)"),
+    "pan_left": ("min(1.15,1+0.001*in)", "iw/2-(iw/zoom/2)-in*0.3", "ih/2-(ih/zoom/2)"),
+    "pan_down": ("min(1.15,1+0.001*in)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)+in*0.2"),
+    "pan_up": ("if(eq(in,1),1.15,max(1,zoom-0.001))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)-in*0.2"),
+}
+
+# motion 힌트 → Ken Burns 프리셋 매핑
+_MOTION_MAP = {
+    "slow zoom in": "zoom_in",
+    "zoom in": "zoom_in",
+    "slow zoom out": "zoom_out",
+    "zoom out": "zoom_out",
+    "gentle pan left": "pan_left",
+    "pan left": "pan_left",
+    "gentle pan right": "pan_right",
+    "pan right": "pan_right",
+    "pan across": "pan_right",
+    "pan up": "pan_up",
+    "gentle pan up": "pan_up",
+    "pan down": "pan_down",
+    "gentle pan down": "pan_down",
+    "tilt up": "pan_up",
+    "tilt down": "pan_down",
+}
+
+
+def _select_kb_preset(motion: str = ""):
+    """motion 힌트로 Ken Burns 프리셋 선택. 매칭 안 되면 랜덤."""
+    if motion:
+        motion_lower = motion.lower().strip()
+        # 긴 구문부터 매칭
+        for hint in sorted(_MOTION_MAP.keys(), key=len, reverse=True):
+            if hint in motion_lower:
+                return _KB_PRESETS[_MOTION_MAP[hint]]
+    return random.choice(list(_KB_PRESETS.values()))
 
 
 def _find_video_bg(image_dir: str, slide_num: int) -> str | None:
@@ -53,7 +77,7 @@ def render_static_silent(image_path: str, output_path: str,
     인트로/아웃트로 세그먼트 생성용. concat demuxer 호환을 위해 무음 오디오 트랙 포함.
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    preset = random.choice(_KB_PRESETS)
+    preset = random.choice(list(_KB_PRESETS.values()))
     zoom_expr, x_expr, y_expr = preset
     total_frames = int(duration * 24) + 5
 
@@ -110,7 +134,7 @@ def render_static_with_audio(image_path: str, audio_path: str,
     total_duration = duration + audio_delay
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    preset = random.choice(_KB_PRESETS)
+    preset = random.choice(list(_KB_PRESETS.values()))
     zoom_expr, x_expr, y_expr = preset
     total_frames = int(total_duration * 24) + 5
 
@@ -165,7 +189,8 @@ def render_static_with_audio(image_path: str, audio_path: str,
 
 
 def render_segments(slide_durations: dict, image_dir: str,
-                    merged_audio: dict, segment_dir: str) -> list[str]:
+                    merged_audio: dict, segment_dir: str,
+                    motion_hints: dict | None = None) -> list[str]:
     """슬라이드별 세그먼트 영상 생성.
 
     배경 유형에 따라:
@@ -173,12 +198,16 @@ def render_segments(slide_durations: dict, image_dir: str,
     - 이미지 배경 (PNG/JPG) → Ken Burns 효과 + 오버레이
     - 배경 없음 → 정적 슬라이드
 
+    Args:
+        motion_hints: {slide_num: "slow zoom in", ...} — Ken Burns 프리셋 선택용
+
     Returns:
         세그먼트 MP4 파일 경로 리스트 (순서대로)
     """
     os.makedirs(segment_dir, exist_ok=True)
     vcfg = config.video_cfg()
     segment_files = []
+    hints = motion_hints or {}
 
     for s in sorted(slide_durations.keys()):
         img_path = os.path.join(image_dir, f"slide_{s}.png")
@@ -186,6 +215,7 @@ def render_segments(slide_durations: dict, image_dir: str,
         audio_path = merged_audio[s]
         seg_path = os.path.join(segment_dir, f"segment_{s}.mp4")
         dur = slide_durations[s]
+        motion = hints.get(s, "")
 
         video_bg = _find_video_bg(image_dir, s)
         image_bg = _find_image_bg(image_dir, s)
@@ -196,9 +226,9 @@ def render_segments(slide_durations: dict, image_dir: str,
             _render_video_segment(video_bg, overlay_path, audio_path, seg_path,
                                   dur, vcfg)
         elif image_bg and has_overlay:
-            print(f"[video_renderer] slide {s}: Ken Burns + overlay")
+            print(f"[video_renderer] slide {s}: Ken Burns ({motion or 'random'}) + overlay")
             _render_kenburns_segment(image_bg, overlay_path, audio_path,
-                                     seg_path, dur, vcfg)
+                                     seg_path, dur, vcfg, motion=motion)
         else:
             print(f"[video_renderer] slide {s}: static (bg={bool(image_bg)}, overlay={has_overlay})")
             _render_static_segment(img_path, audio_path, seg_path, dur, vcfg)
@@ -227,9 +257,10 @@ def _render_static_segment(img_path: str, audio_path: str,
 
 
 def _render_kenburns_segment(bg_path: str, overlay_path: str, audio_path: str,
-                              output_path: str, duration: float, vcfg: dict):
+                              output_path: str, duration: float, vcfg: dict,
+                              motion: str = ""):
     """이미지 배경 + Ken Burns 효과 + PNG 오버레이 + 오디오 합성"""
-    preset = random.choice(_KB_PRESETS)
+    preset = _select_kb_preset(motion)
     zoom_expr, x_expr, y_expr = preset
     total_frames = int(duration * 24) + 5  # 24fps
 

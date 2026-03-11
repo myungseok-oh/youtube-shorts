@@ -515,25 +515,29 @@ async def api_run_channel(channel_id: str, request: Request):
         )
         recent_topics = [j["topic"] for j in recent_jobs] if recent_jobs else []
 
-        # 동기 함수를 스레드에서 실행 (이벤트 루프 블록 방지)
-        topics = await asyncio.to_thread(
-            parse_request, request_text, instructions,
-            trend_context=trend_context, recent_topics=recent_topics
-        )
-
-        # 코드 레벨 중복 필터 (프롬프트 의존 보완)
-        filtered = []
-        for topic in topics:
-            if _is_duplicate(topic, recent_topics):
-                print(f"[중복 필터] 제거: {topic}")
-            else:
-                filtered.append(topic)
-        if not filtered:
-            raise HTTPException(400, "중복되지 않는 새 뉴스를 찾지 못했습니다. 다시 시도해주세요.")
-        topics = filtered
-
         production_mode = cfg.get("production_mode", "manual")
         channel_format = cfg.get("format", "single")
+
+        # 고정 주제 채널: parse_request 스킵, request_text를 그대로 topic으로 사용
+        if cfg.get("fixed_topic"):
+            topics = [request_text]
+        else:
+            # 동기 함수를 스레드에서 실행 (이벤트 루프 블록 방지)
+            topics = await asyncio.to_thread(
+                parse_request, request_text, instructions,
+                trend_context=trend_context, recent_topics=recent_topics
+            )
+
+            # 코드 레벨 중복 필터 (프롬프트 의존 보완)
+            filtered = []
+            for topic in topics:
+                if _is_duplicate(topic, recent_topics):
+                    print(f"[중복 필터] 제거: {topic}")
+                else:
+                    filtered.append(topic)
+            if not filtered:
+                raise HTTPException(400, "중복되지 않는 새 뉴스를 찾지 못했습니다. 다시 시도해주세요.")
+            topics = filtered
 
         jobs = []
         if channel_format == "roundup" and len(topics) > 1:

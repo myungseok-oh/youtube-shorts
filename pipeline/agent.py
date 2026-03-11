@@ -437,12 +437,17 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
 
 {topic_section}
 
+### ★ 웹 검색 효율 규칙
+- WebSearch 결과의 제목+요약(snippet)만으로 팩트를 파악할 수 있으면 WebFetch 생략
+- WebFetch는 정확한 수치/통계 확인이 필요할 때만, 최대 1~2회
+- 검색은 2~3회 이내로 완료할 것
+
 {schema}
 
 brand 값은 "{brand}"로 설정해.
 """
 
-    raw = _run_claude(prompt, timeout=300, model="claude-sonnet-4-6")
+    raw = _run_claude(prompt, timeout=600, model="claude-sonnet-4-6")
     script = _parse_response(raw, brand)
 
     # 날짜 검증: 오래된 뉴스 차단
@@ -503,21 +508,56 @@ def _parse_response(raw: str, brand: str) -> dict:
 
 
 DEFAULT_IMAGE_PROMPT_STYLE = """\
-슬라이드 텍스트를 읽고 AI 이미지 생성 프롬프트를 만들어.
+너는 뉴스 영상의 비주얼 디렉터야. 슬라이드 전체를 먼저 읽고, 기사의 흐름을 이해한 후 각 장면에 맞는 이미지를 구성해.
 
-ALL prompts in English, 30-60 words, 5요소 포함: subject, setting, lighting, camera, style
+ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera, style
+
+## 프롬프트 작성법
+
+### 1단계: 기사 흐름 파악
+모든 슬라이드를 통째로 읽고 전체 스토리를 파악해:
+- 이 기사의 핵심 사건은 무엇인가?
+- 각 슬라이드가 기사에서 어떤 역할인가? (도입/원인/구체내용/영향/전망)
+
+### 2단계: 슬라이드별 현장 특정
+각 슬라이드의 핵심 행위/변화를 읽고, 그것이 실제로 일어나는 현장을 특정해.
+추상적 개념이 아니라 카메라맨이 실제로 촬영할 수 있는 구체적 장소/사물을 선택.
+
+### 3단계: 카메라 구도 결정
+그 현장에서 카메라맨이 실제로 찍을 수 있는 구체적 구도:
+- 건물 외관 → 어느 각도에서, 어떤 시간대에
+- 내부 공간 → 어떤 장비/사물이 보이는지
+- 풍경 → 날씨, 시간대, 계절감
+
+## 슬라이드 역할별 시각 전략
+
+| 역할 | 시각 전략 | 카메라 움직임 |
+|-----|----------|-------------|
+| 도입 (무슨 일?) | 사건 현장 전경, 와이드샷 | slow zoom in (전경→핵심부) |
+| 원인 (왜?) | 원인이 되는 장소/사물 | gentle pan left/right |
+| 구체 내용 (어떻게?) | 핵심 피사체 디테일, 미디엄샷 | slow zoom in (디테일 강조) |
+| 영향 (그래서?) | 결과가 나타나는 현장 | pan across (현장 훑기) |
+| 전망 (앞으로?) | 미래를 암시하는 장면 | slow zoom out (전체 조망) |
+
+## 시각적 흐름 (슬라이드 연결)
+영상으로 이어질 때 자연스러운 흐름이 되도록 구도를 배치:
+- wide shot → medium → close-up → wide 순서로 스케일 변화
+- 장소가 바뀔 때 앵글도 같이 바꿔서 시각적 단조로움 방지
+- 각 슬라이드의 구도가 이전/다음과 다른 스케일이어야 함 (연속 와이드 금지)
 
 ## bg_type별 스타일
 
 - **overview**: 뉴스 스튜디오/뉴스룸 배경. 어두운 톤 허용. 키워드: modern news studio, broadcast newsroom, cinematic lighting, 8k
-- **photo**: 구체적 장소/건물/사물. 키워드: realistic, sharp focus, photojournalism, 8k
-- **broll**: 시네마틱 뉴스 B-roll. 키워드: cinematic shot, news B-roll, dramatic composition
+- **photo**: 기사 맥락에 맞는 실제 장소. 키워드: realistic, sharp focus, photojournalism, 8k
+- **broll**: photo와 유사하되 시네마틱. 키워드: cinematic shot, news B-roll, dramatic composition
 - **graph**: 인포그래픽/일러스트 (실사 금지). 키워드: flat illustration, vector art, infographic, clean lines, soft pastels
 - **logo**: 기업 건물 외관 + 브랜드 사이니지. 키워드: cinematic wide shot, brand signage visible
 - **closing**: 빈 문자열 "" 출력
 
 ## BANNED
 - text, letters, numbers rendered in the image
+- 모니터/스크린에 차트/그래프가 표시된 장면 (graph 타입 제외)
+- 같은 장소/건물을 여러 슬라이드에서 반복
 - dark, moody, horror themes → always bright/professional
 - low quality, blurry, watermark"""
 
@@ -547,31 +587,35 @@ def _image_style_instruction(image_style: str) -> str:
     )
 
 
-def _image_size_instruction(layout: str) -> str:
-    """레이아웃별 이미지 사이즈/비율 프롬프트 지시문."""
-    if layout in ("center", "top", "bottom"):
+def _image_size_instruction(layout: str, bg_display_mode: str = "zone") -> str:
+    """레이아웃별 이미지 사이즈/비율 프롬프트 지시문.
+    bg_display_mode가 fullscreen이면 레이아웃과 무관하게 9:16 풀사이즈."""
+    if bg_display_mode == "fullscreen" or layout == "full":
         return (
-            "- Target: 1080x960px (approximately 1:1 square ratio)\n"
-            "- The image will be displayed in the CENTER zone (50% height) of a vertical 1080x1920 slide.\n"
-            "- Compose for SQUARE/HORIZONTAL framing — subject centered, avoid tall vertical compositions.\n"
-            "- Include keywords: 'square composition, centered subject, 1:1 aspect ratio' in each prompt."
+            "- Target: 1080x1920px (9:16 vertical/portrait orientation for YouTube Shorts)\n"
+            "- Compose for VERTICAL framing — subject should fill the tall frame, avoid wide landscape compositions.\n"
+            "- Include keywords: 'vertical composition, portrait orientation, 9:16 aspect ratio' in each prompt."
         )
     return (
-        "- Target: 1080x1920px (9:16 vertical/portrait orientation for YouTube Shorts)\n"
-        "- Compose for VERTICAL framing — subject should fill the tall frame, avoid wide landscape compositions.\n"
-        "- Include keywords: 'vertical composition, portrait orientation, 9:16 aspect ratio' in each prompt."
+        "- Target: 1080x960px (approximately 1:1 square ratio)\n"
+        "- The image will be displayed in the CENTER zone (50% height) of a vertical 1080x1920 slide.\n"
+        "- Compose for SQUARE/HORIZONTAL framing — subject centered, avoid tall vertical compositions.\n"
+        "- Include keywords: 'square composition, centered subject, 1:1 aspect ratio' in each prompt."
     )
 
 
 def generate_image_prompts(topic: str, slides: list[dict],
                            prompt_style: str = "",
                            layout: str = "full",
-                           image_style: str = "mixed") -> list[str]:
+                           image_style: str = "mixed",
+                           scene_references: str = "",
+                           bg_display_mode: str = "zone") -> list[str]:
     """대본의 슬라이드 정보로 이미지 생성 프롬프트(영어) 생성.
 
     SD 모델은 영어 프롬프트만 이해하므로 반드시 영어로 출력.
     prompt_style: 채널별 커스텀 프롬프트 지침. 비어있으면 기본 뉴스 B-roll 스타일 사용.
     layout: 슬라이드 레이아웃 (full/center/top/bottom) — 이미지 사이즈/비율 결정
+    scene_references: 채널별 주제→현장 매핑 레퍼런스 (비어있으면 생략)
     웹 검색 불필요 — 빠르게 완료됨.
     """
     slide_descs = []
@@ -584,36 +628,37 @@ def generate_image_prompts(topic: str, slides: list[dict],
 
     style_rules = prompt_style.strip() if prompt_style and prompt_style.strip() else DEFAULT_IMAGE_PROMPT_STYLE
 
-    prompt = f"""You are an expert at creating AI image generation prompts from Korean news slides.
+    prompt = f"""너는 뉴스 영상의 비주얼 디렉터야.
+아래 슬라이드 전체를 먼저 읽고, 기사의 전체 흐름을 파악한 후 각 슬라이드에 어울리는 이미지를 구성해.
 
 Topic: {topic}
 
 Slides:
 {chr(10).join(slide_descs)}
 
-## Image Prompt Guidelines (MUST FOLLOW)
+## 이미지 프롬프트 지침 (반드시 따를 것)
 {style_rules}
+
+{f"## 주제별 현장 레퍼런스{chr(10)}{scene_references.strip()}" if scene_references and scene_references.strip() else ""}
 
 ## Image Style
 {_image_style_instruction(image_style)}
 
 ## Image Size & Composition
-{_image_size_instruction(layout)}
+{_image_size_instruction(layout, bg_display_mode)}
 
-## Your task:
-For each slide, read the Korean text and create BOTH a Korean description and an English image prompt.
-Every English prompt MUST include all 5 elements: Subject, Setting, Lighting, Camera angle, Style keywords.
+## 출력 형식
+각 슬라이드에 대해 ko, en, motion 3개 필드를 생성.
 
-Rules:
-- closing 타입 → {{"ko":"", "en":""}}
-- For ALL other types (photo, broll, graph, logo): generate a detailed prompt (30-60 words)
-- Each prompt must be DIFFERENT from others — no repeated scenes.
-- Always specify the composition/orientation keywords matching the image size above in each English prompt.
-- Korean description (ko): 슬라이드 장면을 한국어로 간결하게 설명 (예: "반도체 공장 클린룸 내부, 밝은 형광등 아래 장비들")
-- English prompt (en): detailed AI image generation prompt in English
+- ko: 촬영 현장을 구체적으로 (예: "울산 정유소 증류탑 야경, 가스 플레어 불빛")
+- en: 영어 이미지 프롬프트, 30-60 words, 5요소 필수 (Subject, Setting, Lighting, Camera, Style)
+- motion: 이 장면을 영상으로 만들 때의 카메라 움직임 (예: "slow zoom in", "gentle pan left", "slow zoom out")
+- closing 타입 → {{"ko":"", "en":"", "motion":""}}
+- 기사 흐름상 각 슬라이드가 다른 장소/시점/앵글을 보여줘야 함
+- 이미지 사이즈에 맞는 composition 키워드 포함
 
 Output ONLY a JSON array with exactly {len(slide_descs)} items, no other text:
-[{{"ko":"한국어 설명", "en":"English prompt"}}, ...]"""
+[{{"ko":"한국어 설명", "en":"English prompt", "motion":"camera movement"}}, ...]"""
 
     raw = _run_claude(prompt, timeout=60, use_web=False,
                       model="claude-opus-4-6")
@@ -636,10 +681,14 @@ Output ONLY a JSON array with exactly {len(slide_descs)} items, no other text:
             result = []
             for p in prompts:
                 if isinstance(p, dict) and "ko" in p and "en" in p:
-                    result.append({"ko": str(p["ko"]), "en": str(p["en"])})
+                    result.append({
+                        "ko": str(p["ko"]),
+                        "en": str(p["en"]),
+                        "motion": str(p.get("motion", "")),
+                    })
                 else:
                     # 하위호환: 문자열이면 en으로 취급
-                    result.append({"ko": "", "en": str(p)})
+                    result.append({"ko": "", "en": str(p), "motion": ""})
             return result
 
     return []

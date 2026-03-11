@@ -34,6 +34,7 @@ const backgrounds = data.backgrounds || [];
 const date = data.date || '';
 const brand = data.brand || '이슈60초';
 const layout = data.layout || 'full';
+const bgDisplayMode = data.bgDisplayMode || 'zone';
 const total = slides.length;
 
 function bgInfo(index) {
@@ -102,7 +103,13 @@ function buildHTML(slide, index) {
     return buildContent(slide, accent, bgData.css, progressPct, index, bgData.source);
   }
 
-  // New layouts: center, top, bottom
+  // Fullscreen mode: full-bg image with semi-transparent text zones
+  if (bgDisplayMode === 'fullscreen') {
+    if (index === 0) return buildFullscreenOpening(slide, accent, bgData, progressPct);
+    return buildFullscreenContent(slide, accent, bgData, progressPct, index);
+  }
+
+  // Zone mode (default): image in designated zone
   if (index === 0) return buildZonedOpening(slide, accent, bgData, progressPct);
   return buildZonedContent(slide, accent, bgData, progressPct, index);
 }
@@ -307,6 +314,104 @@ function grainSVG() {
 
 function progressBar(pct) {
   return '';  // 프로그레스바 비활성화
+}
+
+// ──── Common styles for FULLSCREEN ZONED layouts ────
+function fullscreenZonedStyles(accent, bgImg) {
+  return `
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap');
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      width: 1080px; height: 1920px;
+      font-family: 'Noto Sans KR', sans-serif;
+      color: #ffffff; overflow: hidden; position: relative;
+      ${bgImg
+        ? `background: ${bgImg} center/cover no-repeat;`
+        : `background: linear-gradient(170deg, #0b0e1a 0%, #141b2d 40%, #1a2238 100%);`
+      }
+    }
+    .grain {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      z-index: 2; opacity: 0.06; pointer-events: none;
+    }
+    .source-text {
+      position: absolute; bottom: 14px; right: 30px; z-index: 10;
+      font-size: 20px; color: rgba(255,255,255,0.35);
+      font-weight: 400; letter-spacing: 1px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 14px 36px;
+      background: linear-gradient(170deg, #ff4d4d 0%, #cc0000 100%);
+      border: 3px solid rgba(255,255,255,0.5);
+      border-radius: 10px;
+      font-size: 34px; font-weight: 900;
+      letter-spacing: 6px;
+      color: #ffffff;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
+      text-shadow: 0 2px 4px rgba(0,0,0,0.4);
+    }
+    .badge.breaking {
+      padding: 20px 48px;
+      background: linear-gradient(170deg, #ff3b3b 0%, #cc0000 50%, #990000 100%);
+      border: 4px solid rgba(255,255,255,0.7);
+      font-size: 46px; letter-spacing: 8px;
+      box-shadow: 0 8px 32px rgba(200,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.3);
+      transform: perspective(400px) rotateX(2deg);
+    }
+    .badge.breaking::after {
+      content: 'BREAKING NEWS';
+      display: block;
+      font-size: 16px; letter-spacing: 4px; font-weight: 700;
+      margin-top: 6px; padding-top: 8px;
+      border-top: 2px solid rgba(255,255,255,0.5);
+      color: rgba(255,255,255,0.9);
+    }
+    .hl {
+      color: #ffd700;
+      background: linear-gradient(transparent 60%, rgba(255,215,0,0.18) 60%);
+      padding: 0 4px;
+    }
+    .text-zone {
+      position: relative; z-index: 5;
+      width: 100%;
+      display: flex; flex-direction: column;
+      justify-content: center; align-items: center;
+      padding: 40px 60px;
+      background: linear-gradient(180deg, rgba(5,8,20,0.75) 0%, rgba(5,8,20,0.55) 100%);
+      backdrop-filter: blur(4px);
+    }
+    .main-text {
+      font-size: 100px; font-weight: 900;
+      text-align: center; line-height: 1.25;
+      padding: 0 20px;
+      text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 40px rgba(0,0,0,0.7);
+    }
+    .sub-text {
+      font-size: 56px; color: rgba(255,255,255,0.6);
+      text-align: center; font-weight: 400; padding: 0 30px;
+      margin-top: 30px;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+    }
+    .slide-num {
+      position: absolute; bottom: 40px; left: 50px; z-index: 10;
+      font-size: 26px; font-weight: 700; color: rgba(255,255,255,0.18);
+      letter-spacing: 3px;
+    }
+    .corner-tl, .corner-br {
+      position: absolute; width: 50px; height: 50px; z-index: 10;
+    }
+    .corner-tl {
+      top: 30px; left: 30px;
+      border-top: 2px solid ${accent}44;
+      border-left: 2px solid ${accent}44;
+    }
+    .corner-br {
+      bottom: 30px; right: 30px;
+      border-bottom: 2px solid ${accent}44;
+      border-right: 2px solid ${accent}44;
+    }
+  `;
 }
 
 // ──── Image zone HTML for zoned layouts ────
@@ -623,6 +728,106 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// FULLSCREEN ZONED builders (full-bg image + semi-transparent text zones)
+// ════════════════════════════════════════════════════════════════════
+
+// ──── Fullscreen Opening 슬라이드 ────
+function buildFullscreenOpening(slide, accent, bgData, progressPct) {
+  const bgImg = bgData.css;
+  const textHTML = `
+    <div class="main-text" style="font-size:120px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
+    ${slide.sub ? `<div class="sub-text" style="font-size:44px;">${slide.sub}</div>` : ''}
+  `;
+
+  let bodyContent = '';
+  if (layout === 'center') {
+    bodyContent = `
+      <div class="text-zone" style="height:35%;justify-content:flex-end;padding-bottom:20px;">
+        <div class="main-text" style="font-size:120px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
+      </div>
+      <div style="height:40%;"></div>
+      <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">
+        ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
+      </div>
+    `;
+  } else if (layout === 'top') {
+    bodyContent = `
+      <div style="height:50%;"></div>
+      <div class="text-zone" style="height:50%;">
+        ${textHTML}
+      </div>
+    `;
+  } else if (layout === 'bottom') {
+    bodyContent = `
+      <div class="text-zone" style="height:50%;">
+        ${textHTML}
+      </div>
+      <div style="height:50%;"></div>
+    `;
+  }
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  ${fullscreenZonedStyles(accent, bgImg)}
+  .main-text { font-size: 84px; }
+</style></head>
+<body>
+  ${grainSVG()}
+  ${bodyContent}
+  ${sourceLabel(bgData.source)}
+</body></html>`;
+}
+
+// ──── Fullscreen Content 슬라이드 ────
+function buildFullscreenContent(slide, accent, bgData, progressPct, index) {
+  const bgImg = bgData.css;
+  const textHTML = `
+    <div class="main-text">${slide.main}</div>
+    ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
+  `;
+
+  let bodyContent = '';
+  if (layout === 'center') {
+    bodyContent = `
+      <div class="text-zone" style="height:25%;justify-content:flex-end;padding-bottom:20px;">
+        <div class="main-text" style="font-size:100px;">${slide.main}</div>
+      </div>
+      <div style="height:50%;"></div>
+      <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">
+        ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
+      </div>
+    `;
+  } else if (layout === 'top') {
+    bodyContent = `
+      <div style="height:50%;"></div>
+      <div class="text-zone" style="height:50%;">
+        ${textHTML}
+      </div>
+    `;
+  } else if (layout === 'bottom') {
+    bodyContent = `
+      <div class="text-zone" style="height:50%;">
+        ${textHTML}
+      </div>
+      <div style="height:50%;"></div>
+    `;
+  }
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  ${fullscreenZonedStyles(accent, bgImg)}
+</style></head>
+<body>
+  ${grainSVG()}
+  <div class="corner-tl"></div>
+  <div class="corner-br"></div>
+  ${bodyContent}
+  <div class="slide-num">${String(index).padStart(2, '0')}</div>
+  ${sourceLabel(bgData.source)}
+</body></html>`;
+}
+
+// ════════════════════════════════════════════════════════════════════
 // ZONED LAYOUT builders (center, top, bottom)
 // ════════════════════════════════════════════════════════════════════
 
@@ -751,7 +956,8 @@ async function main() {
     const needOverlay = bgPath && fs.existsSync(bgPath);
 
     if (needOverlay) {
-      if (layout === 'full') {
+      if (layout === 'full' || bgDisplayMode === 'fullscreen') {
+        // full-screen background: body 투명, 텍스트 오버레이만 유지
         await page.evaluate(() => {
           document.body.style.background = 'transparent';
           const overlay = document.querySelector('.bg-overlay');

@@ -149,6 +149,7 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         ch_config = json.loads(channel.get("config", "{}")) if channel else {}
         image_prompt_style = ch_config.get("image_prompt_style", "")
+        image_scene_references = ch_config.get("image_scene_references", "")
         target_duration = ch_config.get("target_duration", 60)
         channel_format = ch_config.get("format", "single")
         script_rules = ch_config.get("script_rules", "")
@@ -157,12 +158,37 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
         # 디렉토리 생성
         _get_job_dirs(job_id)
 
+        # 인트로 나레이션 템플릿 치환 + 대본 연결 지시
+        intro_narration_raw = ch_config.get("intro_narration", "").strip()
+        if intro_narration_raw:
+            _dt = datetime.now()
+            _resolved = intro_narration_raw.replace(
+                "{날짜}", f"{_dt.month}월 {_dt.day}일"
+            ).replace(
+                "{요일}", ["월", "화", "수", "목", "금", "토", "일"][_dt.weekday()] + "요일"
+            )
+            instructions += (f"\n\n★ 이 채널은 별도 인트로 나레이션이 있습니다: \"{_resolved}\"\n"
+                             "인트로 나레이션이 먼저 재생된 후 첫 슬라이드 나레이션이 이어집니다.\n"
+                             "첫 슬라이드 sentences는 인트로와 자연스럽게 이어지도록 작성하세요.\n"
+                             "인트로에서 이미 한 인사/소개를 반복하지 마세요.")
+
         # 아웃트로가 있으면 나래이션에 마무리 멘트 금지
         if _find_channel_image(channel_id, "outro_bg"):
             instructions += ("\n\n★ 이 채널은 별도 아웃트로 영상이 있습니다. "
                              "나레이션(sentences)에 마무리 인사, 구독/좋아요 요청, "
                              "'~였습니다' 같은 엔딩 멘트를 절대 포함하지 마세요. "
                              "마지막 콘텐츠 문장까지만 작성하세요.")
+
+        # 채널 config에 market_data_sources가 있으면 시장 데이터 크롤링 → 프롬프트에 주입
+        market_sources = ch_config.get("market_data_sources", [])
+        if market_sources:
+            try:
+                from pipeline.market_crawler import collect_market_data, format_market_context
+                market_data = collect_market_data(sources=market_sources)
+                market_context = format_market_context(market_data)
+                instructions = instructions + "\n\n" + market_context
+            except Exception as e:
+                print(f"[runner] market_crawler failed, skipping: {e}")
 
         if script_json is None:
             _update_step(db, job_id, "news_search", "running")
@@ -209,7 +235,8 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
                 image_prompts = _existing_a
                 print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing_a)}개)")
             else:
-                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a)
+                bg_display_mode_a = ch_config.get("bg_display_mode", "zone")
+                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a, scene_references=image_scene_references, bg_display_mode=bg_display_mode_a)
             if image_prompts:
                 meta = {}
                 existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
@@ -327,6 +354,7 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         ch_config_pb = json.loads(channel.get("config", "{}")) if channel else {}
         slide_layout = ch_config_pb.get("slide_layout", "full")
+        bg_display_mode = ch_config_pb.get("bg_display_mode", "zone")
         target_duration = ch_config_pb.get("target_duration", 60)
 
         dirs = _get_job_dirs(job_id)
@@ -356,6 +384,7 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                 ch_config_b = json.loads(channel.get("config", "{}")) if channel else {}
                 auto_bg_source = ch_config_b.get("auto_bg_source", "sd_image")
                 image_prompt_style_b = ch_config_b.get("image_prompt_style", "")
+                image_scene_references_b = ch_config_b.get("image_scene_references", "")
 
                 slide_layout_b = ch_config_b.get("slide_layout", "full")
                 image_style_b = ch_config_b.get("image_style", "mixed")
@@ -369,7 +398,8 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                     image_prompts = _existing
                     print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing)}개)")
                 else:
-                    image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_b, layout=slide_layout_b, image_style=image_style_b)
+                    bg_display_mode_b = ch_config_b.get("bg_display_mode", "zone")
+                    image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_b, layout=slide_layout_b, image_style=image_style_b, scene_references=image_scene_references_b, bg_display_mode=bg_display_mode_b)
                 if image_prompts:
                     # meta_json에 프롬프트 저장
                     meta = {}
@@ -387,15 +417,16 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                     full_text = " ".join(s["text"] for s in sentences)
 
                     # graph 타입 공통 처리 함수
+                    _info_w, _info_h = (1080, 1920) if bg_display_mode == "fullscreen" else (1080, 960)
                     def _generate_graph_bg(idx, slide):
                         out = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
                         try:
-                            generate_infographic(slide, full_text, out, width=1080, height=960)
+                            generate_infographic(slide, full_text, out, width=_info_w, height=_info_h)
                             print(f"[runner] bg_{idx+1}.png 인포그래픽 생성 완료")
                         except Exception as e:
                             print(f"[runner] bg_{idx+1} 인포그래픽 실패, 기본 차트로 폴백: {e}")
                             try:
-                                generate_chart(slide, out, width=1080, height=960)
+                                generate_chart(slide, out, width=_info_w, height=_info_h)
                             except Exception as e2:
                                 print(f"[runner] bg_{idx+1} 차트 폴백도 실패: {e2}")
 
@@ -414,8 +445,8 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                                 try:
                                     if idx > 0:
                                         time.sleep(5)  # Gemini 분당 요청 제한 대응
-                                    # overview 슬라이드는 항상 전체 배경(9:16) 사용
-                                    if bg_type == "overview":
+                                    # fullscreen / overview → 9:16, zone + 가로분할 → 1:1
+                                    if bg_type == "overview" or bg_display_mode == "fullscreen":
                                         _ar = "9:16"
                                     else:
                                         _ar = "1:1" if slide_layout_b in ("center", "top", "bottom") else "9:16"
@@ -472,7 +503,8 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
             slide_paths = generate_slides(slides_data, dirs["image"],
                                           date=date_str, brand=brand,
                                           backgrounds=bg_results,
-                                          layout=slide_layout)
+                                          layout=slide_layout,
+                                          bg_display_mode=bg_display_mode)
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,
@@ -592,8 +624,22 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                 # 슬라이드간 나래이션 갭 (0.3초 무음 패딩)
                 _pad_slide_audio(merged_audio, timeline, gap=0.3)
 
+                # motion 힌트 추출 (meta_json → image_prompts)
+                _motion_hints = {}
+                try:
+                    _meta_raw = job_row.get("meta_json", "")
+                    if _meta_raw:
+                        _meta = json.loads(_meta_raw)
+                        for i, p in enumerate(_meta.get("image_prompts", [])):
+                            m = p.get("motion", "") if isinstance(p, dict) else ""
+                            if m:
+                                _motion_hints[i + 1] = m  # 1-based slide num
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
                 segments = render_segments(timeline["slide_durations"], dirs["image"],
-                                           merged_audio, dirs["segment"])
+                                           merged_audio, dirs["segment"],
+                                           motion_hints=_motion_hints)
                 final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
 
                 # 효과음 설정 로드
@@ -1036,6 +1082,16 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
     intro_narration = (ch_config.get("intro_narration") or "").strip()
     outro_narration = (ch_config.get("outro_narration") or "").strip()
 
+    # 나레이션 템플릿 변수 치환: {날짜} → "3월 11일", {요일} → "화요일"
+    now = datetime.now()
+    _narr_vars = {
+        "날짜": f"{now.month}월 {now.day}일",
+        "요일": ["월", "화", "수", "목", "금", "토", "일"][now.weekday()] + "요일",
+    }
+    for k, v in _narr_vars.items():
+        intro_narration = intro_narration.replace(f"{{{k}}}", v)
+        outro_narration = outro_narration.replace(f"{{{k}}}", v)
+
     parts = []
 
     if intro_bg:
@@ -1177,9 +1233,24 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         ch_config_fp = json.loads(channel.get("config", "{}")) if channel else {}
         slide_layout = ch_config_fp.get("slide_layout", "full")
+        bg_display_mode = ch_config_fp.get("bg_display_mode", "zone")
         target_duration = ch_config_fp.get("target_duration", 60)
 
         dirs = _get_job_dirs(job_id)
+
+        # 인트로 나레이션 템플릿 치환 + 대본 연결 지시
+        intro_narration_fp_raw = ch_config_fp.get("intro_narration", "").strip()
+        if intro_narration_fp_raw:
+            _dt_fp = datetime.now()
+            _resolved_fp = intro_narration_fp_raw.replace(
+                "{날짜}", f"{_dt_fp.month}월 {_dt_fp.day}일"
+            ).replace(
+                "{요일}", ["월", "화", "수", "목", "금", "토", "일"][_dt_fp.weekday()] + "요일"
+            )
+            instructions += (f"\n\n★ 이 채널은 별도 인트로 나레이션이 있습니다: \"{_resolved_fp}\"\n"
+                             "인트로 나레이션이 먼저 재생된 후 첫 슬라이드 나레이션이 이어집니다.\n"
+                             "첫 슬라이드 sentences는 인트로와 자연스럽게 이어지도록 작성하세요.\n"
+                             "인트로에서 이미 한 인사/소개를 반복하지 마세요.")
 
         # 아웃트로가 있으면 나래이션에 마무리 멘트 금지
         if _find_channel_image(channel_id, "outro_bg"):
@@ -1236,6 +1307,7 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             ch_config_s3 = json.loads(channel.get("config", "{}")) if channel else {}
             auto_bg_source = ch_config_s3.get("auto_bg_source", "sd_image")
             image_prompt_style_s3 = ch_config_s3.get("image_prompt_style", "")
+            image_scene_references_s3 = ch_config_s3.get("image_scene_references", "")
 
             # 이미지 프롬프트 생성
             slide_layout_s3 = ch_config_s3.get("slide_layout", "full")
@@ -1250,7 +1322,8 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
                 image_prompts = _existing_s3
                 print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing_s3)}개)")
             else:
-                image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_s3, layout=slide_layout_s3, image_style=image_style_s3)
+                bg_display_mode_s3 = ch_config_s3.get("bg_display_mode", "zone")
+                image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_s3, layout=slide_layout_s3, image_style=image_style_s3, scene_references=image_scene_references_s3, bg_display_mode=bg_display_mode_s3)
             if image_prompts:
                 meta = {}
                 existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
@@ -1267,15 +1340,16 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             full_text_fp = " ".join(s["text"] for s in sentences)
 
             # graph 타입 공통 처리
+            _info_w_fp, _info_h_fp = (1080, 1920) if bg_display_mode == "fullscreen" else (1080, 960)
             def _gen_graph_fp(idx, slide):
                 output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
                 try:
-                    generate_infographic(slide, full_text_fp, output_path, width=1080, height=960)
+                    generate_infographic(slide, full_text_fp, output_path, width=_info_w_fp, height=_info_h_fp)
                     print(f"[runner] bg_{idx+1}.png 인포그래픽 생성 완료")
                 except Exception as e:
                     print(f"[runner] bg_{idx+1} 인포그래픽 실패, 차트 폴백: {e}")
                     try:
-                        generate_chart(slide, output_path, width=1080, height=960)
+                        generate_chart(slide, output_path, width=_info_w_fp, height=_info_h_fp)
                     except Exception as e2:
                         print(f"[runner] bg_{idx+1} 차트 폴백도 실패: {e2}")
 
@@ -1296,7 +1370,10 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
                         try:
                             if idx > 0:
                                 time.sleep(5)  # Gemini 분당 요청 제한 대응
-                            _ar = "1:1" if slide_layout_s3 in ("center", "top", "bottom") else "9:16"
+                            if bg_display_mode == "fullscreen":
+                                _ar = "9:16"
+                            else:
+                                _ar = "1:1" if slide_layout_s3 in ("center", "top", "bottom") else "9:16"
                             gemini_generate_image(en_prompt, output_path, gemini_key,
                                                   aspect_ratio=_ar)
                             print(f"[runner] bg_{idx+1}.png Gemini 생성 완료")
@@ -1357,7 +1434,8 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             slide_paths = generate_slides(slides_data, dirs["image"],
                                           date=date_str, brand=brand,
                                           backgrounds=bg_results,
-                                          layout=slide_layout)
+                                          layout=slide_layout,
+                                          bg_display_mode=bg_display_mode)
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,
@@ -1426,8 +1504,19 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             # 슬라이드간 나래이션 갭
             _pad_slide_audio(merged_audio, timeline, gap=0.3)
 
+            # motion 힌트 추출 (image_prompts 변수에서 직접)
+            _motion_hints_r = {}
+            try:
+                for i, p in enumerate(image_prompts or []):
+                    m = p.get("motion", "") if isinstance(p, dict) else ""
+                    if m:
+                        _motion_hints_r[i + 1] = m
+            except (TypeError, AttributeError):
+                pass
+
             segments = render_segments(timeline["slide_durations"], dirs["image"],
-                                       merged_audio, dirs["segment"])
+                                       merged_audio, dirs["segment"],
+                                       motion_hints=_motion_hints_r)
             final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
 
             # 효과음 설정

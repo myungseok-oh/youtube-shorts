@@ -1526,6 +1526,16 @@ function toggleAutoBgSource() {
   }
 }
 
+function toggleBgDisplayMode() {
+  const layout = document.getElementById("cs-slide-layout").value;
+  const section = document.getElementById("bg-display-mode-section");
+  if (layout === "full") {
+    section.classList.add("hidden");
+  } else {
+    section.classList.remove("hidden");
+  }
+}
+
 function toggleTtsEngine() {
   const engine = document.getElementById("cs-tts-engine").value;
   const edgeSection = document.getElementById("cs-tts-edge-section");
@@ -2717,6 +2727,7 @@ async function openChannelSettings(channelId) {
   try { cfg = JSON.parse(ch.config || "{}"); } catch {}
 
   document.getElementById("cs-image-prompt-style").value = cfg.image_prompt_style || "";
+  document.getElementById("cs-image-scene-references").value = cfg.image_scene_references || "";
   document.getElementById("cs-script-rules").value = cfg.script_rules || "";
   document.getElementById("cs-roundup-rules").value = cfg.roundup_rules || "";
   document.getElementById("cs-image-style").value = cfg.image_style || "mixed";
@@ -2724,6 +2735,8 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-target-duration").value = String(cfg.target_duration || 60);
   updateDurationHint();
   document.getElementById("cs-slide-layout").value = cfg.slide_layout || "full";
+  document.getElementById("cs-bg-display-mode").value = cfg.bg_display_mode || "zone";
+  toggleBgDisplayMode();
   document.getElementById("cs-production-mode").value = cfg.production_mode || "manual";
   document.getElementById("cs-auto-bg-source").value = cfg.auto_bg_source || "sd_image";
   document.getElementById("cs-gemini-api-key").value = cfg.gemini_api_key || "";
@@ -2813,6 +2826,7 @@ async function saveChannelSettings() {
 
   // 프롬프트 지침 저장 (비어있으면 키 삭제 → 기본값 사용)
   const _setOrDelete = (key, val) => { if (val) cfg[key] = val; else delete cfg[key]; };
+  _setOrDelete("image_scene_references", document.getElementById("cs-image-scene-references").value.trim());
   _setOrDelete("script_rules", document.getElementById("cs-script-rules").value.trim());
   _setOrDelete("roundup_rules", document.getElementById("cs-roundup-rules").value.trim());
 
@@ -2820,6 +2834,7 @@ async function saveChannelSettings() {
   cfg.format = document.getElementById("cs-format").value;
   cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
+  cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _setIfPresent("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
@@ -3023,6 +3038,7 @@ async function saveChannelSettingsSilent() {
 
   // 프롬프트 지침 저장
   const _setOrDel = (key, val) => { if (val) cfg[key] = val; else delete cfg[key]; };
+  _setOrDel("image_scene_references", document.getElementById("cs-image-scene-references").value.trim());
   _setOrDel("script_rules", document.getElementById("cs-script-rules").value.trim());
   _setOrDel("roundup_rules", document.getElementById("cs-roundup-rules").value.trim());
 
@@ -3030,6 +3046,7 @@ async function saveChannelSettingsSilent() {
   cfg.format = document.getElementById("cs-format").value;
   cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
+  cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _set("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
