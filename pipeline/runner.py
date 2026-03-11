@@ -18,7 +18,7 @@ from pipeline.agent import generate_script, generate_image_prompts
 from pipeline.tts_generator import generate_audio, GOOGLE_CLOUD_VOICES
 from pipeline.slide_generator import generate_slides, generate_chart, generate_infographic, generate_thumbnail
 from pipeline.sync_engine import build_timeline, merge_slide_audio
-from pipeline.video_renderer import render_segments, concat_segments
+from pipeline.video_renderer import render_segments, concat_segments, render_static_silent, render_static_with_audio
 from pipeline.metadata import generate_metadata
 from pipeline.youtube_uploader import upload_video
 from pipeline.image_generator import generate_backgrounds
@@ -148,6 +148,8 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
         image_prompt_style = ch_config.get("image_prompt_style", "")
         target_duration = ch_config.get("target_duration", 60)
         channel_format = ch_config.get("format", "single")
+        script_rules = ch_config.get("script_rules", "")
+        roundup_rules = ch_config.get("roundup_rules", "")
 
         # 디렉토리 생성
         _get_job_dirs(job_id)
@@ -157,7 +159,9 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
             try:
                 script_json = generate_script(topic, instructions, brand,
                                               target_duration=target_duration,
-                                              channel_format=channel_format)
+                                              channel_format=channel_format,
+                                              script_rules=script_rules,
+                                              roundup_rules=roundup_rules)
 
                 _update_step(db, job_id, "news_search", "completed",
                              output_data={"message": "뉴스 검색 완료"})
@@ -246,6 +250,7 @@ def _qa_restart(db, job_id, restart_from, retry_count,
                 qa_feedback: str = "", target_duration: int = 60):
     """QA 실패 시 해당 단계부터 재작업"""
     instructions = channel.get("instructions", "") if channel else ""
+    ch_config_qa = json.loads(channel.get("config", "{}")) if channel else {}
 
     if restart_from == "script":
         # 대본 재생성 (QA 피드백 포함)
@@ -255,7 +260,9 @@ def _qa_restart(db, job_id, restart_from, retry_count,
             feedback_section = f"\n\n⚠️ 이전 대본이 QA 검토에서 탈락했습니다. 아래 문제점을 반드시 수정해주세요:\n{qa_feedback}\n"
         try:
             new_script = generate_script(topic, instructions + feedback_section, brand,
-                                         target_duration=target_duration)
+                                         target_duration=target_duration,
+                                         script_rules=ch_config_qa.get("script_rules", ""),
+                                         roundup_rules=ch_config_qa.get("roundup_rules", ""))
             db.execute("UPDATE jobs SET script_json = ?, updated_at = ? WHERE id = ?",
                        [json.dumps(new_script, ensure_ascii=False), _now(), job_id])
             _update_step(db, job_id, "script", "completed",
@@ -324,7 +331,7 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
             bg_results = _load_uploaded_backgrounds(dirs["bg"], len(slides_data))
             existing_bg_count = sum(1 for bg in bg_results if bg.get("path"))
 
-            if existing_bg_count == 0:
+            if existing_bg_count <= 0:
                 # 배경 자동 생성
                 ch_config_b = json.loads(channel.get("config", "{}")) if channel else {}
                 auto_bg_source = ch_config_b.get("auto_bg_source", "sd_image")
@@ -470,6 +477,12 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                 total_dur = _render_with_narration(
                     narration_path, dirs["image"], slides_data, final_path)
 
+                # 인트로/아웃트로 세그먼트 이어붙이기
+                _ch_cfg_narr = json.loads(channel.get("config", "{}")) if channel else {}
+                wrap_dur = _wrap_with_intro_outro(
+                    channel_id, final_path, dirs["segment"], _ch_cfg_narr)
+                total_dur += wrap_dur
+
                 file_size = os.path.getsize(final_path) / (1024 * 1024)
                 _update_step(db, job_id, "render", "completed",
                              output_data={
@@ -555,6 +568,11 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                 concat_segments(segments, final_path,
                                 sfx_cfg=sfx_cfg,
                                 slide_durations=timeline["slide_durations"])
+
+                # 인트로/아웃트로 세그먼트 이어붙이기
+                wrap_dur = _wrap_with_intro_outro(
+                    channel_id, final_path, dirs["segment"], _ch_cfg_render)
+                timeline["total_duration"] += wrap_dur
 
                 file_size = os.path.getsize(final_path) / (1024 * 1024)
                 _update_step(db, job_id, "render", "completed",
@@ -831,6 +849,158 @@ def _render_with_narration(narration_path: str, image_dir: str,
     return total_dur
 
 
+
+def _find_channel_image(channel_id: str, prefix: str) -> str | None:
+    """채널 디렉토리에서 이미지 파일 탐색 (intro_bg, outro_bg 등)."""
+    ch_dir = os.path.join("data", "channels", channel_id)
+    for ext in ("jpg", "jpeg", "png", "webp"):
+        path = os.path.join(ch_dir, f"{prefix}.{ext}")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _generate_narration_audio(text: str, output_path: str, ch_config: dict,
+                               channel_id: str) -> str | None:
+    """나레이션 텍스트 → TTS 오디오 파일 생성. 실패 시 None 반환."""
+    try:
+        sentences = [{"text": text, "slide": 1}]
+        out_dir = os.path.dirname(output_path)
+        os.makedirs(out_dir, exist_ok=True)
+
+        tts_engine = ch_config.get("tts_engine", "edge-tts")
+        if tts_engine == "google-cloud":
+            voice = ch_config.get("google_voice", "ko-KR-Wavenet-A")
+            rate = ch_config.get("google_rate", None)
+        else:
+            voice = ch_config.get("tts_voice", "")
+            rate = ch_config.get("tts_rate", None)
+
+        sovits_cfg = None
+        if tts_engine == "gpt-sovits":
+            sovits_cfg = _build_sovits_cfg(ch_config, channel_id)
+
+        paths = generate_audio(sentences, out_dir, voice=voice, rate=rate,
+                               sovits_cfg=sovits_cfg)
+        if paths and os.path.exists(paths[0]):
+            os.replace(paths[0], output_path)
+            return output_path
+    except Exception as e:
+        print(f"[runner] 나레이션 TTS 실패: {e}")
+    return None
+
+
+def _wrap_with_intro_outro(channel_id: str, final_path: str,
+                            segment_dir: str, ch_config: dict) -> float:
+    """인트로/아웃트로 이미지가 있으면 영상 앞뒤에 세그먼트로 이어붙임.
+
+    나레이션 텍스트가 있으면 TTS → 이미지+나레이션 (duration=오디오 길이),
+    없으면 이미지+무음 (duration=설정값).
+
+    Returns:
+        추가된 총 시간(초). 인트로/아웃트로 없으면 0.
+    """
+    intro_bg = _find_channel_image(channel_id, "intro_bg")
+    outro_bg = _find_channel_image(channel_id, "outro_bg")
+
+    if not intro_bg and not outro_bg:
+        return 0.0
+
+    vcfg = config.video_cfg()
+    intro_dur = ch_config.get("intro_duration", 3) or 3
+    outro_dur = ch_config.get("outro_duration", 3) or 3
+    added_dur = 0.0
+
+    intro_narration = (ch_config.get("intro_narration") or "").strip()
+    outro_narration = (ch_config.get("outro_narration") or "").strip()
+
+    parts = []
+
+    if intro_bg:
+        intro_seg = os.path.join(segment_dir, "intro.mp4")
+        if intro_narration:
+            audio_path = os.path.join(segment_dir, "intro_narration.mp3")
+            audio = _generate_narration_audio(intro_narration, audio_path,
+                                               ch_config, channel_id)
+            if audio:
+                actual_dur = render_static_with_audio(intro_bg, audio, intro_seg, vcfg)
+                if os.path.exists(intro_seg):
+                    parts.append(intro_seg)
+                    added_dur += actual_dur
+                    print(f"[runner] 인트로 세그먼트 생성 (나레이션): {actual_dur:.1f}초")
+            else:
+                # TTS 실패 → 무음 폴백
+                render_static_silent(intro_bg, intro_seg, intro_dur, vcfg)
+                if os.path.exists(intro_seg):
+                    parts.append(intro_seg)
+                    added_dur += intro_dur
+                    print(f"[runner] 인트로 나레이션 TTS 실패 → 무음: {intro_dur}초")
+        else:
+            render_static_silent(intro_bg, intro_seg, intro_dur, vcfg)
+            if os.path.exists(intro_seg):
+                parts.append(intro_seg)
+                added_dur += intro_dur
+                print(f"[runner] 인트로 세그먼트 생성: {intro_dur}초")
+
+    parts.append(final_path)
+
+    if outro_bg:
+        outro_seg = os.path.join(segment_dir, "outro.mp4")
+        if outro_narration:
+            audio_path = os.path.join(segment_dir, "outro_narration.mp3")
+            audio = _generate_narration_audio(outro_narration, audio_path,
+                                               ch_config, channel_id)
+            if audio:
+                actual_dur = render_static_with_audio(outro_bg, audio, outro_seg, vcfg)
+                if os.path.exists(outro_seg):
+                    parts.append(outro_seg)
+                    added_dur += actual_dur
+                    print(f"[runner] 아웃트로 세그먼트 생성 (나레이션): {actual_dur:.1f}초")
+            else:
+                render_static_silent(outro_bg, outro_seg, outro_dur, vcfg)
+                if os.path.exists(outro_seg):
+                    parts.append(outro_seg)
+                    added_dur += outro_dur
+                    print(f"[runner] 아웃트로 나레이션 TTS 실패 → 무음: {outro_dur}초")
+        else:
+            render_static_silent(outro_bg, outro_seg, outro_dur, vcfg)
+            if os.path.exists(outro_seg):
+                parts.append(outro_seg)
+                added_dur += outro_dur
+                print(f"[runner] 아웃트로 세그먼트 생성: {outro_dur}초")
+
+    if len(parts) <= 1:
+        return 0.0
+
+    # concat demuxer로 이어붙이기
+    wrapped_path = final_path.replace(".mp4", "_wrapped.mp4")
+    concat_file = os.path.join(segment_dir, "concat_wrap.txt")
+    with open(concat_file, "w", encoding="utf-8") as f:
+        for p in parts:
+            abs_p = os.path.abspath(p).replace("\\", "/")
+            f.write(f"file '{abs_p}'\n")
+
+    result = subprocess.run([
+        config.ffmpeg(), "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", concat_file,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        wrapped_path
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[runner] 인트로/아웃트로 concat 실패: {result.stderr[:300]}")
+        return 0.0
+
+    if os.path.exists(wrapped_path):
+        os.replace(wrapped_path, final_path)
+        print(f"[runner] 인트로/아웃트로 적용 완료 (+{added_dur}초)")
+        return added_dur
+
+    return 0.0
+
+
 def _load_uploaded_backgrounds(bg_dir: str, slide_count: int,
                                source: str = "upload") -> list[dict]:
     """backgrounds 디렉토리에서 배경 이미지를 슬라이드 순서대로 로드.
@@ -887,7 +1057,9 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             _update_step(db, job_id, "news_search", "running")
             try:
                 script_json = generate_script(topic, instructions, brand,
-                                              target_duration=target_duration)
+                                              target_duration=target_duration,
+                                              script_rules=ch_config_fp.get("script_rules", ""),
+                                              roundup_rules=ch_config_fp.get("roundup_rules", ""))
                 _update_step(db, job_id, "news_search", "completed",
                              output_data={"message": "뉴스 검색 완료"})
                 _update_step(db, job_id, "script", "completed",
@@ -1105,6 +1277,11 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             concat_segments(segments, final_path,
                             sfx_cfg=sfx_cfg_r,
                             slide_durations=timeline["slide_durations"])
+
+            # 인트로/아웃트로 세그먼트 이어붙이기
+            wrap_dur = _wrap_with_intro_outro(
+                channel_id, final_path, dirs["segment"], _ch_cfg_r)
+            timeline["total_duration"] += wrap_dur
 
             file_size = os.path.getsize(final_path) / (1024 * 1024)
             _update_step(db, job_id, "render", "completed",

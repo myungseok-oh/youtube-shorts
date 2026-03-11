@@ -490,6 +490,16 @@
   min-height: 120px;
 }
 
+/* ─── Channel Settings Tabs ─── */
+.cs-tab-btn {
+  color: #6b7280;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.cs-tab-btn:hover {
+  color: #d1d5db;
+}
+
 /* ─── Upload Slots ─── */
 .upload-grid {
   display: grid;

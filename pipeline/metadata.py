@@ -29,7 +29,7 @@ _KEYWORD_TAGS = {
     "비트코인": ["비트코인", "암호화폐", "코인"],
 }
 
-_DEFAULT_TAGS = ["뉴스", "shorts", "오늘뉴스", "쇼츠뉴스"]
+_DEFAULT_TAGS = ["Shorts", "핫이슈"]
 
 
 def _extract_topic_tags(topic: str) -> list[str]:

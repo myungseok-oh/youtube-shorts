@@ -46,6 +46,103 @@ def _find_image_bg(image_dir: str, slide_num: int) -> str | None:
     return None
 
 
+def render_static_silent(image_path: str, output_path: str,
+                          duration: float, vcfg: dict):
+    """정적 이미지 → 무음 오디오 포함 MP4 (Ken Burns 효과, 1080x1920, 24fps).
+
+    인트로/아웃트로 세그먼트 생성용. concat demuxer 호환을 위해 무음 오디오 트랙 포함.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    preset = random.choice(_KB_PRESETS)
+    zoom_expr, x_expr, y_expr = preset
+    total_frames = int(duration * 24) + 5
+
+    result = subprocess.run([
+        config.ffmpeg(), "-y",
+        "-i", image_path,
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+        "-filter_complex",
+        f"[0:v]scale=1242:2208,format=rgba,"
+        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
+        f":d={total_frames}:s=1080x1920:fps=24[vout]",
+        "-map", "[vout]", "-map", "1:a",
+        "-c:v", "libx264", "-preset", "fast",
+        "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
+        "-pix_fmt", "yuv420p",
+        "-shortest",
+        "-t", str(duration),
+        output_path
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[video_renderer] Ken Burns silent failed: {result.stderr[:300]}")
+        subprocess.run([
+            config.ffmpeg(), "-y",
+            "-loop", "1", "-i", image_path,
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,"
+                   "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,fps=24",
+            "-c:v", "libx264", "-preset", "fast",
+            "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
+            "-pix_fmt", "yuv420p",
+            "-shortest",
+            "-t", str(duration),
+            output_path
+        ], capture_output=True)
+
+
+def render_static_with_audio(image_path: str, audio_path: str,
+                              output_path: str, vcfg: dict) -> float:
+    """정적 이미지 + 오디오 → MP4 (Ken Burns 효과, 1080x1920, 24fps).
+
+    인트로/아웃트로 나레이션 세그먼트 생성용.
+    duration은 오디오 실제 길이, AAC 재인코딩으로 concat 호환 보장.
+
+    Returns:
+        오디오 길이(초)
+    """
+    from pipeline.tts_generator import get_audio_duration
+    duration = get_audio_duration(audio_path)
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    preset = random.choice(_KB_PRESETS)
+    zoom_expr, x_expr, y_expr = preset
+    total_frames = int(duration * 24) + 5
+
+    result = subprocess.run([
+        config.ffmpeg(), "-y",
+        "-i", image_path,
+        "-i", audio_path,
+        "-filter_complex",
+        f"[0:v]scale=1242:2208,format=rgba,"
+        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
+        f":d={total_frames}:s=1080x1920:fps=24[vout]",
+        "-map", "[vout]", "-map", "1:a",
+        "-c:v", "libx264", "-preset", "fast",
+        "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
+        "-pix_fmt", "yuv420p",
+        "-shortest",
+        output_path
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[video_renderer] Ken Burns with audio failed: {result.stderr[:300]}")
+        subprocess.run([
+            config.ffmpeg(), "-y",
+            "-loop", "1", "-i", image_path,
+            "-i", audio_path,
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,"
+                   "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,fps=24",
+            "-c:v", "libx264", "-preset", "fast",
+            "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
+            "-pix_fmt", "yuv420p",
+            "-shortest",
+            output_path
+        ], capture_output=True)
+
+    return duration
+
+
 def render_segments(slide_durations: dict, image_dir: str,
                     merged_audio: dict, segment_dir: str) -> list[str]:
     """슬라이드별 세그먼트 영상 생성.

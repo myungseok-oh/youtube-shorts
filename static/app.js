@@ -1424,7 +1424,86 @@ async function previewVoice() {
   btn.disabled = false;
 }
 
+// ─── Channel Settings Tabs ───
+
+function switchSettingsTab(tabName) {
+  document.querySelectorAll(".cs-tab-content").forEach(el => el.classList.add("hidden"));
+  document.querySelectorAll(".cs-tab-btn").forEach(btn => {
+    btn.classList.remove("text-orange-400", "border-b-2", "border-orange-400");
+    btn.classList.add("text-gray-500", "hover:text-gray-300");
+  });
+  const tab = document.getElementById("cs-tab-" + tabName);
+  if (tab) tab.classList.remove("hidden");
+  const btn = document.querySelector(`.cs-tab-btn[data-cs-tab="${tabName}"]`);
+  if (btn) {
+    btn.classList.add("text-orange-400", "border-b-2", "border-orange-400");
+    btn.classList.remove("text-gray-500", "hover:text-gray-300");
+  }
+}
+
+// ─── Channel Fixed Background Images ───
+
+function _showChannelBg(type, hasImage, channelId) {
+  const img = document.getElementById(`cs-${type}-bg-img`);
+  const placeholder = document.getElementById(`cs-${type}-bg-placeholder`);
+  const delBtn = document.getElementById(`cs-${type}-bg-del`);
+  if (hasImage) {
+    img.src = `/api/channels/${channelId}/${type}-bg?t=${Date.now()}`;
+    img.classList.remove("hidden");
+    placeholder.classList.add("hidden");
+    delBtn.classList.remove("hidden");
+  } else {
+    img.src = "";
+    img.classList.add("hidden");
+    placeholder.classList.remove("hidden");
+    delBtn.classList.add("hidden");
+  }
+}
+
+async function uploadChannelBg(type) {
+  const modal = document.getElementById("channel-settings-modal");
+  const channelId = modal.dataset.channelId;
+  const fileInput = document.getElementById(`cs-${type}-bg-file`);
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`/api/channels/${channelId}/${type}-bg`, {
+    method: "POST", body: form
+  });
+  fileInput.value = "";
+  if (res.ok) {
+    _showChannelBg(type, true, channelId);
+  } else {
+    alert("업로드 실패");
+  }
+}
+
+async function deleteChannelBg(type) {
+  const modal = document.getElementById("channel-settings-modal");
+  const channelId = modal.dataset.channelId;
+  if (!confirm(`${type === 'intro' ? '인트로' : '아웃트로'} 고정 이미지를 삭제하시겠습니까?`)) return;
+  await fetch(`/api/channels/${channelId}/${type}-bg`, { method: "DELETE" });
+  _showChannelBg(type, false, channelId);
+}
+
 // ─── Channel TTS Settings ───
+
+function updateDurationHint() {
+  const v = parseInt(document.getElementById("cs-target-duration").value) || 60;
+  const presets = {
+    30: "35~45초, 문장 8~12개, 슬라이드 4~6개",
+    60: "50~60초, 문장 14~20개, 슬라이드 6~8개",
+  };
+  const hint = document.getElementById("cs-duration-hint");
+  if (presets[v]) {
+    hint.textContent = presets[v];
+  } else {
+    const closest = v <= 45 ? 30 : 60;
+    hint.textContent = `${presets[closest]} (${closest}초 프리셋 기준 적용)`;
+  }
+}
 
 function toggleAutoBgSource() {
   const mode = document.getElementById("cs-production-mode").value;
@@ -1433,15 +1512,6 @@ function toggleAutoBgSource() {
     section.classList.remove("hidden");
   } else {
     section.classList.add("hidden");
-  }
-  toggleGeminiSection();
-}
-
-function toggleGeminiSection() {
-  const source = document.getElementById("cs-auto-bg-source").value;
-  const section = document.getElementById("cs-gemini-section");
-  if (section) {
-    section.style.display = source === "gemini" ? "block" : "none";
   }
 }
 
@@ -2636,15 +2706,17 @@ async function openChannelSettings(channelId) {
   try { cfg = JSON.parse(ch.config || "{}"); } catch {}
 
   document.getElementById("cs-image-prompt-style").value = cfg.image_prompt_style || "";
+  document.getElementById("cs-script-rules").value = cfg.script_rules || "";
+  document.getElementById("cs-roundup-rules").value = cfg.roundup_rules || "";
   document.getElementById("cs-image-style").value = cfg.image_style || "mixed";
   document.getElementById("cs-format").value = cfg.format || "single";
   document.getElementById("cs-target-duration").value = String(cfg.target_duration || 60);
+  updateDurationHint();
   document.getElementById("cs-slide-layout").value = cfg.slide_layout || "full";
   document.getElementById("cs-production-mode").value = cfg.production_mode || "manual";
   document.getElementById("cs-auto-bg-source").value = cfg.auto_bg_source || "sd_image";
   document.getElementById("cs-gemini-api-key").value = cfg.gemini_api_key || "";
   toggleAutoBgSource();
-  toggleGeminiSection();
   document.getElementById("cs-yt-client-id").value = cfg.youtube_client_id || "";
   document.getElementById("cs-yt-client-secret").value = cfg.youtube_client_secret || "";
   document.getElementById("cs-yt-refresh-token").value = cfg.youtube_refresh_token || "";
@@ -2688,6 +2760,14 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-crossfade-label").textContent = xfDur;
   loadSfxFiles(cfg);
 
+  // 채널 고정 배경 이미지
+  _showChannelBg("intro", !!ch.has_intro_bg, channelId);
+  _showChannelBg("outro", !!ch.has_outro_bg, channelId);
+  document.getElementById("cs-intro-duration").value = cfg.intro_duration || 3;
+  document.getElementById("cs-outro-duration").value = cfg.outro_duration || 3;
+  document.getElementById("cs-intro-narration").value = cfg.intro_narration || "";
+  document.getElementById("cs-outro-narration").value = cfg.outro_narration || "";
+
   // 트렌드 소스 설정 (UI 제거됨, hidden input 호환용)
   document.getElementById("cs-trend-google").value = "";
   document.getElementById("cs-trend-youtube").value = "";
@@ -2701,6 +2781,7 @@ async function openChannelSettings(channelId) {
     cloneBtn.classList.remove("hidden");
   }
 
+  switchSettingsTab("basic");
   document.getElementById("channel-settings-modal").dataset.channelId = channelId;
   document.getElementById("channel-settings-modal").classList.remove("hidden");
 }
@@ -2718,6 +2799,12 @@ async function saveChannelSettings() {
 
   // 영상 제작 방식 저장
   _setIfPresent("image_prompt_style", document.getElementById("cs-image-prompt-style").value.trim());
+
+  // 프롬프트 지침 저장 (비어있으면 키 삭제 → 기본값 사용)
+  const _setOrDelete = (key, val) => { if (val) cfg[key] = val; else delete cfg[key]; };
+  _setOrDelete("script_rules", document.getElementById("cs-script-rules").value.trim());
+  _setOrDelete("roundup_rules", document.getElementById("cs-roundup-rules").value.trim());
+
   cfg.image_style = document.getElementById("cs-image-style").value;
   cfg.format = document.getElementById("cs-format").value;
   cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
@@ -2753,6 +2840,12 @@ async function saveChannelSettings() {
   cfg.sfx_outro = document.getElementById("cs-sfx-outro").value;
   cfg.sfx_highlight = document.getElementById("cs-sfx-highlight").value;
   cfg.crossfade_duration = parseFloat(document.getElementById("cs-crossfade-duration").value) || 0;
+
+  // 인트로/아웃트로 duration + 나레이션
+  cfg.intro_duration = parseFloat(document.getElementById("cs-intro-duration").value) || 3;
+  cfg.outro_duration = parseFloat(document.getElementById("cs-outro-duration").value) || 3;
+  cfg.intro_narration = document.getElementById("cs-intro-narration").value.trim();
+  cfg.outro_narration = document.getElementById("cs-outro-narration").value.trim();
 
   // 트렌드 소스 저장
   cfg.trend_sources = [];
@@ -2916,6 +3009,12 @@ async function saveChannelSettingsSilent() {
   const _set = (key, val) => { if (val) cfg[key] = val; };
 
   _set("image_prompt_style", document.getElementById("cs-image-prompt-style").value.trim());
+
+  // 프롬프트 지침 저장
+  const _setOrDel = (key, val) => { if (val) cfg[key] = val; else delete cfg[key]; };
+  _setOrDel("script_rules", document.getElementById("cs-script-rules").value.trim());
+  _setOrDel("roundup_rules", document.getElementById("cs-roundup-rules").value.trim());
+
   cfg.image_style = document.getElementById("cs-image-style").value;
   cfg.format = document.getElementById("cs-format").value;
   cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
@@ -2948,6 +3047,24 @@ async function saveChannelSettingsSilent() {
   // 캐시 갱신
   const dashRes = await fetch("/api/dashboard");
   channelsCache = await dashRes.json();
+}
+
+// ─── Prompt Defaults ───
+
+let _promptDefaultsCache = null;
+
+async function fillPromptDefault(textareaId, key) {
+  if (!_promptDefaultsCache) {
+    try {
+      const res = await fetch("/api/prompt-defaults");
+      _promptDefaultsCache = await res.json();
+    } catch {
+      alert("기본값을 불러올 수 없습니다");
+      return;
+    }
+  }
+  const val = _promptDefaultsCache[key] || "";
+  document.getElementById(textareaId).value = val;
 }
 
 // ─── Manual Script Modal ───

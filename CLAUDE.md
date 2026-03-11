@@ -208,6 +208,7 @@ POST http://127.0.0.1:9880/tts
 - **JobQueue**: Phase B 순차 실행 (GPU 충돌 방지), 상태 `queued` 추가
 - **중복 방지**: 24시간 내 동일 주제 필터 + 프롬프트 강화
 - **Closing 텍스트**: 하드코딩 제거 → 채널 지침 기반
+- **인트로/아웃트로 나레이션**: 채널 config에 `intro_narration`/`outro_narration` 텍스트 설정 → TTS로 음성 생성 → 이미지+나레이션 세그먼트 렌더링 (duration=오디오 길이). 텍스트 없으면 기존 무음+설정 duration 유지
 
 ---
 

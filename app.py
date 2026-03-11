@@ -245,6 +245,17 @@ async def api_usage():
     return result
 
 
+# ─── Prompt Defaults API ───
+
+@app.get("/api/prompt-defaults")
+async def api_prompt_defaults():
+    from pipeline.agent import DEFAULT_SCRIPT_RULES, DEFAULT_ROUNDUP_RULES
+    return {
+        "script_rules": DEFAULT_SCRIPT_RULES,
+        "roundup_rules": DEFAULT_ROUNDUP_RULES,
+    }
+
+
 # ─── Channel API ───
 
 @app.get("/api/channels")
@@ -315,6 +326,75 @@ async def api_delete_channel(channel_id: str):
     if not get_channel(db, channel_id):
         raise HTTPException(404, "Channel not found")
     delete_channel(db, channel_id)
+    return {"ok": True}
+
+
+# ─── Channel Fixed Images (Intro/Outro) ───
+
+def _channel_asset_dir(channel_id: str) -> str:
+    d = os.path.join("data", "channels", channel_id)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _find_channel_image(channel_id: str, prefix: str) -> str | None:
+    """data/channels/{id}/{prefix}.* 파일 탐색"""
+    d = os.path.join("data", "channels", channel_id)
+    if not os.path.isdir(d):
+        return None
+    for ext in ["jpg", "jpeg", "png", "webp"]:
+        p = os.path.join(d, f"{prefix}.{ext}")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+
+
+@app.post("/api/channels/{channel_id}/{img_type}-bg")
+async def api_upload_channel_bg(channel_id: str, img_type: str,
+                                 file: UploadFile = File(...)):
+    if img_type not in ("intro", "outro"):
+        raise HTTPException(400, "img_type must be intro or outro")
+    if not get_channel(db, channel_id):
+        raise HTTPException(404, "Channel not found")
+
+    d = _channel_asset_dir(channel_id)
+    # 기존 파일 삭제
+    for ext in ["jpg", "jpeg", "png", "webp"]:
+        old = os.path.join(d, f"{img_type}_bg.{ext}")
+        if os.path.exists(old):
+            os.remove(old)
+
+    original = file.filename or f"{img_type}_bg.jpg"
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else "jpg"
+    if ext not in ("jpg", "jpeg", "png", "webp"):
+        ext = "jpg"
+    out_path = os.path.join(d, f"{img_type}_bg.{ext}")
+    content = await file.read()
+    with open(out_path, "wb") as f:
+        f.write(content)
+
+    return {"ok": True, "path": out_path, "size_kb": round(len(content) / 1024, 1)}
+
+
+@app.get("/api/channels/{channel_id}/{img_type}-bg")
+async def api_get_channel_bg(channel_id: str, img_type: str):
+    if img_type not in ("intro", "outro"):
+        raise HTTPException(400, "img_type must be intro or outro")
+    path = _find_channel_image(channel_id, f"{img_type}_bg")
+    if not path:
+        raise HTTPException(404, "Not found")
+    return FileResponse(path)
+
+
+@app.delete("/api/channels/{channel_id}/{img_type}-bg")
+async def api_delete_channel_bg(channel_id: str, img_type: str):
+    if img_type not in ("intro", "outro"):
+        raise HTTPException(400, "img_type must be intro or outro")
+    path = _find_channel_image(channel_id, f"{img_type}_bg")
+    if path:
+        os.remove(path)
     return {"ok": True}
 
 
@@ -1693,6 +1773,8 @@ async def api_dashboard():
             "steps": steps_agg,
             "jobs": job_cards,
             "last_created": last_job["created_at"] if last_job else None,
+            "has_intro_bg": _find_channel_image(ch["id"], "intro_bg") is not None,
+            "has_outro_bg": _find_channel_image(ch["id"], "outro_bg") is not None,
         })
     return result
 

@@ -150,8 +150,77 @@ _DURATION_PRESETS = {
          "slides": "6~8개(closing 포함)", "per_slide": "2~4개"},
 }
 
+# ── 외부화 가능한 기본값 상수 ──────────────────────────────
+# 채널 config에 값이 있으면 해당 값으로 완전 대체. 비어있으면 기본값 사용.
+# 동적 변수: {sentences}, {chars}, {seconds}, {slides}, {per_slide}, {year}, {date}, {prev_year}
 
-def _build_script_schema(target_duration: int = 60, channel_format: str = "single") -> str:
+DEFAULT_SCRIPT_RULES = """\
+- news_date: 참조 기사의 게시 날짜 (YYYY-MM-DD), 정확히 기입
+- 하나의 뉴스 브리핑. sentences를 이어 읽으면 완결된 내레이션이 되어야 함
+- 슬라이드 간 자연스러운 연결 (접속 표현 활용)
+- 슬라이드별 역할: ①훅 → ②핵심 → ③배경 → ④영향 → ⑤전망 → ⑥클로징
+- sentences: {sentences}개, 각 15~25자, 총 {chars}자 (={seconds}초 분량)
+- 슬라이드 1개당 문장 {per_slide}개 (5개 이상 금지)
+- sentences에 채널명 언급 금지
+- 문장 종결 다양하게, 채널 지침 톤 준수
+- slides: {slides}개, 강조 키워드는 <span class="hl">...</span>
+- 첫 슬라이드: category에 주제에 맞는 태그(예: "경제","정치","코인","테크","사회" 등), main 짧고 강렬. "속보"는 실제 속보일 때만 사용
+- 마지막 슬라이드: 자동 처리. main에 짧은 마무리. bg_type: "closing". 나레이션(sentences) 배정 금지
+- youtube_title: 100자 이내, 클릭 유도. 채널 지침 제목 형식 따를 것
+- bg_type: photo(장소/사물) | broll(시네마틱, 1~2개만) | graph(인포그래픽) | logo(기업 건물) | closing(마지막)
+  - main/sub 텍스트가 이미지 프롬프트로 변환되므로 시각화 가능한 구체적 내용 필수"""
+
+DEFAULT_ROUNDUP_RULES = """\
+- news_date: 참조한 뉴스 기사들의 게시 날짜 (YYYY-MM-DD). 가장 최근 기사의 날짜. 반드시 정확한 날짜를 기입할 것.
+- 이것은 **여러 뉴스를 묶은 라운드업 브리핑**이다. 주제별로 짧게 전달한다.
+- sentences를 처음부터 끝까지 이어 읽으면 하나의 완결된 뉴스 라운드업 내레이션이 되어야 한다.
+
+### 슬라이드 구성 (필수)
+1. **첫 슬라이드 (Overview — 헤드라인)**: 5개 뉴스 헤드라인을 빠르게 나열하며 시작
+   - category: "오늘의 뉴스" 또는 날짜 포함
+   - main: "오늘의 핵심 뉴스 <span class="hl">N선</span>"
+   - sub: "① 주제1 헤드라인 ② 주제2 헤드라인 ③ ..." (주제별 5~10자 핵심 키워드)
+   - sentences: 5개 뉴스 헤드라인을 빠르게 나열 + "전해드리겠습니다" (2~3문장)
+     예: "반도체 수출 역대 최고, 환율 급등, AI 규제안까지. 오늘의 핵심 뉴스 전해드리겠습니다"
+   - **bg_type: "overview"** (전용 레이아웃: 진한 오버레이 + 번호 리스트)
+
+2. **주제별 슬라이드 (각 1개씩)**: 각 뉴스를 1슬라이드로 요약
+   - category: "1️⃣ 경제" / "2️⃣ 국제" 등 번호 + 분야
+   - main: 핵심 내용 (키워드 강조)
+   - sub: 보조 설명 1줄
+   - sentences: 각 주제당 2~3문장 (핵심 팩트만)
+   - bg_type: 주제에 맞게 photo/graph/logo 선택
+
+3. **마지막 슬라이드 (Closing)**: 자동 처리됨
+   - main: 짧은 마무리 문구
+   - bg_type: "closing"
+   - 나레이션(sentences) 배정 금지 — 구독/좋아요 텍스트가 자동 표시됨
+
+### 대본 규칙
+- 전체 문장 {sentences}개, 각 15~25자
+- 전체 {seconds}초 (한국어 읽기 속도 초당 4~5음절), 총 {chars}자
+- **슬라이드 1개당 문장 {per_slide}개** — 한 슬라이드에 5개 이상 넣지 마라
+- 주제 전환 시 자연스러운 연결: "다음 소식입니다", "이어서", "한편" 등
+- sentences에 채널명 언급 금지
+- 문장 종결을 다양하게, 채널 지침 톤 준수
+- 강조할 숫자나 키워드는 <span class="hl">...</span>으로 감싸기
+- youtube_title: 100자 이내, 클릭 유도. 채널 지침의 제목 형식 따를 것.
+- bg_type: overview(첫 슬라이드 전용), photo(장소/사물), broll(시네마틱), graph(데이터), logo(기업), closing(마지막)
+- ★ 첫 슬라이드는 반드시 bg_type: "overview"로 지정할 것"""
+
+
+def _apply_duration_vars(template: str, p: dict) -> str:
+    """템플릿 내 동적 변수를 duration preset으로 치환."""
+    return (template
+            .replace("{sentences}", str(p["sentences"]))
+            .replace("{chars}", str(p["chars"]))
+            .replace("{seconds}", str(p["seconds"]))
+            .replace("{slides}", str(p["slides"]))
+            .replace("{per_slide}", str(p["per_slide"])))
+
+
+def _build_script_schema(target_duration: int = 60, channel_format: str = "single",
+                         script_rules: str = "", roundup_rules: str = "") -> str:
     """target_duration(초)에 맞는 SCRIPT_JSON_SCHEMA 생성."""
     p = _DURATION_PRESETS.get(target_duration)
     if not p:
@@ -159,7 +228,10 @@ def _build_script_schema(target_duration: int = 60, channel_format: str = "singl
         p = _DURATION_PRESETS[closest]
 
     if channel_format == "roundup":
-        return _build_roundup_schema(p)
+        return _build_roundup_schema(p, roundup_rules)
+
+    rules_text = script_rules.strip() if script_rules and script_rules.strip() else DEFAULT_SCRIPT_RULES
+    rules_text = _apply_duration_vars(rules_text, p)
 
     return f"""\
 다음 JSON 형식으로만 출력해. 다른 텍스트 없이 JSON만.
@@ -172,25 +244,15 @@ def _build_script_schema(target_duration: int = 60, channel_format: str = "singl
 }}
 
 규칙:
-- news_date: 참조 기사의 게시 날짜 (YYYY-MM-DD), 정확히 기입
-- 하나의 뉴스 브리핑. sentences를 이어 읽으면 완결된 내레이션이 되어야 함
-- 슬라이드 간 자연스러운 연결 (접속 표현 활용)
-- 슬라이드별 역할: ①훅 → ②핵심 → ③배경 → ④영향 → ⑤전망 → ⑥클로징
-- sentences: {p['sentences']}개, 각 15~25자, 총 {p['chars']}자 (={p['seconds']}초 분량)
-- 슬라이드 1개당 문장 {p['per_slide']}개 (5개 이상 금지)
-- sentences에 채널명 언급 금지
-- 문장 종결 다양하게, 채널 지침 톤 준수
-- slides: {p['slides']}개, 강조 키워드는 <span class="hl">...</span>
-- 첫 슬라이드: category에 주제에 맞는 태그(예: "경제","정치","코인","테크","사회" 등), main 짧고 강렬. "속보"는 실제 속보일 때만 사용
-- 마지막 슬라이드: 자동 처리. main에 짧은 마무리. bg_type: "closing"
-- youtube_title: 100자 이내, 클릭 유도. 채널 지침 제목 형식 따를 것
-- bg_type: photo(장소/사물) | broll(시네마틱, 1~2개만) | graph(인포그래픽) | logo(기업 건물) | closing(마지막)
-  - main/sub 텍스트가 이미지 프롬프트로 변환되므로 시각화 가능한 구체적 내용 필수
+{rules_text}
 """
 
 
-def _build_roundup_schema(p: dict) -> str:
+def _build_roundup_schema(p: dict, roundup_rules: str = "") -> str:
     """라운드업(멀티뉴스) 형식 스키마."""
+    rules_text = roundup_rules.strip() if roundup_rules and roundup_rules.strip() else DEFAULT_ROUNDUP_RULES
+    rules_text = _apply_duration_vars(rules_text, p)
+
     return f"""\
 다음 JSON 형식으로만 출력해. 다른 텍스트 없이 JSON만 출력해.
 
@@ -222,41 +284,7 @@ def _build_roundup_schema(p: dict) -> str:
 }}
 
 규칙:
-- news_date: 참조한 뉴스 기사들의 게시 날짜 (YYYY-MM-DD). 가장 최근 기사의 날짜. 반드시 정확한 날짜를 기입할 것.
-- 이것은 **여러 뉴스를 묶은 라운드업 브리핑**이다. 주제별로 짧게 전달한다.
-- sentences를 처음부터 끝까지 이어 읽으면 하나의 완결된 뉴스 라운드업 내레이션이 되어야 한다.
-
-### 슬라이드 구성 (필수)
-1. **첫 슬라이드 (Overview — 헤드라인)**: 5개 뉴스 헤드라인을 빠르게 나열하며 시작
-   - category: "오늘의 뉴스" 또는 날짜 포함
-   - main: "오늘의 핵심 뉴스 <span class="hl">N선</span>"
-   - sub: "① 주제1 헤드라인 ② 주제2 헤드라인 ③ ..." (주제별 5~10자 핵심 키워드)
-   - sentences: 5개 뉴스 헤드라인을 빠르게 나열 + "전해드리겠습니다" (2~3문장)
-     예: "반도체 수출 역대 최고, 환율 급등, AI 규제안까지. 오늘의 핵심 뉴스 전해드리겠습니다"
-   - **bg_type: "overview"** (전용 레이아웃: 진한 오버레이 + 번호 리스트)
-
-2. **주제별 슬라이드 (각 1개씩)**: 각 뉴스를 1슬라이드로 요약
-   - category: "1️⃣ 경제" / "2️⃣ 국제" 등 번호 + 분야
-   - main: 핵심 내용 (키워드 강조)
-   - sub: 보조 설명 1줄
-   - sentences: 각 주제당 2~3문장 (핵심 팩트만)
-   - bg_type: 주제에 맞게 photo/graph/logo 선택
-
-3. **마지막 슬라이드 (Closing)**: 자동 처리됨
-   - main: 짧은 마무리 문구
-   - bg_type: "closing"
-
-### 대본 규칙
-- 전체 문장 {p['sentences']}개, 각 15~25자
-- 전체 {p['seconds']}초 (한국어 읽기 속도 초당 4~5음절), 총 {p['chars']}자
-- **슬라이드 1개당 문장 {p['per_slide']}개** — 한 슬라이드에 5개 이상 넣지 마라
-- 주제 전환 시 자연스러운 연결: "다음 소식입니다", "이어서", "한편" 등
-- sentences에 채널명 언급 금지
-- 문장 종결을 다양하게, 채널 지침 톤 준수
-- 강조할 숫자나 키워드는 <span class="hl">...</span>으로 감싸기
-- youtube_title: 100자 이내, 클릭 유도. 채널 지침의 제목 형식 따를 것.
-- bg_type: overview(첫 슬라이드 전용), photo(장소/사물), broll(시네마틱), graph(데이터), logo(기업), closing(마지막)
-- ★ 첫 슬라이드는 반드시 bg_type: "overview"로 지정할 것
+{rules_text}
 """
 
 
@@ -372,9 +400,11 @@ def _parse_topics(raw: str, fallback: str) -> list[str]:
 
 
 def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
-                    target_duration: int = 60, channel_format: str = "single") -> dict:
+                    target_duration: int = 60, channel_format: str = "single",
+                    script_rules: str = "", roundup_rules: str = "") -> dict:
     """Claude CLI로 뉴스 검색 + script_json 생성."""
-    schema = _build_script_schema(target_duration, channel_format=channel_format)
+    schema = _build_script_schema(target_duration, channel_format=channel_format,
+                                  script_rules=script_rules, roundup_rules=roundup_rules)
     duration_label = f"{target_duration}초" if target_duration <= 60 else f"{target_duration // 60}분"
     now = datetime.now()
     now_str = now.strftime("%Y년 %m월 %d일 %H시")
@@ -395,10 +425,7 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
         topic_section = f"""주제: {topic}
 
 위 지침에 따라 이 주제에 대한 최신 뉴스를 웹에서 검색하고,
-{duration_label} 쇼츠 뉴스 브리핑 영상용 script_json을 생성해줘.
-
-★ 검색 시 반드시 "{topic} {date_str}" 또는 "{topic} 오늘"로 검색할 것.
-★ 검색 결과에서 기사 발행일이 오늘({date_str})인 것만 사용."""
+{duration_label} 쇼츠 영상용 script_json을 생성해줘."""
 
     prompt = f"""{instructions}
 
@@ -410,19 +437,7 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
 
 {topic_section}
 
-### ★★ 뉴스 선별 기준 (필수, 위반 시 전체 폐기)
-- 현재 연도는 {now.year}년이다. {now.year - 1}년 이전 기사는 절대 사용 금지
-- 오늘({date_str}) 발행 기사만 사용. 검색 시 "{date_str}" 키워드 포함
-- 검색 결과의 기사 날짜를 반드시 확인. URL이나 본문에서 발행일 체크
-- 어제 이전/날짜 불명/과거 분석 기사 사용 금지
-- 오늘 기사 못 찾으면 youtube_title에 "최신 뉴스를 찾을 수 없습니다" 명시
-
 {schema}
-
-### ★★★ 금융/투자 콘텐츠 안전 규칙 (채널 지침보다 우선, 절대 위반 불가)
-금지: 투자 권유, 매수·매도 시그널, 기술지표(RSI/MACD 등) 기반 전망, 과거 수익률로 미래 암시, 가격 예측/목표가
-허용: 팩트 전달, 시장 상황 설명, 전문가 의견 인용(출처 명시), 면책 문구
-대본 마지막에 "이 영상은 정보 제공 목적이며 투자 조언이 아닙니다" 권장
 
 brand 값은 "{brand}"로 설정해.
 """
