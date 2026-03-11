@@ -134,7 +134,7 @@ def _build_sovits_cfg(ch_config: dict, channel_id: str) -> dict:
 
 # ─── Phase A: 뉴스 검색 + 대본 작성 → waiting_slides ───
 
-def _run_phase_a(db, job_id: str, script_json: dict = None):
+def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
     """Phase A: news_search + script → status waiting_slides"""
     try:
         db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
@@ -144,7 +144,7 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
         channel_id = job_row["channel_id"]
         topic = job_row["topic"]
 
-        channel = db.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
+        channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
         instructions = channel.get("instructions", "") if channel else ""
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         ch_config = json.loads(channel.get("config", "{}")) if channel else {}
@@ -337,7 +337,7 @@ def _reset_steps_from(db, job_id, step_names):
 
 # ─── Phase B: 슬라이드 + TTS + 렌더 + 업로드 ───
 
-def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
+def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                   tts_rate_override=None, tts_engine_override: str = "",
                   sovits_cfg_override: dict = None):
     """Phase B: slides → tts → render → upload (업로드된 배경 이미지 사용)"""
@@ -350,7 +350,7 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
         topic = job_row["topic"]
         script_json = json.loads(job_row["script_json"])
 
-        channel = db.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
+        channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         ch_config_pb = json.loads(channel.get("config", "{}")) if channel else {}
         slide_layout = ch_config_pb.get("slide_layout", "full")
@@ -1218,7 +1218,7 @@ def _load_uploaded_backgrounds(bg_dir: str, slide_count: int,
 
 # ─── 기존 호환: 원스탑 파이프라인 (Openverse 자동 배경) ───
 
-def _run_pipeline(db, job_id: str, script_json: dict = None):
+def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
     """기존 원스탑 파이프라인 (Phase A + B 연속 실행)"""
     try:
         db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
@@ -1228,7 +1228,7 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
         channel_id = job_row["channel_id"]
         topic = job_row["topic"]
 
-        channel = db.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
+        channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
         instructions = channel.get("instructions", "") if channel else ""
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         ch_config_fp = json.loads(channel.get("config", "{}")) if channel else {}
@@ -1628,21 +1628,21 @@ class JobQueue:
     """Phase B 전용 싱글 워커 큐. GPU 리소스 충돌 방지."""
 
     def __init__(self):
-        self._queue = deque()  # [(db, job_id, kwargs), ...]
+        self._queue = deque()  # [(db_ch, db, job_id, kwargs), ...]
         self._lock = threading.Lock()
         self._worker_running = False
         self._current_job_id = None
 
-    def enqueue(self, db, job_id: str, **kwargs):
+    def enqueue(self, db_ch, db, job_id: str, **kwargs):
         """Phase B 작업을 큐에 등록. 워커가 없으면 자동 시작."""
         with self._lock:
             # 중복 등록 방지
-            if any(item[1] == job_id for item in self._queue):
+            if any(item[2] == job_id for item in self._queue):
                 return
             if self._current_job_id == job_id:
                 return
 
-            self._queue.append((db, job_id, kwargs))
+            self._queue.append((db_ch, db, job_id, kwargs))
             db.execute(
                 "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
                 ["queued", _now(), job_id]
@@ -1658,7 +1658,7 @@ class JobQueue:
         with self._lock:
             return {
                 "current": self._current_job_id,
-                "waiting": [item[1] for item in self._queue],
+                "waiting": [item[2] for item in self._queue],
                 "total": len(self._queue) + (1 if self._current_job_id else 0),
             }
 
@@ -1668,7 +1668,7 @@ class JobQueue:
             if self._current_job_id == job_id:
                 return 0
             for i, item in enumerate(self._queue):
-                if item[1] == job_id:
+                if item[2] == job_id:
                     return i + 1
             return -1
 
@@ -1680,11 +1680,11 @@ class JobQueue:
                     self._worker_running = False
                     self._current_job_id = None
                     return
-                db, job_id, kwargs = self._queue.popleft()
+                db_ch, db, job_id, kwargs = self._queue.popleft()
                 self._current_job_id = job_id
 
             try:
-                _run_phase_b(db, job_id, **kwargs)
+                _run_phase_b(db_ch, db, job_id, **kwargs)
             except Exception:
                 traceback.print_exc()
 
@@ -1698,31 +1698,31 @@ _job_queue = JobQueue()
 
 # ─── Public API ───
 
-def start_pipeline(db, job_id: str, script_json: dict = None):
+def start_pipeline(db_ch, db, job_id: str, script_json: dict = None):
     """Phase A 실행 (대본까지 → waiting_slides). 병렬 OK."""
-    t = threading.Thread(target=_run_phase_a, args=(db, job_id, script_json),
+    t = threading.Thread(target=_run_phase_a, args=(db_ch, db, job_id, script_json),
                          daemon=True)
     t.start()
     return t
 
 
-def resume_pipeline(db, job_id: str, tts_voice: str = "", tts_rate=None,
+def resume_pipeline(db_ch, db, job_id: str, tts_voice: str = "", tts_rate=None,
                     tts_engine: str = "", sovits_cfg: dict = None):
     """Phase B를 큐에 등록 (순차 실행)"""
-    _job_queue.enqueue(db, job_id, tts_voice_override=tts_voice,
+    _job_queue.enqueue(db_ch, db, job_id, tts_voice_override=tts_voice,
                        tts_rate_override=tts_rate,
                        tts_engine_override=tts_engine,
                        sovits_cfg_override=sovits_cfg)
 
 
-def start_pipeline_full(db, job_id: str, script_json: dict = None):
+def start_pipeline_full(db_ch, db, job_id: str, script_json: dict = None):
     """원스탑: Phase A 실행 후 완료되면 Phase B 큐 등록"""
     def _run_then_queue():
-        _run_phase_a(db, job_id, script_json)
+        _run_phase_a(db_ch, db, job_id, script_json)
         # Phase A 성공 시 자동으로 Phase B 큐 등록
         job = db.fetchone("SELECT status FROM jobs WHERE id = ?", [job_id])
         if job and job["status"] == "waiting_slides":
-            _job_queue.enqueue(db, job_id)
+            _job_queue.enqueue(db_ch, db, job_id)
 
     t = threading.Thread(target=_run_then_queue, daemon=True)
     t.start()

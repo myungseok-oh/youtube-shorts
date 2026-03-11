@@ -35,6 +35,10 @@ def db_path() -> str:
     return os.path.join(_ROOT, load()["db_path"])
 
 
+def channels_db_path() -> str:
+    return os.path.join(_ROOT, "data", "channels.db")
+
+
 def video_cfg() -> dict:
     return load()["video"]
 

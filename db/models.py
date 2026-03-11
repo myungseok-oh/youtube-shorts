@@ -10,8 +10,8 @@ def _now():
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _next_channel_id(db) -> str:
-    row = db.fetchone("SELECT COUNT(*) as cnt FROM channels")
+def _next_channel_id(db_ch) -> str:
+    row = db_ch.fetchone("SELECT COUNT(*) as cnt FROM channels")
     n = (row["cnt"] if row else 0) + 1
     return f"ch-{n:04d}"
 
@@ -28,10 +28,10 @@ def _next_job_id(db) -> str:
 
 # --- Channel ---
 
-def create_channel(db, name: str, handle: str = "",
+def create_channel(db_ch, name: str, handle: str = "",
                    description: str = "", instructions: str = "",
                    default_topics: str = "", cfg: dict = None) -> dict:
-    cid = _next_channel_id(db)
+    cid = _next_channel_id(db_ch)
     data = {
         "id": cid,
         "name": name,
@@ -41,12 +41,12 @@ def create_channel(db, name: str, handle: str = "",
         "default_topics": default_topics,
         "config": json.dumps(cfg or {}, ensure_ascii=False),
     }
-    db.insert("channels", data)
-    return db.fetchone("SELECT * FROM channels WHERE id = ?", [cid])
+    db_ch.insert("channels", data)
+    return db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [cid])
 
 
-def list_channels(db) -> list[dict]:
-    channels = db.fetchall("SELECT * FROM channels ORDER BY CAST(COALESCE(sort_order, '0') AS INTEGER), created_at")
+def list_channels(db_ch, db) -> list[dict]:
+    channels = db_ch.fetchall("SELECT * FROM channels ORDER BY CAST(COALESCE(sort_order, '0') AS INTEGER), created_at")
     for ch in channels:
         cnt = db.fetchone(
             "SELECT COUNT(*) as cnt FROM jobs WHERE channel_id = ?",
@@ -56,28 +56,28 @@ def list_channels(db) -> list[dict]:
     return channels
 
 
-def get_channel(db, channel_id: str) -> dict | None:
-    return db.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
+def get_channel(db_ch, channel_id: str) -> dict | None:
+    return db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
 
 
-def update_channel(db, channel_id: str, **kwargs) -> dict | None:
+def update_channel(db_ch, channel_id: str, **kwargs) -> dict | None:
     allowed = {"name", "handle", "description", "instructions", "default_topics", "config"}
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
     if not updates:
-        return get_channel(db, channel_id)
+        return get_channel(db_ch, channel_id)
     set_clause = ", ".join(f"{k} = ?" for k in updates)
-    db.execute(
+    db_ch.execute(
         f"UPDATE channels SET {set_clause} WHERE id = ?",
         list(updates.values()) + [channel_id]
     )
-    return get_channel(db, channel_id)
+    return get_channel(db_ch, channel_id)
 
 
-def delete_channel(db, channel_id: str):
+def delete_channel(db_ch, db, channel_id: str):
     db.execute("DELETE FROM job_steps WHERE job_id IN (SELECT id FROM jobs WHERE channel_id = ?)",
                [channel_id])
     db.execute("DELETE FROM jobs WHERE channel_id = ?", [channel_id])
-    db.execute("DELETE FROM channels WHERE id = ?", [channel_id])
+    db_ch.execute("DELETE FROM channels WHERE id = ?", [channel_id])
 
 
 # --- Job ---

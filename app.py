@@ -35,6 +35,7 @@ from pipeline.slide_generator import generate_slides, generate_chart, generate_i
 from pipeline.gemini_generator import generate_image as gemini_gen_image
 
 db = Database(config.db_path())
+db_ch = Database(config.channels_db_path())
 
 DEFAULT_INSTRUCTIONS = """\
 # 유튜브 쇼츠 뉴스 브리핑 에이전트
@@ -106,6 +107,21 @@ def _is_duplicate(topic: str, recent_topics: list, threshold: float = 0.5) -> bo
     return False
 
 
+def _migrate_channels_db():
+    """shorts.db → channels.db 마이그레이션: channels.db가 비어있으면 shorts.db에서 복사"""
+    existing = db_ch.fetchone("SELECT COUNT(*) as cnt FROM channels")
+    if existing and existing["cnt"] > 0:
+        return  # 이미 데이터 있음
+
+    rows = db.fetchall("SELECT * FROM channels")
+    if not rows:
+        return
+
+    for row in rows:
+        db_ch.insert("channels", dict(row))
+    print(f"[마이그레이션] channels.db로 {len(rows)}개 채널 복사 완료")
+
+
 def _recover_orphan_jobs():
     """서버 시작 시 running 상태로 남은 고아 작업을 감지하여 재시작"""
     orphans = db.fetchall(
@@ -147,7 +163,7 @@ def _recover_orphan_jobs():
                 db.execute(
                     "UPDATE job_steps SET status = 'pending', error_msg = '' "
                     "WHERE job_id = ? AND status = 'failed'", [job_id])
-                start_pipeline(db, job_id)
+                start_pipeline(db_ch, db, job_id)
                 print(f"[복구] {job_id}: Phase A 재시작")
         # Phase B (slides, tts, render, qa, upload) → 큐 재등록
         elif step_name in ("slides", "tts", "render", "qa", "upload"):
@@ -157,7 +173,7 @@ def _recover_orphan_jobs():
             db.execute(
                 "UPDATE job_steps SET status = 'pending', error_msg = '' "
                 "WHERE job_id = ? AND step_name = ?", [job_id, step_name])
-            resume_pipeline(db, job_id)
+            resume_pipeline(db_ch, db, job_id)
             print(f"[복구] {job_id}: Phase B 큐 재등록 ({step_name}부터)")
         else:
             # 알 수 없는 상태 → failed로 두고 수동 처리
@@ -168,9 +184,10 @@ def _recover_orphan_jobs():
 
 @asynccontextmanager
 async def lifespan(app):
-    channels = list_channels(db)
+    _migrate_channels_db()
+    channels = list_channels(db_ch, db)
     if not channels:
-        create_channel(db, name="새 채널", handle="",
+        create_channel(db_ch, name="새 채널", handle="",
                        description="뉴스 브리핑 채널",
                        instructions=DEFAULT_INSTRUCTIONS,
                        default_topics="오늘 주요 뉴스 3개 만들어줘")
@@ -186,7 +203,7 @@ templates = Jinja2Templates(directory="templates")
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    channels = list_channels(db)
+    channels = list_channels(db_ch, db)
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "channels": channels,
@@ -260,7 +277,7 @@ async def api_prompt_defaults():
 
 @app.get("/api/channels")
 async def api_list_channels():
-    return list_channels(db)
+    return list_channels(db_ch, db)
 
 
 @app.post("/api/channels")
@@ -270,7 +287,7 @@ async def api_create_channel(request: Request):
     if not name:
         raise HTTPException(400, "name is required")
     ch = create_channel(
-        db, name=name,
+        db_ch, name=name,
         handle=body.get("handle", ""),
         description=body.get("description", ""),
         instructions=body.get("instructions", ""),
@@ -282,14 +299,14 @@ async def api_create_channel(request: Request):
 @app.post("/api/channels/{channel_id}/clone")
 async def api_clone_channel(channel_id: str):
     """기존 채널을 복사하여 새 채널 생성 (원본 채널만 가능)"""
-    src = get_channel(db, channel_id)
+    src = get_channel(db_ch, channel_id)
     if not src:
         raise HTTPException(404, "Channel not found")
     if src.get("cloned_from"):
         raise HTTPException(400, "복사된 채널은 다시 복사할 수 없습니다. 원본 채널에서 복사하세요.")
     src_cfg = json.loads(src.get("config", "{}"))
     clone = create_channel(
-        db,
+        db_ch,
         name=f"{src['name']} (복사)",
         handle=src.get("handle", ""),
         description=src.get("description", ""),
@@ -298,7 +315,7 @@ async def api_clone_channel(channel_id: str):
         cfg=src_cfg,
     )
     # cloned_from 기록
-    db.execute("UPDATE channels SET cloned_from = ? WHERE id = ?", [channel_id, clone["id"]])
+    db_ch.execute("UPDATE channels SET cloned_from = ? WHERE id = ?", [channel_id, clone["id"]])
     clone["cloned_from"] = channel_id
     return clone
 
@@ -309,23 +326,23 @@ async def api_reorder_channels(request: Request):
     body = await request.json()
     order = body.get("order", [])  # [channel_id, ...]
     for i, cid in enumerate(order):
-        db.execute("UPDATE channels SET sort_order = ? WHERE id = ?", [i, cid])
+        db_ch.execute("UPDATE channels SET sort_order = ? WHERE id = ?", [i, cid])
     return {"ok": True}
 
 
 @app.put("/api/channels/{channel_id}")
 async def api_update_channel(channel_id: str, request: Request):
-    if not get_channel(db, channel_id):
+    if not get_channel(db_ch, channel_id):
         raise HTTPException(404, "Channel not found")
     body = await request.json()
-    return update_channel(db, channel_id, **body)
+    return update_channel(db_ch, channel_id, **body)
 
 
 @app.delete("/api/channels/{channel_id}")
 async def api_delete_channel(channel_id: str):
-    if not get_channel(db, channel_id):
+    if not get_channel(db_ch, channel_id):
         raise HTTPException(404, "Channel not found")
-    delete_channel(db, channel_id)
+    delete_channel(db_ch, db, channel_id)
     return {"ok": True}
 
 
@@ -356,7 +373,7 @@ async def api_upload_channel_bg(channel_id: str, img_type: str,
                                  file: UploadFile = File(...)):
     if img_type not in ("intro", "outro"):
         raise HTTPException(400, "img_type must be intro or outro")
-    if not get_channel(db, channel_id):
+    if not get_channel(db_ch, channel_id):
         raise HTTPException(404, "Channel not found")
 
     d = _channel_asset_dir(channel_id)
@@ -414,7 +431,7 @@ async def api_create_job(request: Request):
 
     if not channel_id or not topic:
         raise HTTPException(400, "channel_id and topic are required")
-    if not get_channel(db, channel_id):
+    if not get_channel(db_ch, channel_id):
         raise HTTPException(404, "Channel not found")
 
     job = create_job(
@@ -426,7 +443,7 @@ async def api_create_job(request: Request):
 
     # script_json이 있으면 원스탑 파이프라인
     if script_json:
-        start_pipeline_full(db, job["id"], script_json)
+        start_pipeline_full(db_ch, db, job["id"], script_json)
 
     return job
 
@@ -441,7 +458,7 @@ async def api_create_manual_job(request: Request):
 
     if not channel_id or not topic or not script_json:
         raise HTTPException(400, "channel_id, topic, script_json are required")
-    if not get_channel(db, channel_id):
+    if not get_channel(db_ch, channel_id):
         raise HTTPException(404, "Channel not found")
 
     job = create_job(
@@ -476,7 +493,7 @@ async def api_run_channel(channel_id: str, request: Request):
     """채널의 요청을 Claude가 해석 → 주제별 작업 생성 → Phase A (대본까지)"""
     import traceback, asyncio
 
-    ch = get_channel(db, channel_id)
+    ch = get_channel(db_ch, channel_id)
     if not ch:
         raise HTTPException(404, "Channel not found")
 
@@ -546,17 +563,17 @@ async def api_run_channel(channel_id: str, request: Request):
             job = create_job(db, channel_id=channel_id, topic=combined_topic)
             jobs.append(job)
             if production_mode == "auto":
-                start_pipeline_full(db, job["id"])
+                start_pipeline_full(db_ch, db, job["id"])
             else:
-                start_pipeline(db, job["id"])
+                start_pipeline(db_ch, db, job["id"])
         else:
             for topic in topics:
                 job = create_job(db, channel_id=channel_id, topic=topic)
                 jobs.append(job)
                 if production_mode == "auto":
-                    start_pipeline_full(db, job["id"])
+                    start_pipeline_full(db_ch, db, job["id"])
                 else:
-                    start_pipeline(db, job["id"])
+                    start_pipeline(db_ch, db, job["id"])
         return {"created": len(jobs), "jobs": jobs, "mode": production_mode}
 
     except Exception as e:
@@ -567,7 +584,7 @@ async def api_run_channel(channel_id: str, request: Request):
 @app.get("/api/channels/{channel_id}/trends")
 async def api_get_channel_trends(channel_id: str):
     """트렌드 미리보기 — 채널 설정의 소스로 수집"""
-    ch = get_channel(db, channel_id)
+    ch = get_channel(db_ch, channel_id)
     if not ch:
         raise HTTPException(404, "Channel not found")
 
@@ -594,7 +611,7 @@ async def api_news_browse(category: str = ""):
     yt_api_key = ""
 
     # YouTube API 키: 채널 config에서 찾기
-    channels = list_channels(db)
+    channels = list_channels(db_ch, db)
     for ch in channels:
         try:
             cfg = json.loads(ch.get("config") or "{}")
@@ -666,7 +683,7 @@ async def api_get_job_script(job_id: str):
     meta = json.loads(job["meta_json"]) if job.get("meta_json") else {}
 
     # 채널 config (배경 소스 정보)
-    channel = db.fetchone("SELECT config FROM channels WHERE id = ?", [job.get("channel_id", "")])
+    channel = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [job.get("channel_id", "")])
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
 
     # 썸네일 확인
@@ -818,7 +835,7 @@ async def api_generate_thumbnail(job_id: str):
     if not slides:
         raise HTTPException(400, "No slides in script")
 
-    channel = db.fetchone("SELECT * FROM channels WHERE id = ?", [job.get("channel_id", "")])
+    channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [job.get("channel_id", "")])
     brand = channel["name"] if channel else ""
 
     title = script.get("youtube_title", "")
@@ -950,7 +967,7 @@ async def api_manual_youtube_upload(job_id: str):
     if job.get("status") != "completed":
         raise HTTPException(400, "영상이 완성되지 않았습니다")
 
-    channel = db.fetchone("SELECT * FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [job["channel_id"]])
     ch_config = json.loads(channel.get("config", "{}")) if channel else {}
 
     yt_client_id = ch_config.get("youtube_client_id", "")
@@ -1037,7 +1054,7 @@ async def api_generate_image_prompts(job_id: str):
     slides = script.get("slides", [])
     topic = job.get("topic", "")
 
-    channel = db.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     prompt_style = ch_cfg.get("image_prompt_style", "")
     slide_layout = ch_cfg.get("slide_layout", "full")
@@ -1267,7 +1284,7 @@ async def api_sd_generate_single(job_id: str, index: int, request: Request):
         raise HTTPException(404, "Job not found")
 
     # 채널 config에서 소스 결정
-    channel = db.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     auto_bg_source = ch_cfg.get("auto_bg_source", "sd_image")
     gemini_key = ch_cfg.get("gemini_api_key", "")
@@ -1477,7 +1494,7 @@ async def api_sd_generate_auto(job_id: str):
     bg_count = len(slides) - 1  # closing 제외
 
     # 채널 config
-    channel = db.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     slide_layout = ch_cfg.get("slide_layout", "full")
     auto_bg_source = ch_cfg.get("auto_bg_source", "sd_image")
@@ -1582,7 +1599,7 @@ async def api_rerender_slides(job_id: str):
     slides_data = script.get("slides", [])
     date_str = script.get("date", "")
 
-    channel = db.fetchone("SELECT * FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [job["channel_id"]])
     brand = channel.get("name", "") if channel else ""
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     slide_layout = ch_cfg.get("slide_layout", "full")
@@ -1628,7 +1645,7 @@ async def api_retry_job(job_id: str):
         db.execute(
             "UPDATE job_steps SET status = 'pending', error_msg = NULL, output_data = NULL, started_at = NULL, completed_at = NULL WHERE job_id = ? AND step_name IN ('news_search', 'script')",
             [job_id])
-        start_pipeline(db, job_id)
+        start_pipeline(db_ch, db, job_id)
         return {"ok": True, "message": "Phase A retry started"}
     else:
         # Phase B 실패 → waiting_slides로 되돌린 후 resume
@@ -1643,7 +1660,7 @@ async def api_retry_job(job_id: str):
         if os.path.isdir(audio_dir):
             shutil.rmtree(audio_dir, ignore_errors=True)
 
-        resume_pipeline(db, job_id)
+        resume_pipeline(db_ch, db, job_id)
         return {"ok": True, "message": "Phase B retry queued"}
 
 
@@ -1707,7 +1724,7 @@ async def api_resume_job(job_id: str, request: Request):
     except Exception:
         pass
 
-    resume_pipeline(db, job_id, tts_voice=tts_voice, tts_rate=tts_rate,
+    resume_pipeline(db_ch, db, job_id, tts_voice=tts_voice, tts_rate=tts_rate,
                     tts_engine=tts_engine, sovits_cfg=sovits_override)
     return {"ok": True, "message": "Phase B queued"}
 
@@ -1721,7 +1738,7 @@ async def api_queue_status():
 @app.get("/api/dashboard")
 async def api_dashboard():
     """대시보드용 — 채널별 + job별 데이터"""
-    channels = list_channels(db)
+    channels = list_channels(db_ch, db)
     result = []
     for ch in channels:
         jobs = list_jobs(db, channel_id=ch["id"])
