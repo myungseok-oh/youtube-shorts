@@ -271,4 +271,7 @@ def get_audio_duration(filepath: str) -> float:
          filepath],
         capture_output=True, text=True
     )
-    return float(result.stdout.strip())
+    try:
+        return float(result.stdout.strip())
+    except (ValueError, AttributeError):
+        return 0.0

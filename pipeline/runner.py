@@ -18,7 +18,10 @@ from pipeline.agent import generate_script, generate_image_prompts
 from pipeline.tts_generator import generate_audio, GOOGLE_CLOUD_VOICES
 from pipeline.slide_generator import generate_slides, generate_chart, generate_infographic, generate_thumbnail
 from pipeline.sync_engine import build_timeline, merge_slide_audio
-from pipeline.video_renderer import render_segments, concat_segments, render_static_silent, render_static_with_audio
+from pipeline.video_renderer import (
+    render_segments, concat_segments, render_static_silent,
+    render_static_with_audio, apply_audio_mix,
+)
 from pipeline.metadata import generate_metadata
 from pipeline.youtube_uploader import upload_video
 from pipeline.image_generator import generate_backgrounds
@@ -153,6 +156,13 @@ def _run_phase_a(db, job_id: str, script_json: dict = None):
 
         # 디렉토리 생성
         _get_job_dirs(job_id)
+
+        # 아웃트로가 있으면 나래이션에 마무리 멘트 금지
+        if _find_channel_image(channel_id, "outro_bg"):
+            instructions += ("\n\n★ 이 채널은 별도 아웃트로 영상이 있습니다. "
+                             "나레이션(sentences)에 마무리 인사, 구독/좋아요 요청, "
+                             "'~였습니다' 같은 엔딩 멘트를 절대 포함하지 마세요. "
+                             "마지막 콘텐츠 문장까지만 작성하세요.")
 
         if script_json is None:
             _update_step(db, job_id, "news_search", "running")
@@ -324,6 +334,16 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
         slides_data = script_json.get("slides", [])
         date_str = script_json.get("date", "")
 
+        # 빈 문장 필터링 (클로징 멘트 삭제 등으로 빈 문장 남은 경우)
+        orig_sent_count = len(sentences)
+        sentences = [s for s in sentences if s.get("text", "").strip()]
+        if len(sentences) < orig_sent_count:
+            # 오디오 캐시 무효화 (인덱스 불일치 방지)
+            import glob as glob_mod
+            for f in glob_mod.glob(os.path.join(dirs["audio"], "audio_*")):
+                os.remove(f)
+            print(f"[runner] 빈 문장 {orig_sent_count - len(sentences)}개 제거, 오디오 캐시 삭제")
+
         # --- Step 3: slides (배경 자동 생성 + 슬라이드 렌더링) ---
         _update_step(db, job_id, "slides", "running")
         try:
@@ -479,7 +499,7 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
 
                 # 인트로/아웃트로 세그먼트 이어붙이기
                 _ch_cfg_narr = json.loads(channel.get("config", "{}")) if channel else {}
-                wrap_dur = _wrap_with_intro_outro(
+                _intro_offset, wrap_dur = _wrap_with_intro_outro(
                     channel_id, final_path, dirs["segment"], _ch_cfg_narr)
                 total_dur += wrap_dur
 
@@ -548,7 +568,18 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                 _ch_cfg_render = json.loads(channel.get("config", "{}")) if channel else {}
                 narration_delay = _ch_cfg_render.get("narration_delay") or 2
 
+                # 인트로가 있으면 첫 슬라이드 딜레이 축소 (인트로가 리드인 역할)
+                has_intro = bool(_find_channel_image(channel_id, "intro_bg"))
+                if has_intro:
+                    narration_delay = min(narration_delay, 1.0)
+
                 timeline = build_timeline(sentences, dirs["audio"])
+
+                # 아웃트로 있으면 마지막 슬라이드 클로징 나래이션 제거
+                has_outro = bool(_find_channel_image(channel_id, "outro_bg"))
+                if has_outro:
+                    _strip_closing_audio(sentences, timeline)
+
                 merged_audio = merge_slide_audio(timeline["slide_audio_map"],
                                                  dirs["segment"],
                                                  narration_delay=narration_delay)
@@ -558,6 +589,9 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                     timeline["slide_durations"][first_s] += narration_delay
                     timeline["total_duration"] += narration_delay
 
+                # 슬라이드간 나래이션 갭 (0.3초 무음 패딩)
+                _pad_slide_audio(merged_audio, timeline, gap=0.3)
+
                 segments = render_segments(timeline["slide_durations"], dirs["image"],
                                            merged_audio, dirs["segment"])
                 final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
@@ -565,14 +599,24 @@ def _run_phase_b(db, job_id: str, tts_voice_override: str = "",
                 # 효과음 설정 로드
                 sfx_cfg = _ch_cfg_render if (_ch_cfg_render.get("sfx_enabled") or _ch_cfg_render.get("bgm_enabled") or _ch_cfg_render.get("crossfade_duration")) else None
 
+                # SFX/BGM은 인트로 wrap 후 별도 적용 (타이밍 오프셋 보정)
+                concat_cfg = dict(_ch_cfg_render)
+                concat_cfg["sfx_enabled"] = False
+                concat_cfg["bgm_enabled"] = False
                 concat_segments(segments, final_path,
-                                sfx_cfg=sfx_cfg,
+                                sfx_cfg=concat_cfg,
                                 slide_durations=timeline["slide_durations"])
 
                 # 인트로/아웃트로 세그먼트 이어붙이기
-                wrap_dur = _wrap_with_intro_outro(
+                intro_offset, wrap_dur = _wrap_with_intro_outro(
                     channel_id, final_path, dirs["segment"], _ch_cfg_render)
                 timeline["total_duration"] += wrap_dur
+
+                # SFX/BGM 믹싱 (인트로 길이만큼 오프셋)
+                if sfx_cfg:
+                    actual_xfade = _ch_cfg_render.get("crossfade_duration", 0.5) or 0.5
+                    apply_audio_mix(final_path, sfx_cfg, timeline["slide_durations"],
+                                    xfade_dur=actual_xfade, audio_offset=intro_offset)
 
                 file_size = os.path.getsize(final_path) / (1024 * 1024)
                 _update_step(db, job_id, "render", "completed",
@@ -850,6 +894,83 @@ def _render_with_narration(narration_path: str, image_dir: str,
 
 
 
+def _strip_closing_audio(sentences: list, timeline: dict):
+    """아웃트로 있을 때 마지막 콘텐츠 슬라이드에서 클로징 나래이션 오디오 제거.
+
+    build_timeline() 후, merge_slide_audio() 전에 호출.
+    slide_audio_map에서 클로징 문장의 오디오 경로를 제거하고 duration 재계산.
+    """
+    from pipeline.tts_generator import get_audio_duration
+    if not timeline.get("slide_durations"):
+        return
+
+    try:
+        closing_patterns = ["구독", "좋아요", "부탁드립니다", "감사합니다", "시청해 주"]
+        last_slide = max(timeline["slide_durations"].keys())
+
+        # 마지막 슬라이드에 배정된 문장들 추출
+        slide_sents = [s for s in sentences if s["slide"] == last_slide]
+        audio_paths = timeline["slide_audio_map"].get(last_slide, [])
+        if len(slide_sents) != len(audio_paths) or not audio_paths:
+            return
+
+        keep = []
+        removed_dur = 0.0
+        for sent, audio_path in zip(slide_sents, audio_paths):
+            text = sent.get("text", "")
+            if any(p in text for p in closing_patterns) and os.path.exists(audio_path):
+                dur = get_audio_duration(audio_path)
+                if dur > 0:
+                    removed_dur += dur
+                    print(f"[runner] 클로징 문장 제거: {text[:40]}")
+                    continue
+            keep.append(audio_path)
+
+        if removed_dur == 0:
+            return
+
+        if keep:
+            timeline["slide_audio_map"][last_slide] = keep
+            new_dur = sum(get_audio_duration(p) for p in keep if os.path.exists(p))
+            timeline["slide_durations"][last_slide] = max(new_dur, 2.0)
+        else:
+            # 모든 문장이 클로징 → 2.5초 유지 (배경 이미지 트랜지션용)
+            timeline["slide_audio_map"][last_slide] = audio_paths[:1]
+            timeline["slide_durations"][last_slide] = 2.5
+
+        timeline["total_duration"] -= removed_dur
+        print(f"[runner] 마지막 슬라이드 클로징 오디오 제거: {removed_dur:.1f}초 감소")
+    except Exception as e:
+        print(f"[runner] _strip_closing_audio 오류 (무시): {e}")
+
+
+def _pad_slide_audio(merged_audio: dict, timeline: dict, gap: float = 0.3):
+    """각 슬라이드 오디오 끝에 무음 패딩 추가 (나래이션 간 자연스러운 쉼).
+
+    마지막 슬라이드(클로징)는 패딩 제외.
+    """
+    sorted_keys = sorted(merged_audio.keys())
+    if len(sorted_keys) <= 1:
+        return
+    # 마지막 슬라이드 제외
+    for s_key in sorted_keys[:-1]:
+        audio_path = merged_audio[s_key]
+        if not os.path.exists(audio_path):
+            continue
+        padded = audio_path + ".padded.wav"
+        result = subprocess.run([
+            config.ffmpeg(), "-y",
+            "-i", audio_path,
+            "-af", f"apad=pad_dur={gap}",
+            "-ar", "44100", "-ac", "2",
+            padded
+        ], capture_output=True)
+        if result.returncode == 0 and os.path.exists(padded):
+            os.replace(padded, audio_path)
+            timeline["slide_durations"][s_key] += gap
+            timeline["total_duration"] += gap
+
+
 def _find_channel_image(channel_id: str, prefix: str) -> str | None:
     """채널 디렉토리에서 이미지 파일 탐색 (intro_bg, outro_bg 등)."""
     ch_dir = os.path.join("data", "channels", channel_id)
@@ -891,25 +1012,26 @@ def _generate_narration_audio(text: str, output_path: str, ch_config: dict,
 
 
 def _wrap_with_intro_outro(channel_id: str, final_path: str,
-                            segment_dir: str, ch_config: dict) -> float:
+                            segment_dir: str, ch_config: dict):
     """인트로/아웃트로 이미지가 있으면 영상 앞뒤에 세그먼트로 이어붙임.
 
     나레이션 텍스트가 있으면 TTS → 이미지+나레이션 (duration=오디오 길이),
     없으면 이미지+무음 (duration=설정값).
 
     Returns:
-        추가된 총 시간(초). 인트로/아웃트로 없으면 0.
+        (intro_dur, total_added_dur) 튜플. 없으면 (0, 0).
     """
     intro_bg = _find_channel_image(channel_id, "intro_bg")
     outro_bg = _find_channel_image(channel_id, "outro_bg")
 
     if not intro_bg and not outro_bg:
-        return 0.0
+        return (0.0, 0.0)
 
     vcfg = config.video_cfg()
     intro_dur = ch_config.get("intro_duration", 3) or 3
     outro_dur = ch_config.get("outro_duration", 3) or 3
     added_dur = 0.0
+    intro_added = 0.0  # 인트로만의 실제 길이 (SFX 오프셋용)
 
     intro_narration = (ch_config.get("intro_narration") or "").strip()
     outro_narration = (ch_config.get("outro_narration") or "").strip()
@@ -923,10 +1045,14 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
             audio = _generate_narration_audio(intro_narration, audio_path,
                                                ch_config, channel_id)
             if audio:
-                actual_dur = render_static_with_audio(intro_bg, audio, intro_seg, vcfg)
+                # SFX 오프닝 재생 여유 시간 (narration_delay, 기본 2초)
+                narr_delay = ch_config.get("narration_delay", 2) or 2
+                actual_dur = render_static_with_audio(
+                    intro_bg, audio, intro_seg, vcfg, audio_delay=narr_delay)
                 if os.path.exists(intro_seg):
                     parts.append(intro_seg)
                     added_dur += actual_dur
+                    intro_added = actual_dur
                     print(f"[runner] 인트로 세그먼트 생성 (나레이션): {actual_dur:.1f}초")
             else:
                 # TTS 실패 → 무음 폴백
@@ -934,12 +1060,14 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
                 if os.path.exists(intro_seg):
                     parts.append(intro_seg)
                     added_dur += intro_dur
+                    intro_added = intro_dur
                     print(f"[runner] 인트로 나레이션 TTS 실패 → 무음: {intro_dur}초")
         else:
             render_static_silent(intro_bg, intro_seg, intro_dur, vcfg)
             if os.path.exists(intro_seg):
                 parts.append(intro_seg)
                 added_dur += intro_dur
+                intro_added = intro_dur
                 print(f"[runner] 인트로 세그먼트 생성: {intro_dur}초")
 
     parts.append(final_path)
@@ -970,7 +1098,7 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
                 print(f"[runner] 아웃트로 세그먼트 생성: {outro_dur}초")
 
     if len(parts) <= 1:
-        return 0.0
+        return (0.0, 0.0)
 
     # concat demuxer로 이어붙이기
     wrapped_path = final_path.replace(".mp4", "_wrapped.mp4")
@@ -984,21 +1112,22 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
         config.ffmpeg(), "-y",
         "-f", "concat", "-safe", "0",
         "-i", concat_file,
-        "-c", "copy",
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
         "-movflags", "+faststart",
         wrapped_path
     ], capture_output=True, text=True)
 
     if result.returncode != 0:
         print(f"[runner] 인트로/아웃트로 concat 실패: {result.stderr[:300]}")
-        return 0.0
+        return (0.0, 0.0)
 
     if os.path.exists(wrapped_path):
         os.replace(wrapped_path, final_path)
-        print(f"[runner] 인트로/아웃트로 적용 완료 (+{added_dur}초)")
-        return added_dur
+        print(f"[runner] 인트로/아웃트로 적용 완료 (+{added_dur}초, 인트로={intro_added}초)")
+        return (intro_added, added_dur)
 
-    return 0.0
+    return (0.0, 0.0)
 
 
 def _load_uploaded_backgrounds(bg_dir: str, slide_count: int,
@@ -1052,6 +1181,13 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
 
         dirs = _get_job_dirs(job_id)
 
+        # 아웃트로가 있으면 나래이션에 마무리 멘트 금지
+        if _find_channel_image(channel_id, "outro_bg"):
+            instructions += ("\n\n★ 이 채널은 별도 아웃트로 영상이 있습니다. "
+                             "나레이션(sentences)에 마무리 인사, 구독/좋아요 요청, "
+                             "'~였습니다' 같은 엔딩 멘트를 절대 포함하지 마세요. "
+                             "마지막 콘텐츠 문장까지만 작성하세요.")
+
         # --- Step 1+2: 뉴스 검색 + 대본 ---
         if script_json is None:
             _update_step(db, job_id, "news_search", "running")
@@ -1084,6 +1220,15 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
         sentences = script_data.get("sentences", [])
         slides_data = script_data.get("slides", [])
         date_str = script_data.get("date", "")
+
+        # 빈 문장 필터링 (클로징 멘트 삭제 등으로 빈 문장 남은 경우)
+        orig_sent_count = len(sentences)
+        sentences = [s for s in sentences if s.get("text", "").strip()]
+        if len(sentences) < orig_sent_count:
+            import glob as glob_mod
+            for f in glob_mod.glob(os.path.join(dirs["audio"], "audio_*")):
+                os.remove(f)
+            print(f"[runner] 빈 문장 {orig_sent_count - len(sentences)}개 제거, 오디오 캐시 삭제")
 
         # --- Step 3: slides (배경 소스 선택에 따라 분기) ---
         _update_step(db, job_id, "slides", "running")
@@ -1258,7 +1403,18 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             _ch_cfg_r = json.loads(channel.get("config", "{}")) if channel else {}
             narration_delay_r = _ch_cfg_r.get("narration_delay") or 2
 
+            # 인트로가 있으면 첫 슬라이드 딜레이 축소
+            has_intro_r = bool(_find_channel_image(channel_id, "intro_bg"))
+            if has_intro_r:
+                narration_delay_r = min(narration_delay_r, 1.0)
+
             timeline = build_timeline(sentences, dirs["audio"])
+
+            # 아웃트로 있으면 마지막 슬라이드 클로징 나래이션 제거
+            has_outro_r = bool(_find_channel_image(channel_id, "outro_bg"))
+            if has_outro_r:
+                _strip_closing_audio(sentences, timeline)
+
             merged_audio = merge_slide_audio(timeline["slide_audio_map"],
                                              dirs["segment"],
                                              narration_delay=narration_delay_r)
@@ -1267,6 +1423,9 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
                 timeline["slide_durations"][first_s] += narration_delay_r
                 timeline["total_duration"] += narration_delay_r
 
+            # 슬라이드간 나래이션 갭
+            _pad_slide_audio(merged_audio, timeline, gap=0.3)
+
             segments = render_segments(timeline["slide_durations"], dirs["image"],
                                        merged_audio, dirs["segment"])
             final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
@@ -1274,14 +1433,24 @@ def _run_pipeline(db, job_id: str, script_json: dict = None):
             # 효과음 설정
             sfx_cfg_r = _ch_cfg_r if (_ch_cfg_r.get("sfx_enabled") or _ch_cfg_r.get("bgm_enabled") or _ch_cfg_r.get("crossfade_duration")) else None
 
+            # SFX/BGM은 인트로 wrap 후 별도 적용 (타이밍 오프셋 보정)
+            concat_cfg_r = dict(_ch_cfg_r)
+            concat_cfg_r["sfx_enabled"] = False
+            concat_cfg_r["bgm_enabled"] = False
             concat_segments(segments, final_path,
-                            sfx_cfg=sfx_cfg_r,
+                            sfx_cfg=concat_cfg_r,
                             slide_durations=timeline["slide_durations"])
 
             # 인트로/아웃트로 세그먼트 이어붙이기
-            wrap_dur = _wrap_with_intro_outro(
+            intro_offset_r, wrap_dur = _wrap_with_intro_outro(
                 channel_id, final_path, dirs["segment"], _ch_cfg_r)
             timeline["total_duration"] += wrap_dur
+
+            # SFX/BGM 믹싱 (인트로 길이만큼 오프셋)
+            if sfx_cfg_r:
+                actual_xfade_r = _ch_cfg_r.get("crossfade_duration", 0.5) or 0.5
+                apply_audio_mix(final_path, sfx_cfg_r, timeline["slide_durations"],
+                                xfade_dur=actual_xfade_r, audio_offset=intro_offset_r)
 
             file_size = os.path.getsize(final_path) / (1024 * 1024)
             _update_step(db, job_id, "render", "completed",

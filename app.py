@@ -1759,6 +1759,14 @@ async def api_dashboard():
             }
             if job["status"] == "queued":
                 card["queue_position"] = get_queue_position(job["id"])
+            if job["status"] == "waiting_slides":
+                bg_dir = os.path.join(config.output_dir(), job["id"], "backgrounds")
+                bg_count = 0
+                if os.path.isdir(bg_dir):
+                    bg_count = sum(1 for f in os.listdir(bg_dir)
+                                   if any(f.lower().endswith(e) for e in
+                                          (".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4")))
+                card["uploaded_bg_count"] = bg_count
             job_cards.append(card)
 
         last_job = jobs[0] if jobs else None

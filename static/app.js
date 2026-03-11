@@ -324,7 +324,7 @@ function renderJobCard(job, isCompleted = false) {
   for (const step of STEP_ORDER) {
     if (job.steps[step] === "running") { activeStep = STEP_LABELS[step]; break; }
   }
-  if (job.status === "waiting_slides") activeStep = "이미지 업로드 필요";
+  if (job.status === "waiting_slides") activeStep = (job.uploaded_bg_count > 0) ? "영상 제작 대기" : "이미지 업로드 필요";
   if (job.status === "queued") activeStep = job.queue_position ? `대기 ${job.queue_position}번째` : "곧 시작";
 
   // 누락 단계 보정 (가장 늦은 완료 단계 이전은 completed)
@@ -471,6 +471,13 @@ function _patchRunningDetail(scriptData, stepsData) {
   const stepStatus = {};
   for (const s of steps) stepStatus[s.step_name] = s.status || "pending";
 
+  // render 완료 but 아직 running view → 전체 재렌더링으로 video UI 전환
+  if (stepStatus["render"] === "completed" && document.getElementById("running-status-msg")) {
+    _wizardStep = determineWizardStep(scriptData, stepsData);
+    renderJobDetail(scriptData, stepsData);
+    return;
+  }
+
   // 파이프라인 노드 상태만 업데이트 (클래스 교체)
   const container = document.getElementById("pipeline-steps-live");
   if (container) {
@@ -510,7 +517,9 @@ function _patchRunningDetail(scriptData, stepsData) {
       videoArea.innerHTML = `
         <div class="flex flex-col items-center py-4 gap-3">
           <div class="text-sm font-semibold text-gray-300 w-full">영상 미리보기</div>
-          <video class="video-preview" controls>
+          <video class="video-preview" controls preload="metadata"
+                 poster="/api/jobs/${job_id}/thumbnail?t=${Date.now()}"
+                 onloadeddata="this.currentTime=0.1">
             <source src="/api/jobs/${job_id}/video?t=${Date.now()}" type="video/mp4">
           </video>
         </div>`;
@@ -965,7 +974,9 @@ function renderWizardStep3(jobId, scriptData, stepsData) {
     const thumbTs = Date.now();
     videoHtml = `
       <div class="flex flex-col items-center gap-3 mb-3">
-        <video class="video-preview" controls>
+        <video class="video-preview" controls preload="metadata"
+               poster="/api/jobs/${jobId}/thumbnail?t=${Date.now()}"
+               onloadeddata="this.currentTime=0.1">
           <source src="/api/jobs/${jobId}/video?t=${Date.now()}" type="video/mp4">
         </video>
         <div id="upload-status-${jobId}" class="text-xs"></div>

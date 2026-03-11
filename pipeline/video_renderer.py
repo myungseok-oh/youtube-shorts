@@ -92,22 +92,40 @@ def render_static_silent(image_path: str, output_path: str,
 
 
 def render_static_with_audio(image_path: str, audio_path: str,
-                              output_path: str, vcfg: dict) -> float:
+                              output_path: str, vcfg: dict,
+                              audio_delay: float = 0) -> float:
     """정적 이미지 + 오디오 → MP4 (Ken Burns 효과, 1080x1920, 24fps).
 
     인트로/아웃트로 나레이션 세그먼트 생성용.
-    duration은 오디오 실제 길이, AAC 재인코딩으로 concat 호환 보장.
+    duration은 오디오 실제 길이 + audio_delay, AAC 재인코딩으로 concat 호환 보장.
+
+    Args:
+        audio_delay: 오디오 시작 전 무음 구간(초). SFX 오프닝 재생 여유 시간용.
 
     Returns:
-        오디오 길이(초)
+        총 세그먼트 길이(초) = audio_delay + 오디오 길이
     """
     from pipeline.tts_generator import get_audio_duration
     duration = get_audio_duration(audio_path)
+    total_duration = duration + audio_delay
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     preset = random.choice(_KB_PRESETS)
     zoom_expr, x_expr, y_expr = preset
-    total_frames = int(duration * 24) + 5
+    total_frames = int(total_duration * 24) + 5
+
+    delay_ms = int(audio_delay * 1000)
+    if delay_ms > 0:
+        audio_filter = (
+            f"[1:a]adelay={delay_ms}|{delay_ms},"
+            f"aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+            f"apad=whole_dur={total_duration:.3f}[aout]"
+        )
+    else:
+        audio_filter = (
+            f"[1:a]aformat=sample_fmts=fltp:sample_rates=44100:"
+            f"channel_layouts=stereo[aout]"
+        )
 
     result = subprocess.run([
         config.ffmpeg(), "-y",
@@ -116,31 +134,34 @@ def render_static_with_audio(image_path: str, audio_path: str,
         "-filter_complex",
         f"[0:v]scale=1242:2208,format=rgba,"
         f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
-        f":d={total_frames}:s=1080x1920:fps=24[vout]",
-        "-map", "[vout]", "-map", "1:a",
+        f":d={total_frames}:s=1080x1920:fps=24[vout];"
+        f"{audio_filter}",
+        "-map", "[vout]", "-map", "[aout]",
         "-c:v", "libx264", "-preset", "fast",
         "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
         "-pix_fmt", "yuv420p",
-        "-shortest",
+        "-t", str(total_duration),
         output_path
     ], capture_output=True, text=True)
 
     if result.returncode != 0:
         print(f"[video_renderer] Ken Burns with audio failed: {result.stderr[:300]}")
+        delay_af = f"adelay={delay_ms}|{delay_ms}," if delay_ms > 0 else ""
         subprocess.run([
             config.ffmpeg(), "-y",
             "-loop", "1", "-i", image_path,
             "-i", audio_path,
             "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,"
                    "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,fps=24",
+            "-af", f"{delay_af}aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo",
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
             "-pix_fmt", "yuv420p",
-            "-shortest",
+            "-t", str(total_duration),
             output_path
         ], capture_output=True)
 
-    return duration
+    return total_duration
 
 
 def render_segments(slide_durations: dict, image_dir: str,
@@ -460,12 +481,13 @@ def _get_audio_path(subdir: str, filename: str) -> str | None:
 def _mix_audio(input_path: str, output_path: str,
                cfg: dict, slide_durations: dict,
                mix_sfx: bool = False, mix_bgm: bool = False,
-               xfade_dur: float = 0):
+               xfade_dur: float = 0, audio_offset: float = 0):
     """ffmpeg로 BGM + 효과음을 영상에 믹싱.
 
     BGM: 전체 영상에 루프, 끝에서 페이드아웃
     효과음: 슬라이드 전환 시점에 삽입
     xfade_dur: 크로스페이드 적용 시 전환당 줄어드는 시간
+    audio_offset: 인트로 세그먼트 길이 (SFX/BGM 타이밍 시프트)
     """
     # 슬라이드 전환 시점 계산 (누적 시간)
     sorted_slides = sorted(slide_durations.keys())
@@ -481,6 +503,10 @@ def _mix_audio(input_path: str, output_path: str,
         for i in range(len(cumulative)):
             cumulative[i] -= min(i, len(sorted_slides) - 1) * xfade_dur
 
+    # 인트로 오프셋: 슬라이드 타이밍을 인트로 길이만큼 시프트
+    if audio_offset > 0:
+        cumulative = [c + audio_offset for c in cumulative]
+
     total_dur = cumulative[-1] if cumulative else 0
 
     # 추가 입력 파일 수집: (파일경로, 필터라벨)
@@ -495,13 +521,12 @@ def _mix_audio(input_path: str, output_path: str,
         if bgm_path:
             bgm_vol = (cfg.get("bgm_volume", 10) or 10) / 100.0
             narr_delay = cfg.get("narration_delay") if cfg.get("narration_delay") is not None else 2
-            bgm_start_ms = int(narr_delay * 1000)
+            bgm_start_ms = int(narr_delay * 1000)  # BGM은 영상 시작부터 (인트로 중에도 재생)
 
-            # 마지막 슬라이드(클로징) 시작 시점 = 페이드아웃 시작
-            # 클로징 전 마지막 콘텐츠 슬라이드 끝에서 페이드아웃
-            last_content_end = cumulative[-2] if len(cumulative) >= 2 else total_dur
-            bgm_end = last_content_end  # 클로징 시작 시점에서 BGM 종료
-            bgm_dur = bgm_end - narr_delay
+            # 실제 영상 길이 기준으로 BGM 종료 시점 계산 (인트로/아웃트로 포함)
+            video_total = _get_segment_duration(input_path)
+            bgm_end = video_total - 1  # 영상 끝 1초 전에 완전히 페이드아웃
+            bgm_dur = max(1, bgm_end - narr_delay)
             bgm_fade_in = cfg.get("bgm_fade_in", 0)  # 0이면 페이드인 없음
             fade_out_dur = min(5, bgm_dur * 0.2)
             fade_out_start = max(0, bgm_dur - fade_out_dur)
@@ -526,11 +551,14 @@ def _mix_audio(input_path: str, output_path: str,
         # (path, delay_ms, fade_filter) — fade_filter는 추가 afade 문자열
         sfx_events = []
 
-        # 인트로: 첫 슬라이드 길이에 맞춰 페이드아웃 (슬라이드 끝 1초 전부터)
+        # 오프닝 SFX: 항상 영상 시작(0ms)에 재생 (인트로 중에 재생됨)
         intro_path = _get_audio_path("sfx", cfg.get("sfx_intro", ""))
         if intro_path:
-            first_slide_dur = slide_durations[sorted_slides[0]] if sorted_slides else 7
-            fade_start = max(1, first_slide_dur - 1)
+            if audio_offset > 0:
+                fade_start = max(1, audio_offset - 1)
+            else:
+                first_slide_dur = slide_durations[sorted_slides[0]] if sorted_slides else 7
+                fade_start = max(1, first_slide_dur - 1)
             sfx_events.append((intro_path, 0,
                                f"afade=t=out:st={fade_start:.1f}:d=1"))
 
@@ -586,3 +614,32 @@ def _mix_audio(input_path: str, output_path: str,
     if result.returncode != 0:
         print(f"[video_renderer] Audio mix ffmpeg error: {result.stderr[:500]}")
         raise RuntimeError("Audio mixing failed")
+
+
+def apply_audio_mix(video_path: str, sfx_cfg: dict, slide_durations: dict,
+                    xfade_dur: float = 0, audio_offset: float = 0):
+    """SFX/BGM을 영상에 믹싱 (인트로/아웃트로 wrap 후 호출용).
+
+    Args:
+        video_path: 입력/출력 영상 경로 (in-place 교체)
+        sfx_cfg: 채널 config dict
+        slide_durations: {슬라이드번호: 초}
+        xfade_dur: 크로스페이드 시간
+        audio_offset: 인트로 세그먼트 길이 (타이밍 시프트)
+    """
+    needs_sfx = sfx_cfg.get("sfx_enabled") and slide_durations
+    needs_bgm = sfx_cfg.get("bgm_enabled") and sfx_cfg.get("bgm_file")
+    if not needs_sfx and not needs_bgm:
+        return
+
+    mixed_path = video_path.replace(".mp4", "_mixed.mp4")
+    try:
+        _mix_audio(video_path, mixed_path, sfx_cfg, slide_durations,
+                   mix_sfx=bool(needs_sfx), mix_bgm=bool(needs_bgm),
+                   xfade_dur=xfade_dur, audio_offset=audio_offset)
+        if os.path.exists(mixed_path):
+            os.replace(mixed_path, video_path)
+    except Exception as e:
+        print(f"[video_renderer] apply_audio_mix failed: {e}")
+        if os.path.exists(mixed_path):
+            os.remove(mixed_path)
