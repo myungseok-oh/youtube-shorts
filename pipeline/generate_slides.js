@@ -91,8 +91,10 @@ function buildHTML(slide, index) {
   const bgData = bgInfo(index);
   const progressPct = total > 1 ? ((index + 1) / total * 100).toFixed(1) : 100;
 
-  // Closing slide: same across all layouts
-  if (index === total - 1) return buildClosing(slide, accent, bgData.css, progressPct);
+  // Closing slide: only if explicitly marked as closing (bg_type empty/closing)
+  // Content slides with bg_type (photo, graph, broll, etc.) are rendered normally
+  const isClosing = index === total - 1 && (!slide.bg_type || slide.bg_type === 'closing');
+  if (isClosing) return buildClosing(slide, accent, bgData.css, progressPct);
 
   // Overview slide (roundup headline): always full-bg with dark overlay + headline list
   if (slide.bg_type === 'overview') return buildOverview(slide, accent, bgData.css, progressPct, bgData.source);
@@ -123,6 +125,7 @@ function commonStyles(accent, bgImg) {
       width: 1080px; height: 1920px;
       font-family: 'Noto Sans KR', sans-serif;
       color: #ffffff; overflow: hidden; position: relative;
+      word-break: keep-all; overflow-wrap: break-word;
       ${bgImg
         ? `background: ${bgImg} center/cover no-repeat;`
         : `background: linear-gradient(170deg, #0b0e1a 0%, #141b2d 40%, #1a2238 100%);`
@@ -131,7 +134,7 @@ function commonStyles(accent, bgImg) {
     .bg-overlay {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       background: ${bgImg
-        ? 'linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.10) 40%, rgba(0,0,0,0.35) 100%)'
+        ? 'linear-gradient(180deg, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.45) 100%)'
         : 'transparent'};
       z-index: 1;
     }
@@ -190,10 +193,9 @@ function commonStyles(accent, bgImg) {
       justify-content: center; align-items: center;
     }
     .text-bg {
-      background: rgba(0,0,0,0.45);
-      backdrop-filter: blur(8px);
+      background: rgba(5,8,20,0.72);
       border-radius: 20px;
-      padding: 50px 60px;
+      padding: 40px 50px;
       max-width: 95%;
       display: flex; flex-direction: column;
       align-items: center;
@@ -210,6 +212,7 @@ function zonedStyles(accent) {
       width: 1080px; height: 1920px;
       font-family: 'Noto Sans KR', sans-serif;
       color: #ffffff; overflow: hidden; position: relative;
+      word-break: keep-all; overflow-wrap: break-word;
       background: #0b0e1a;
     }
     .grain {
@@ -279,10 +282,10 @@ function zonedStyles(accent) {
       text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 40px rgba(0,0,0,0.7);
     }
     .sub-text {
-      font-size: 56px; color: rgba(255,255,255,0.6);
+      font-size: 56px; color: rgba(255,255,255,0.92);
       text-align: center; font-weight: 400; padding: 0 30px;
       margin-top: 30px;
-      text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+      text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
     }
     .slide-num {
       position: absolute; bottom: 40px; left: 50px; z-index: 10;
@@ -325,6 +328,7 @@ function fullscreenZonedStyles(accent, bgImg) {
       width: 1080px; height: 1920px;
       font-family: 'Noto Sans KR', sans-serif;
       color: #ffffff; overflow: hidden; position: relative;
+      word-break: keep-all; overflow-wrap: break-word;
       ${bgImg
         ? `background: ${bgImg} center/cover no-repeat;`
         : `background: linear-gradient(170deg, #0b0e1a 0%, #141b2d 40%, #1a2238 100%);`
@@ -388,10 +392,10 @@ function fullscreenZonedStyles(accent, bgImg) {
       text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 40px rgba(0,0,0,0.7);
     }
     .sub-text {
-      font-size: 56px; color: rgba(255,255,255,0.6);
+      font-size: 56px; color: rgba(255,255,255,0.92);
       text-align: center; font-weight: 400; padding: 0 30px;
       margin-top: 30px;
-      text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+      text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
     }
     .slide-num {
       position: absolute; bottom: 40px; left: 50px; z-index: 10;
@@ -434,17 +438,17 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
   .top-bar { display: none; }
   .accent-stripe { display: none; }
   .main-text {
-    font-size: 140px; font-weight: 900;
+    font-size: 110px; font-weight: 900;
     text-align: center; line-height: 1.25;
     padding: 0 50px;
     text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 50px rgba(0,0,0,0.7);
     letter-spacing: -3px;
   }
   .sub-text {
-    font-size: 72px; color: rgba(255,255,255,0.65);
+    font-size: 56px; color: rgba(255,255,255,0.92);
     text-align: center; font-weight: 400; padding: 0 60px;
-    margin-top: 50px;
-    text-shadow: 0 2px 10px rgba(0,0,0,0.9);
+    margin-top: 40px;
+    text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
   }
   .badge { margin-bottom: 60px; }
 </style></head>
@@ -477,16 +481,16 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
   .divider-top { margin-bottom: 50px; }
   .divider-bottom { margin-top: 50px; }
   .main-text {
-    font-size: 130px; font-weight: 900;
+    font-size: 100px; font-weight: 900;
     text-align: center; line-height: 1.25;
     padding: 0 50px;
     text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 40px rgba(0,0,0,0.7);
   }
   .sub-text {
-    font-size: 72px; color: rgba(255,255,255,0.7);
+    font-size: 52px; color: rgba(255,255,255,0.92);
     text-align: center; font-weight: 400; padding: 0 50px;
-    margin-top: 40px;
-    text-shadow: 0 3px 10px rgba(0,0,0,0.9);
+    margin-top: 30px;
+    text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
   }
   .badge { margin-bottom: 24px; }
   .slide-num {
@@ -621,7 +625,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   .bg-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     background: ${bgImg
-      ? 'linear-gradient(180deg, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.80) 50%, rgba(0,0,0,0.85) 100%)'
+      ? 'linear-gradient(180deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.50) 50%, rgba(0,0,0,0.60) 100%)'
       : 'transparent'};
     z-index: 1;
   }
@@ -764,6 +768,14 @@ function buildFullscreenOpening(slide, accent, bgData, progressPct) {
       </div>
       <div style="height:50%;"></div>
     `;
+  } else {
+    // full layout (기본) — 전체 배경 위에 중앙 텍스트
+    bodyContent = `
+      <div class="text-zone" style="height:100%;justify-content:center;">
+        ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+        ${textHTML}
+      </div>
+    `;
   }
 
   return `<!DOCTYPE html>
@@ -810,6 +822,14 @@ function buildFullscreenContent(slide, accent, bgData, progressPct, index) {
         ${textHTML}
       </div>
       <div style="height:50%;"></div>
+    `;
+  } else {
+    // full layout (기본) — 전체 배경 위에 중앙 텍스트
+    bodyContent = `
+      <div class="text-zone" style="height:100%;justify-content:center;">
+        ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+        ${textHTML}
+      </div>
     `;
   }
 
@@ -957,11 +977,10 @@ async function main() {
 
     if (needOverlay) {
       if (layout === 'full' || bgDisplayMode === 'fullscreen') {
-        // full-screen background: body 투명, 텍스트 오버레이만 유지
+        // full-screen background: body 배경만 투명, 어두운 오버레이는 유지 (텍스트 가독성)
         await page.evaluate(() => {
           document.body.style.background = 'transparent';
-          const overlay = document.querySelector('.bg-overlay');
-          if (overlay) overlay.style.background = 'transparent';
+          // .bg-overlay는 유지 — 밝은 배경에서 텍스트 가독성 확보
           const grain = document.querySelector('.grain');
           if (grain) grain.style.display = 'none';
         });

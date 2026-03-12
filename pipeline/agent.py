@@ -515,6 +515,83 @@ brand 값은 "{brand}"로 설정해.
     return script
 
 
+def _repair_json(raw: str) -> str | None:
+    """잘리거나 깨진 JSON 자동 복구 시도."""
+    # 1. trailing comma 제거: ,] → ] , ,} → }
+    fixed = re.sub(r',\s*([}\]])', r'\1', raw)
+    if fixed != raw:
+        try:
+            json.loads(fixed)
+            return fixed
+        except json.JSONDecodeError:
+            pass
+        raw = fixed  # trailing comma 수정은 유지하고 계속
+
+    # 2. 잘린 JSON → 괄호 자동 닫기
+    opens = 0
+    open_sq = 0
+    in_str = False
+    escape = False
+    for ch in raw:
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            escape = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            opens += 1
+        elif ch == '}':
+            opens -= 1
+        elif ch == '[':
+            open_sq += 1
+        elif ch == ']':
+            open_sq -= 1
+
+    if opens > 0 or open_sq > 0:
+        # 마지막 불완전한 요소 제거 후 닫기
+        # 마지막 완전한 }, ] 또는 , 뒤를 자르고 닫기
+        # 마지막 완전한 오브젝트/배열 요소 찾기
+        last_complete = max(
+            raw.rfind('},'),
+            raw.rfind('}'),
+            raw.rfind('],'),
+            raw.rfind(']'),
+        )
+        if last_complete > 0:
+            truncated = raw[:last_complete + 1]
+            # trailing comma 제거
+            truncated = re.sub(r',\s*$', '', truncated)
+            # 남은 괄호 닫기
+            closing = ']' * open_sq + '}' * opens
+            # 좀 더 정교하게: 다시 카운트
+            o2 = o_sq2 = 0
+            in_s2 = esc2 = False
+            for ch in truncated:
+                if esc2: esc2 = False; continue
+                if ch == '\\': esc2 = True; continue
+                if ch == '"': in_s2 = not in_s2; continue
+                if in_s2: continue
+                if ch == '{': o2 += 1
+                elif ch == '}': o2 -= 1
+                elif ch == '[': o_sq2 += 1
+                elif ch == ']': o_sq2 -= 1
+            closing = ']' * o_sq2 + '}' * o2
+            candidate = truncated + closing
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass
+
+    return None
+
+
 def _parse_response(raw: str, brand: str) -> dict:
     """Claude 출력에서 script_json 추출"""
     # --output-format json인 경우, result 필드에서 텍스트 추출
@@ -539,7 +616,16 @@ def _parse_response(raw: str, brand: str) -> dict:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"script_json 파싱 실패: {e}\n원본:\n{raw[:1000]}")
+        # JSON 자동 복구 시도
+        repaired = _repair_json(raw)
+        if repaired:
+            try:
+                data = json.loads(repaired)
+                print(f"[agent] script_json 자동 복구 성공")
+            except json.JSONDecodeError:
+                raise RuntimeError(f"script_json 파싱 실패: {e}\n원본:\n{raw[:1000]}")
+        else:
+            raise RuntimeError(f"script_json 파싱 실패: {e}\n원본:\n{raw[:1000]}")
 
     # 필수 필드 검증
     if "sentences" not in data or "slides" not in data:

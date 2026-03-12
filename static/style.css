@@ -20,6 +20,14 @@
   height: 80vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+.modal-wide > #job-detail-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 .modal-wide .pipeline-steps {
   flex-shrink: 0;
@@ -94,20 +102,9 @@
   flex: 1;
   overflow-y: auto;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .wizard-step-content {
-  flex: 1;
-  overflow-y: auto;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.wizard-step-content > .mb-3 {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
 }
 
 /* ─── Wizard Footer ─── */
@@ -125,16 +122,29 @@
   color: #6b7280;
 }
 
+/* ─── Step 2: Top Bar (voice section) ─── */
+.wizard-top-bar {
+  flex-shrink: 0;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #1f2937;
+}
+.wizard-top-bar > .wizard-col {
+  overflow-y: visible;
+  min-height: auto;
+}
+.wizard-top-bar > .wizard-col > .wizard-col-header {
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+}
+
 /* ─── Step 2: Two-Column Layout ─── */
 .wizard-two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
-  flex: 1;
-  min-height: 0;
 }
 .wizard-col {
-  overflow-y: auto;
   min-height: 0;
 }
 .wizard-col-header {
@@ -500,6 +510,23 @@
   color: #d1d5db;
 }
 
+/* ─── Schedule Day Chips ─── */
+.schedule-day-chip {
+  display: inline-block;
+  width: 32px;
+  height: 32px;
+  line-height: 32px;
+  text-align: center;
+  border-radius: 50%;
+  border: 1px solid #374151;
+  background: #1f2937;
+  color: #9ca3af;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.schedule-day-chip:hover { border-color: #f97316; color: #fff; }
+
 /* ─── Upload Slots ─── */
 .upload-grid {
   display: grid;
@@ -584,6 +611,18 @@
   flex-direction: column;
   gap: 0;
   position: relative;
+  cursor: grab;
+}
+.upload-slot-wrap:active { cursor: grabbing; }
+.upload-slot-wrap img,
+.upload-slot-wrap video {
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+.upload-slot-wrap.slot-drag-over > .upload-slot {
+  border-color: #f97316 !important;
+  border-style: solid !important;
+  box-shadow: 0 0 12px rgba(249, 115, 22, 0.4);
 }
 
 /* Hover overlay actions inside the slot */

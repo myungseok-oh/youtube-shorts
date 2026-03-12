@@ -33,7 +33,13 @@
     <aside id="sidebar" class="w-80 border-r border-gray-800 flex flex-col">
       <div class="p-4 border-b border-gray-800 flex items-center justify-between">
         <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">채널</h2>
-        <button onclick="openAddChannelModal()" class="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 rounded transition text-lg leading-none" title="채널 추가">+</button>
+        <div class="flex items-center gap-1">
+          <button onclick="exportChannels()" class="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 rounded transition text-xs" title="채널 내보내기">↓</button>
+          <label class="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 rounded transition text-xs cursor-pointer" title="채널 가져오기">
+            ↑<input type="file" accept=".json" onchange="importChannels(this)" class="hidden">
+          </label>
+          <button onclick="openAddChannelModal()" class="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 rounded transition text-lg leading-none" title="채널 추가">+</button>
+        </div>
       </div>
       <div id="channel-list" class="flex-1 overflow-y-auto p-2 space-y-1">
       </div>
@@ -97,6 +103,8 @@
                 class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">프롬프트</button>
         <button onclick="switchSettingsTab('keys')" data-cs-tab="keys"
                 class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">키</button>
+        <button onclick="switchSettingsTab('schedule')" data-cs-tab="schedule"
+                class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">스케줄</button>
       </div>
 
       <!-- 스크롤 영역 -->
@@ -574,6 +582,49 @@
           </div>
         </div>
       </div>
+
+      <!-- 탭: 스케줄 -->
+      <div id="cs-tab-schedule" class="cs-tab-content hidden space-y-4">
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <h4 class="text-sm text-gray-300 font-medium">자동 스케줄</h4>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input id="cs-schedule-enabled" type="checkbox" class="sr-only peer">
+              <div class="w-9 h-5 bg-gray-700 rounded-full peer peer-checked:bg-orange-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+            </label>
+          </div>
+          <p class="text-xs text-gray-500">설정한 시간에 자동으로 영상 제작을 시작합니다</p>
+        </div>
+
+        <!-- 실행 시간 -->
+        <div class="space-y-2">
+          <label class="block text-xs text-gray-400 font-medium">실행 시간</label>
+          <div id="cs-schedule-times" class="space-y-2"></div>
+          <button onclick="addScheduleTime()"
+                  class="text-xs text-orange-400 hover:text-orange-300 transition">+ 시간 추가</button>
+        </div>
+
+        <!-- 요일 -->
+        <div class="space-y-2">
+          <label class="block text-xs text-gray-400 font-medium">실행 요일</label>
+          <div class="flex gap-2 flex-wrap">
+            <label class="schedule-day-label"><input type="checkbox" value="mon" class="cs-schedule-day sr-only peer"><span class="schedule-day-chip peer-checked:bg-orange-600 peer-checked:border-orange-500">월</span></label>
+            <label class="schedule-day-label"><input type="checkbox" value="tue" class="cs-schedule-day sr-only peer"><span class="schedule-day-chip peer-checked:bg-orange-600 peer-checked:border-orange-500">화</span></label>
+            <label class="schedule-day-label"><input type="checkbox" value="wed" class="cs-schedule-day sr-only peer"><span class="schedule-day-chip peer-checked:bg-orange-600 peer-checked:border-orange-500">수</span></label>
+            <label class="schedule-day-label"><input type="checkbox" value="thu" class="cs-schedule-day sr-only peer"><span class="schedule-day-chip peer-checked:bg-orange-600 peer-checked:border-orange-500">목</span></label>
+            <label class="schedule-day-label"><input type="checkbox" value="fri" class="cs-schedule-day sr-only peer"><span class="schedule-day-chip peer-checked:bg-orange-600 peer-checked:border-orange-500">금</span></label>
+            <label class="schedule-day-label"><input type="checkbox" value="sat" class="cs-schedule-day sr-only peer"><span class="schedule-day-chip peer-checked:bg-orange-600 peer-checked:border-orange-500">토</span></label>
+            <label class="schedule-day-label"><input type="checkbox" value="sun" class="cs-schedule-day sr-only peer"><span class="schedule-day-chip peer-checked:bg-orange-600 peer-checked:border-orange-500">일</span></label>
+          </div>
+        </div>
+
+        <div class="border-t border-gray-700"></div>
+        <p class="text-xs text-gray-500">
+          스케줄 실행 시 채널의 기본 요청(default_topics)으로 자동 제작합니다.<br>
+          제작 모드(수동/자동)에 따라 대본까지 또는 영상 완성까지 진행됩니다.
+        </p>
+      </div>
+
       </div><!-- /스크롤 영역 -->
       <div class="flex items-center justify-between mt-4 pt-4 border-t border-gray-800 flex-shrink-0">
         <div class="flex gap-3">

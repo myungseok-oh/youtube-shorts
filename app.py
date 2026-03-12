@@ -192,11 +192,165 @@ async def lifespan(app):
                        instructions=DEFAULT_INSTRUCTIONS,
                        default_topics="오늘 주요 뉴스 3개 만들어줘")
     _recover_orphan_jobs()
+    # 스케줄러 + WAL 체크포인트 시작
+    scheduler_task = asyncio.create_task(_scheduler_loop())
+    wal_task = asyncio.create_task(_wal_checkpoint_loop())
     yield
+    scheduler_task.cancel()
+    wal_task.cancel()
 
 app = FastAPI(title="yShorts", version="1.0.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+# ─── WAL Checkpoint ───
+
+async def _wal_checkpoint_loop():
+    """5분 주기로 WAL 체크포인트 — DB 읽기 성능 유지."""
+    while True:
+        try:
+            await asyncio.sleep(30)  # 30초
+            db.checkpoint()
+            db_ch.checkpoint()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            pass
+
+
+# ─── Scheduler ───
+
+_scheduler_last_run: dict[str, str] = {}  # {channel_id: "HH:MM"} — 오늘 마지막 실행 시각
+_scheduler_last_date: str = ""  # 날짜 변경 감지용
+
+async def _scheduler_loop():
+    """1분 주기로 채널 스케줄 체크 → 자동 실행."""
+    global _scheduler_last_date
+    await asyncio.sleep(10)  # 서버 시작 안정화 대기
+    print("[scheduler] 스케줄러 시작")
+    while True:
+        try:
+            now = datetime.now()
+            today = now.strftime("%Y-%m-%d")
+            current_time = now.strftime("%H:%M")
+            day_map = {"0": "mon", "1": "tue", "2": "wed", "3": "thu",
+                       "4": "fri", "5": "sat", "6": "sun"}
+            current_day = day_map[str(now.weekday())]
+
+            # 날짜 변경 시 실행 기록 리셋
+            if _scheduler_last_date != today:
+                _scheduler_last_run.clear()
+                _scheduler_last_date = today
+
+            channels = list_channels(db_ch, db)
+            for ch in channels:
+                try:
+                    cfg = json.loads(ch.get("config") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+                if not cfg.get("schedule_enabled"):
+                    continue
+
+                schedule_times = cfg.get("schedule_times", [])
+                schedule_days = cfg.get("schedule_days",
+                                        ["mon", "tue", "wed", "thu", "fri"])
+
+                if current_day not in schedule_days:
+                    continue
+
+                for stime in schedule_times:
+                    if stime != current_time:
+                        continue
+                    run_key = f"{ch['id']}_{stime}"
+                    if _scheduler_last_run.get(run_key):
+                        continue  # 이미 이 시각에 실행함
+
+                    _scheduler_last_run[run_key] = current_time
+                    print(f"[scheduler] {ch['name']} ({ch['id']}) — {stime} 자동 실행")
+                    try:
+                        await _run_channel_auto(ch)
+                    except Exception as e:
+                        print(f"[scheduler] {ch['id']} 실행 실패: {e}")
+
+        except asyncio.CancelledError:
+            print("[scheduler] 스케줄러 종료")
+            return
+        except Exception as e:
+            print(f"[scheduler] 에러: {e}")
+
+        await asyncio.sleep(60)
+
+
+async def _run_channel_auto(ch: dict):
+    """채널 자동 실행 (스케줄러/API 공용)."""
+    import traceback
+    channel_id = ch["id"]
+    cfg = json.loads(ch.get("config") or "{}")
+    request_text = (ch.get("default_topics") or "").strip()
+    if not request_text:
+        print(f"[scheduler] {channel_id} — default_topics 없음, 스킵")
+        return
+
+    instructions = ch.get("instructions") or ""
+    production_mode = cfg.get("production_mode", "manual")
+    channel_format = cfg.get("format", "single")
+
+    # 트렌드 데이터
+    trend_sources = cfg.get("trend_sources", [])
+    yt_api_key = cfg.get("youtube_api_key", "")
+    trend_context = ""
+    if trend_sources:
+        trends = collect_trends(trend_sources, youtube_api_key=yt_api_key)
+        trend_context = format_trend_context(trends)
+
+    # 최근 24시간 중복 방지
+    recent_jobs = db.fetchall(
+        "SELECT topic FROM jobs WHERE channel_id = ? "
+        "AND NOT (status = 'deleted' AND id NOT IN "
+        "  (SELECT job_id FROM job_steps WHERE step_name = 'upload' AND status = 'completed')) "
+        "AND created_at >= datetime('now', 'localtime', '-24 hours') ORDER BY created_at DESC LIMIT 20",
+        [channel_id]
+    )
+    recent_topics = [j["topic"] for j in recent_jobs] if recent_jobs else []
+
+    # 고정 주제 또는 파싱
+    if cfg.get("fixed_topic"):
+        topics = [request_text]
+    else:
+        topics = await asyncio.to_thread(
+            parse_request, request_text, instructions,
+            trend_context=trend_context, recent_topics=recent_topics
+        )
+        filtered = []
+        for topic in topics:
+            if _is_duplicate(topic, recent_topics):
+                print(f"[scheduler] 중복 필터 제거: {topic}")
+            else:
+                filtered.append(topic)
+        if not filtered:
+            print(f"[scheduler] {channel_id} — 모든 주제 중복, 스킵")
+            return
+        topics = filtered
+
+    # Job 생성 + 파이프라인 실행
+    jobs_created = []
+    if channel_format == "roundup" and len(topics) > 1:
+        combined_topic = " / ".join(topics)
+        job = create_job(db, channel_id=channel_id, topic=combined_topic)
+        jobs_created.append(job)
+        start_pipeline_full(db_ch, db, job["id"])
+    else:
+        for topic in topics:
+            job = create_job(db, channel_id=channel_id, topic=topic)
+            jobs_created.append(job)
+            if production_mode == "auto":
+                start_pipeline_full(db_ch, db, job["id"])
+            else:
+                start_pipeline(db_ch, db, job["id"])
+
+    print(f"[scheduler] {channel_id} — {len(jobs_created)}개 작업 생성")
 
 
 # ─── Dashboard ───
@@ -728,10 +882,26 @@ async def api_update_script(job_id: str, request: Request):
         raise HTTPException(400, "sentences must be a list")
 
     script = json.loads(job["script_json"])
+    old_sentences = script.get("sentences", [])
     script["sentences"] = updated_sentences
     db.execute("UPDATE jobs SET script_json = ? WHERE id = ?",
                [json.dumps(script, ensure_ascii=False), job_id])
-    return {"ok": True}
+
+    # 텍스트가 변경된 경우 오디오 캐시 삭제 (TTS 재생성 유도)
+    changed = len(old_sentences) != len(updated_sentences) or any(
+        o.get("text", "") != n.get("text", "")
+        for o, n in zip(old_sentences, updated_sentences)
+    )
+    if changed:
+        audio_dir = os.path.join(config.output_dir(), job_id, "audio")
+        if os.path.isdir(audio_dir):
+            import glob as _glob
+            for f in _glob.glob(os.path.join(audio_dir, "audio_*.mp3")):
+                os.remove(f)
+            for f in _glob.glob(os.path.join(audio_dir, "audio_*.wav")):
+                os.remove(f)
+
+    return {"ok": True, "audio_cleared": changed}
 
 
 @app.post("/api/jobs/{job_id}/backgrounds")
@@ -769,6 +939,57 @@ async def api_upload_backgrounds(job_id: str, files: list[UploadFile] = File(...
                       "size_kb": round(len(content) / 1024, 1)})
 
     return {"uploaded": len(saved), "files": saved}
+
+
+@app.post("/api/jobs/{job_id}/backgrounds/swap")
+async def api_swap_backgrounds(job_id: str, request: Request):
+    """두 배경 이미지의 위치를 교환."""
+    body = await request.json()
+    a, b = body.get("a"), body.get("b")
+    if not a or not b or a == b:
+        raise HTTPException(400, "Invalid swap indices")
+
+    bg_dir = os.path.join(config.output_dir(), job_id, "backgrounds")
+    if not os.path.isdir(bg_dir):
+        raise HTTPException(404, "No backgrounds")
+
+    # a, b 각각의 파일 찾기
+    def find_bg(idx):
+        for ext in ["jpg", "jpeg", "png", "webp", "gif", "mp4"]:
+            p = os.path.join(bg_dir, f"bg_{idx}.{ext}")
+            if os.path.exists(p):
+                return p, ext
+        return None, None
+
+    path_a, ext_a = find_bg(a)
+    path_b, ext_b = find_bg(b)
+
+    if not path_a and not path_b:
+        return {"ok": True, "message": "both empty"}
+
+    # swap via temp
+    import time as _time
+    if path_a and path_b:
+        tmp = os.path.join(bg_dir, f"bg_swap_tmp.{ext_a}")
+        os.rename(path_a, tmp)
+        new_a = os.path.join(bg_dir, f"bg_{a}.{ext_b}")
+        new_b = os.path.join(bg_dir, f"bg_{b}.{ext_a}")
+        os.rename(path_b, new_a)
+        os.rename(tmp, new_b)
+        # mtime 갱신 → 브라우저 캐시 무효화
+        now = _time.time()
+        os.utime(new_a, (now, now))
+        os.utime(new_b, (now, now))
+    elif path_a:
+        new_b = os.path.join(bg_dir, f"bg_{b}.{ext_a}")
+        os.rename(path_a, new_b)
+        os.utime(new_b, (_time.time(), _time.time()))
+    elif path_b:
+        new_a = os.path.join(bg_dir, f"bg_{a}.{ext_b}")
+        os.rename(path_b, new_a)
+        os.utime(new_a, (_time.time(), _time.time()))
+
+    return {"ok": True}
 
 
 @app.post("/api/jobs/{job_id}/backgrounds/{index}")
@@ -1676,6 +1897,7 @@ async def api_retry_job(job_id: str):
         return {"ok": True, "message": "Phase B retry queued"}
 
 
+
 @app.post("/api/jobs/{job_id}/reset")
 async def api_reset_job(job_id: str):
     """실패한 작업을 이미지 대기 상태로 되돌리기"""
@@ -2117,6 +2339,173 @@ async def api_export_channels_db():
     return FileResponse(config.channels_db_path(),
                         media_type="application/octet-stream",
                         filename="channels.db")
+
+
+@app.get("/api/channels/export")
+async def api_export_channels():
+    """전체 채널 데이터를 JSON으로 내보내기"""
+    rows = db_ch.fetchall("SELECT * FROM channels ORDER BY CAST(COALESCE(sort_order, '0') AS INTEGER), created_at")
+    channels = []
+    for r in rows:
+        ch = dict(r)
+        if ch.get("config"):
+            try:
+                ch["config"] = json.loads(ch["config"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        channels.append(ch)
+    from fastapi.responses import Response
+    payload = json.dumps(
+        {"channels": channels, "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+        ensure_ascii=False, indent=2,
+    )
+    return Response(
+        content=payload.encode("utf-8"),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename=channels_export.json"},
+    )
+
+
+@app.post("/api/channels/import")
+async def api_import_channels(file: UploadFile = File(...)):
+    """JSON 파일로 채널 데이터 가져오기 (upsert)"""
+    content = await file.read()
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(400, "Invalid JSON file")
+
+    channels = data.get("channels", [])
+    if not channels:
+        raise HTTPException(400, "No channel data found")
+
+    imported = 0
+    for ch in channels:
+        cid = ch.get("id")
+        if not cid:
+            continue
+        cfg = ch.get("config", {})
+        if isinstance(cfg, dict):
+            cfg = json.dumps(cfg, ensure_ascii=False)
+        existing = db_ch.fetchone("SELECT id FROM channels WHERE id = ?", [cid])
+        if existing:
+            db_ch.execute(
+                """UPDATE channels SET name=?, handle=?, description=?,
+                   instructions=?, default_topics=?, config=?,
+                   sort_order=?, cloned_from=?
+                   WHERE id=?""",
+                [ch.get("name", ""), ch.get("handle", ""),
+                 ch.get("description", ""), ch.get("instructions", ""),
+                 ch.get("default_topics", ""), cfg,
+                 ch.get("sort_order", "0"), ch.get("cloned_from"),
+                 cid],
+            )
+        else:
+            db_ch.execute(
+                """INSERT INTO channels (id, name, handle, description,
+                   instructions, default_topics, config, sort_order, cloned_from)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [cid, ch.get("name", ""), ch.get("handle", ""),
+                 ch.get("description", ""), ch.get("instructions", ""),
+                 ch.get("default_topics", ""), cfg,
+                 ch.get("sort_order", "0"), ch.get("cloned_from")],
+            )
+        imported += 1
+
+    return {"imported": imported}
+
+
+# ─── Editor API ───
+
+from pipeline.editor import (
+    get_editor_data, load_edit_data, save_edit_data, apply_edits,
+)
+
+
+@app.get("/editor/{job_id}", response_class=HTMLResponse)
+async def editor_page(request: Request, job_id: str):
+    """편집 페이지."""
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return templates.TemplateResponse("editor.html", {
+        "request": request, "job_id": job_id, "job": job,
+    })
+
+
+@app.get("/api/jobs/{job_id}/editor")
+async def api_editor_data(job_id: str):
+    """편집에 필요한 전체 데이터 (세그먼트, SFX 목록, 기존 편집 등)."""
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    script = json.loads(job["script_json"]) if job.get("script_json") else {}
+    data = get_editor_data(job_id)
+    data["script"] = script
+    # 인트로/아웃트로 채널 배경 이미지 경로
+    ch_id = job.get("channel_id", "")
+    if ch_id:
+        if _find_channel_image(ch_id, "intro_bg"):
+            data["intro_bg_url"] = f"/api/channels/{ch_id}/intro-bg"
+        if _find_channel_image(ch_id, "outro_bg"):
+            data["outro_bg_url"] = f"/api/channels/{ch_id}/outro-bg"
+    return data
+
+
+@app.get("/api/jobs/{job_id}/segments/{filename}")
+async def api_serve_segment(job_id: str, filename: str):
+    """세그먼트 영상/썸네일 파일 서빙."""
+    path = os.path.join(config.output_dir(), job_id, "segments", filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Segment not found")
+    if filename.endswith(".jpg"):
+        return FileResponse(path, media_type="image/jpeg")
+    return FileResponse(path, media_type="video/mp4")
+
+
+@app.get("/api/jobs/{job_id}/images/{filename}")
+async def api_serve_image(job_id: str, filename: str):
+    """슬라이드 이미지 파일 서빙."""
+    path = os.path.join(config.output_dir(), job_id, "images", filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Image not found")
+    mt = "image/png" if filename.endswith(".png") else "image/jpeg"
+    return FileResponse(path, media_type=mt)
+
+
+@app.post("/api/jobs/{job_id}/edits")
+async def api_save_edits(job_id: str, request: Request):
+    """편집 데이터 저장 (텍스트 오버레이 + SFX 마커)."""
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    body = await request.json()
+    save_edit_data(job_id, body)
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/apply-edits")
+async def api_apply_edits(job_id: str):
+    """편집 적용 → 영상 재생성."""
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    try:
+        result = await asyncio.to_thread(apply_edits, job_id)
+        return {"ok": True, "path": result}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/audio/{subdir}/{filename}")
+async def api_serve_audio(subdir: str, filename: str):
+    """SFX/BGM 오디오 파일 서빙."""
+    if subdir not in ("sfx", "bgm"):
+        raise HTTPException(400, "Invalid subdir")
+    path = os.path.join(config.root_dir(), "data", subdir, filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Audio not found")
+    return FileResponse(path, media_type="audio/mpeg")
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ def generate_slides(slides_data: list[dict], output_dir: str,
         script_path = os.path.join(os.path.dirname(__file__), "generate_slides.js")
         result = subprocess.run(
             ["node", script_path, tmp_path, output_dir],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
             cwd=config.root_dir()
         )
 
@@ -116,7 +116,7 @@ def generate_thumbnail(title: str, output_path: str,
         script_path = os.path.join(os.path.dirname(__file__), "generate_thumbnail.js")
         result = subprocess.run(
             ["node", script_path, tmp_path, output_path],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
             cwd=config.root_dir()
         )
 
@@ -163,7 +163,7 @@ def generate_chart(slide_data: dict, output_path: str,
         script_path = os.path.join(os.path.dirname(__file__), "generate_chart.js")
         result = subprocess.run(
             ["node", script_path, tmp_path, output_path],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
             cwd=config.root_dir()
         )
 
@@ -253,7 +253,7 @@ HTML 코드만 출력해. 설명이나 마크다운 코드 블록 없이 <!DOCTY
         script_path = os.path.join(os.path.dirname(__file__), "generate_chart.js")
         result = subprocess.run(
             ["node", script_path, tmp_path, output_path],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
             cwd=config.root_dir()
         )
 

@@ -102,6 +102,16 @@ class Database:
         conn = self._get_conn()
         conn.execute(sql, params or [])
         conn.commit()
+        # 자동 WAL 체크포인트 (20회 write마다)
+        if not hasattr(self._local, '_write_count'):
+            self._local._write_count = 0
+        self._local._write_count += 1
+        if self._local._write_count >= 20:
+            self._local._write_count = 0
+            try:
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                pass
 
     def fetchone(self, sql: str, params=None) -> dict | None:
         conn = self._get_conn()

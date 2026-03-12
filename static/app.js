@@ -164,13 +164,22 @@ function renderChannels(channels) {
     const isSelected = selectedChannelId === ch.id;
     const icon = _channelIcon(ch.name);
 
+    // 스케줄 표시
+    let scheduleTag = "";
+    try {
+      const _cfg = JSON.parse(ch.config || "{}");
+      if (_cfg.schedule_enabled && (_cfg.schedule_times || []).length > 0) {
+        scheduleTag = `<span class="text-[9px] text-orange-400 ml-1" title="${_cfg.schedule_times.join(', ')}">[${_cfg.schedule_times.join(',')}]</span>`;
+      }
+    } catch {}
+
     return `
       <div class="channel-item ${isSelected ? 'selected' : ''}" draggable="true" data-channel-id="${ch.id}" onclick="selectChannel('${ch.id}')">
         <div class="flex items-center gap-2">
           <span class="drag-handle text-gray-600 cursor-grab text-xs select-none" title="드래그하여 순서 변경">⠿</span>
           <span class="channel-icon">${icon}</span>
           <div class="flex-1 min-w-0">
-            <div class="font-medium text-sm">${esc(ch.name)}</div>
+            <div class="font-medium text-sm">${esc(ch.name)}${scheduleTag}</div>
             <div class="text-xs text-gray-500 mt-0.5">${statusText}</div>
           </div>
           <button class="ch-settings-btn" onclick="event.stopPropagation(); openChannelSettings('${ch.id}')" title="채널 설정">⚙</button>
@@ -629,10 +638,12 @@ function renderWizardStep1(jobId, scriptData, stepsData) {
     if (status === "failed") {
       const failedStep = steps.find(s => s.status === "failed");
       const errMsg = failedStep ? failedStep.error_msg : "알 수 없는 오류";
+      const shortErr = (errMsg || "").length > 200 ? (errMsg.substring(0, 200) + "...") : (errMsg || "");
       return `<div class="wizard-step-content">
         <div class="text-center py-6">
           <div class="text-red-400 text-lg mb-2">제작 실패</div>
-          <div class="text-sm text-gray-500 mb-4">${esc(errMsg || "")}</div>
+          <div class="text-sm text-gray-500 mb-3 max-h-24 overflow-y-auto text-left px-4" style="word-break:break-all;">${esc(shortErr)}</div>
+          <button onclick="retryJob('${jobId}')" class="px-6 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">재시도</button>
         </div>
       </div>`;
     }
@@ -756,10 +767,16 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
     const hasImage = bgUrl ? "has-image" : "";
     const bgTypeLabel = {photo:"📷",broll:"🎬",graph:"📊",logo:"🏢"}[bgType] || "📷";
     slotsHtml += `
-      <div class="upload-slot-wrap" id="slot-wrap-${i}">
+      <div class="upload-slot-wrap" id="slot-wrap-${i}"
+           draggable="true"
+           ondragstart="onSlotDragStart(event, '${jobId}', ${i})"
+           ondragover="onSlotDragOver(event)"
+           ondragenter="onSlotDragEnter(event)"
+           ondragleave="onSlotDragLeave(event)"
+           ondrop="onSlotDrop(event, '${jobId}', ${i})">
         <div class="upload-slot ${hasImage}" onclick="triggerUpload('${jobId}', ${i})" id="slot-${i}" title="배경 ${i} (${bgType})" data-bg-type="${bgType}">
 
-          ${bgUrl ? (bgUrl.includes('.mp4') || bgUrl.includes('.gif') ? `<video src="${bgUrl}" autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;"></video>` : `<img src="${bgUrl}" alt="bg_${i}">`) : ""}
+          ${bgUrl ? (bgUrl.includes('.mp4') || bgUrl.includes('.gif') ? `<video src="${bgUrl}" autoplay loop muted playsinline draggable="false" style="width:100%;height:100%;object-fit:cover;"></video>` : `<img src="${bgUrl}" alt="bg_${i}" draggable="false">`) : ""}
           <div class="slot-icon">+</div>
           <div class="slot-number">${bgTypeLabel} ${i}</div>
           <div class="slot-label">클릭하여 업로드</div>
@@ -810,10 +827,18 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
       </div>
     </div>`;
 
-  const leftCol = `
-    <div class="wizard-col" id="tab-images">
+  // 왼쪽: 프롬프트
+  const promptCol = `
+    <div class="wizard-col" id="tab-prompts" style="flex:1; min-width:0;">
+      <div class="wizard-col-header">이미지 프롬프트</div>
+      ${imgPromptsHtml}
+    </div>`;
+
+  // 오른쪽: 버튼 + 이미지 업로드 슬롯
+  const imageCol = `
+    <div class="wizard-col" id="tab-images" style="flex:1; min-width:0;">
       <div class="wizard-col-header">배경 이미지</div>
-      <div class="btn-group-bar">
+      <div class="btn-group-bar mb-2">
         <div class="btn-group">
           <span class="btn-group-label">AI</span>
           <button onclick="sdGenerateAuto('${jobId}')" id="btn-sd-auto"
@@ -831,7 +856,6 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
         </div>
       </div>
       <div id="sd-status"></div>
-      ${imgPromptsHtml}
       ${slotsHtml}
     </div>`;
 
@@ -966,7 +990,8 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
   return `
     <div class="wizard-step-content">
       ${bannerHtml}
-      <div class="wizard-two-col">${leftCol}${rightCol}</div>
+      <div class="wizard-top-bar">${rightCol}</div>
+      <div class="wizard-two-col">${promptCol}${imageCol}</div>
     </div>`;
 }
 
@@ -998,33 +1023,46 @@ function renderWizardStep3(jobId, scriptData, stepsData) {
   let videoHtml = "";
   if (renderDone || status === "completed") {
     const thumbTs = Date.now();
-    videoHtml = `
-      <div class="flex flex-col items-center gap-3 mb-3">
-        <video class="video-preview" controls preload="metadata"
-               poster="/api/jobs/${jobId}/thumbnail?t=${Date.now()}"
-               onloadeddata="this.currentTime=0.1">
-          <source src="/api/jobs/${jobId}/video?t=${Date.now()}" type="video/mp4">
-        </video>
-        <div id="upload-status-${jobId}" class="text-xs"></div>
+
+    // 썸네일 (왼쪽 — 가운데 정렬 + 버튼 우측)
+    const thumbHtml = `
+      <div class="flex flex-col flex-1" style="min-width:0;">
+        <div class="flex justify-end gap-1 mb-2">
+          <button onclick="generateThumbnail('${jobId}')" id="btn-gen-thumb"
+                  class="px-2 py-1 bg-orange-700 hover:bg-orange-600 rounded text-[10px] font-medium transition">${has_thumbnail ? '재생성' : '생성'}</button>
+          <label class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-[10px] font-medium transition cursor-pointer">
+            교체 <input type="file" accept="image/*" class="hidden" onchange="uploadThumbnail('${jobId}', this.files[0])">
+          </label>
+        </div>
+        <div class="flex justify-center flex-1">
+          ${has_thumbnail
+            ? `<img src="/api/jobs/${jobId}/thumbnail?t=${thumbTs}" class="rounded" style="max-width:100%; max-height:400px; object-fit:contain;" />`
+            : `<div class="rounded border border-dashed border-gray-700 flex items-center justify-center text-xs text-gray-500" style="width:200px; height:120px;">썸네일 미생성</div>`}
+        </div>
+        <div id="thumb-status-${jobId}" class="text-xs mt-1 text-center"></div>
       </div>`;
 
-    // Thumbnail
-    videoHtml += `
-      <div class="border-b border-gray-800 pb-3 mb-3">
-        <div class="flex items-center justify-between mb-2">
-          <div class="text-xs font-semibold text-gray-400">썸네일</div>
-          <div class="flex gap-2">
-            <button onclick="generateThumbnail('${jobId}')" id="btn-gen-thumb"
-                    class="px-2 py-1 bg-orange-700 hover:bg-orange-600 rounded text-xs transition">${has_thumbnail ? '재생성' : '생성'}</button>
-            <label class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs transition cursor-pointer">
-              교체 <input type="file" accept="image/*" class="hidden" onchange="uploadThumbnail('${jobId}', this.files[0])">
-            </label>
-          </div>
+    // 영상 (오른쪽 — 가운데 정렬 + 버튼 우측)
+    const vidHtml = `
+      <div class="flex flex-col flex-1" style="min-width:0;">
+        <div class="flex justify-end gap-1 mb-2">
+          <a href="/editor/${jobId}" target="_blank"
+             class="px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded text-[10px] font-medium transition">편집</a>
         </div>
-        ${has_thumbnail
-          ? `<img src="/api/jobs/${jobId}/thumbnail?t=${thumbTs}" class="w-full rounded" style="max-height:150px; object-fit:contain;" />`
-          : `<div class="text-xs text-gray-500 py-3 text-center">썸네일 미생성</div>`}
-        <div id="thumb-status-${jobId}" class="text-xs mt-1"></div>
+        <div class="flex justify-center flex-1">
+          <video class="rounded" controls preload="metadata" style="max-width:100%; max-height:400px; aspect-ratio:9/16; object-fit:contain; background:#000;"
+                 poster="/api/jobs/${jobId}/thumbnail?t=${thumbTs}"
+                 onloadeddata="this.currentTime=0.1">
+            <source src="/api/jobs/${jobId}/video?t=${thumbTs}" type="video/mp4">
+          </video>
+        </div>
+        <div id="upload-status-${jobId}" class="text-xs mt-1 text-center"></div>
+      </div>`;
+
+    videoHtml = `
+      <div class="flex gap-4 mb-3" style="align-items:stretch;">
+        <div style="flex:2; min-width:0;">${thumbHtml}</div>
+        <div style="flex:3; min-width:0;">${vidHtml}</div>
       </div>`;
 
     // QA Checklist
@@ -1035,10 +1073,12 @@ function renderWizardStep3(jobId, scriptData, stepsData) {
   if (status === "failed") {
     const failedStep = steps.find(s => s.status === "failed");
     const errMsg = failedStep ? failedStep.error_msg : "알 수 없는 오류";
+    const shortErr = (errMsg || "").length > 200 ? (errMsg.substring(0, 200) + "...") : (errMsg || "");
     videoHtml = `
       <div class="text-center py-6">
         <div class="text-red-400 text-lg mb-2">제작 실패</div>
-        <div class="text-sm text-gray-500 mb-4">${esc(errMsg || "")}</div>
+        <div class="text-sm text-gray-500 mb-3 max-h-24 overflow-y-auto text-left px-4" style="word-break:break-all;">${esc(shortErr)}</div>
+        <button onclick="retryJob('${jobId}')" class="px-6 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">재시도</button>
       </div>`;
   }
 
@@ -1242,8 +1282,8 @@ function renderJobDetail(scriptData, stepsData) {
     ${wizardNav}
     <div class="wizard-body">
       ${bodyHtml}
-      ${wizardFooter}
     </div>
+    ${wizardFooter}
   `;
 }
 
@@ -2367,6 +2407,62 @@ async function bulkUploadImages(jobId, input) {
   await refreshJobDetail(jobId);
 }
 
+// ─── Slot Drag & Drop (이미지 순서 변경) ───
+
+let _dragSlotIdx = null;
+
+function onSlotDragStart(e, jobId, idx) {
+  _dragSlotIdx = idx;
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", idx);
+  e.currentTarget.style.opacity = "0.5";
+}
+
+function onSlotDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+}
+
+function onSlotDragEnter(e) {
+  e.preventDefault();
+  const wrap = e.currentTarget;
+  wrap.classList.add("slot-drag-over");
+}
+
+function onSlotDragLeave(e) {
+  e.currentTarget.classList.remove("slot-drag-over");
+}
+
+async function onSlotDrop(e, jobId, targetIdx) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("slot-drag-over");
+  const sourceIdx = _dragSlotIdx;
+  _dragSlotIdx = null;
+
+  // 드래그 시작한 요소 opacity 복원
+  document.querySelectorAll(".upload-slot-wrap").forEach(el => el.style.opacity = "");
+
+  if (!sourceIdx || sourceIdx === targetIdx) return;
+
+  // 서버에 swap 요청
+  const res = await fetch(`/api/jobs/${jobId}/backgrounds/swap`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ a: sourceIdx, b: targetIdx }),
+  });
+  if (res.ok) {
+    // 스크롤 위치 저장 후 복원
+    const wb = document.querySelector(".wizard-body");
+    const scrollTop = wb ? wb.scrollTop : 0;
+    _lastDetailStatus = null;
+    await refreshJobDetail(jobId);
+    requestAnimationFrame(() => {
+      const wb2 = document.querySelector(".wizard-body");
+      if (wb2) wb2.scrollTop = scrollTop;
+    });
+  }
+}
+
 // ─── Narration Upload ───
 
 function switchNarrationMode(mode) {
@@ -2723,6 +2819,34 @@ function startPolling() {
   pollTimer = setInterval(loadAll, POLL_INTERVAL);
 }
 
+// ─── 채널 내보내기/가져오기 ───
+
+function exportChannels() {
+  window.location.href = "/api/channels/export";
+}
+
+function importChannels(input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (!confirm("채널 데이터를 가져오시겠습니까?\n동일 ID 채널은 덮어씁니다.")) {
+    input.value = "";
+    return;
+  }
+  const form = new FormData();
+  form.append("file", file);
+  fetch("/api/channels/import", { method: "POST", body: form })
+    .then(r => r.json())
+    .then(data => {
+      alert(`${data.imported}개 채널을 가져왔습니다.`);
+      input.value = "";
+      loadAll();
+    })
+    .catch(e => {
+      alert("가져오기 실패: " + e.message);
+      input.value = "";
+    });
+}
+
 // ─── Modals ───
 
 function openAddChannelModal() {
@@ -2845,6 +2969,15 @@ async function openChannelSettings(channelId) {
     cloneBtn.classList.remove("hidden");
   }
 
+  // 스케줄 설정
+  document.getElementById("cs-schedule-enabled").checked = !!cfg.schedule_enabled;
+  _renderScheduleTimes(cfg.schedule_times || []);
+  const defaultDays = ["mon", "tue", "wed", "thu", "fri"];
+  const scheduleDays = cfg.schedule_days || defaultDays;
+  document.querySelectorAll(".cs-schedule-day").forEach(cb => {
+    cb.checked = scheduleDays.includes(cb.value);
+  });
+
   switchSettingsTab("basic");
   document.getElementById("channel-settings-modal").dataset.channelId = channelId;
   document.getElementById("channel-settings-modal").classList.remove("hidden");
@@ -2925,6 +3058,12 @@ async function saveChannelSettings() {
   cfg.youtube_privacy = ytPrivacy;
   cfg.youtube_upload_mode = document.getElementById("cs-yt-upload-mode").value;
 
+  // 스케줄 설정 저장
+  cfg.schedule_enabled = document.getElementById("cs-schedule-enabled").checked;
+  cfg.schedule_times = _getScheduleTimes();
+  cfg.schedule_days = Array.from(document.querySelectorAll(".cs-schedule-day:checked"))
+    .map(cb => cb.value);
+
   await fetch(`/api/channels/${channelId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -2940,6 +3079,42 @@ async function saveChannelSettings() {
 
   closeModal("channel-settings-modal");
   loadAll();
+}
+
+// ─── Schedule Time Management ───
+
+function _renderScheduleTimes(times) {
+  const container = document.getElementById("cs-schedule-times");
+  container.innerHTML = "";
+  times.forEach((t, i) => {
+    const row = document.createElement("div");
+    row.className = "flex items-center gap-2";
+    row.innerHTML = `
+      <input type="time" value="${t}" class="cs-schedule-time bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm"
+             onchange="this.value = this.value">
+      <button onclick="this.parentElement.remove()"
+              class="text-gray-500 hover:text-red-400 text-xs">삭제</button>
+    `;
+    container.appendChild(row);
+  });
+}
+
+function addScheduleTime() {
+  const container = document.getElementById("cs-schedule-times");
+  const row = document.createElement("div");
+  row.className = "flex items-center gap-2";
+  row.innerHTML = `
+    <input type="time" value="07:00" class="cs-schedule-time bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm">
+    <button onclick="this.parentElement.remove()"
+            class="text-gray-500 hover:text-red-400 text-xs">삭제</button>
+  `;
+  container.appendChild(row);
+}
+
+function _getScheduleTimes() {
+  return Array.from(document.querySelectorAll(".cs-schedule-time"))
+    .map(el => el.value)
+    .filter(v => v);
 }
 
 async function deleteCurrentChannel() {

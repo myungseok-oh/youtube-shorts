@@ -1,0 +1,195 @@
+/* Editor Styles */
+
+/* Timeline segment thumbnails */
+.timeline-seg {
+  position: relative;
+  height: 100%;
+  min-width: 40px;
+  cursor: pointer;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid #374151;
+  transition: border-color 0.15s;
+}
+.timeline-seg:hover { border-color: #f97316; }
+.timeline-seg.active { border-color: #f97316; box-shadow: 0 0 6px #f9731644; }
+.timeline-seg img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.8;
+}
+.timeline-seg .seg-label {
+  position: absolute;
+  bottom: 2px;
+  left: 3px;
+  font-size: 9px;
+  color: #d1d5db;
+  text-shadow: 0 1px 2px #000;
+}
+.timeline-seg .seg-dur {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 9px;
+  color: #9ca3af;
+  background: #00000088;
+  padding: 0 3px;
+  border-radius: 2px;
+}
+
+/* Playback cursor on timeline */
+#timeline-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #f97316;
+  pointer-events: none;
+  z-index: 10;
+  transition: left 0.05s linear;
+}
+
+/* SFX markers on timeline */
+.sfx-marker {
+  position: absolute;
+  top: 0;
+  width: 16px;
+  height: 100%;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  z-index: 5;
+}
+.sfx-marker:hover { transform: scale(1.3); }
+.sfx-marker:active { cursor: grabbing; }
+
+/* SFX drop zone hover */
+#timeline-sfx.sfx-drag-hover {
+  border-color: #f97316 !important;
+  border-style: solid !important;
+  background: rgba(249, 115, 22, 0.1) !important;
+}
+
+/* SFX list items */
+.sfx-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: grab;
+  font-size: 11px;
+  color: #d1d5db;
+  transition: background 0.15s;
+}
+.sfx-item:hover { background: #374151; }
+.sfx-item .sfx-preview {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #4b5563;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.sfx-item .sfx-preview:hover { background: #f97316; }
+
+/* Segment type badges (Intro/Outro) */
+/* Intro/Outro segment backgrounds */
+.timeline-seg.seg-intro {
+  background: linear-gradient(135deg, #312e81, #4338ca);
+}
+.timeline-seg.seg-outro {
+  background: linear-gradient(135deg, #4c1d95, #6d28d9);
+}
+
+.seg-type-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 1px;
+  z-index: 2;
+}
+
+/* Text overlay on canvas */
+.text-overlay-box {
+  position: absolute;
+  cursor: move;
+  pointer-events: auto;
+  user-select: none;
+  padding: 4px 8px;
+  border: 1px dashed transparent;
+  border-radius: 4px;
+  transition: border-color 0.15s;
+}
+.text-overlay-box:hover,
+.text-overlay-box.selected {
+  border-color: #3b82f6;
+}
+.text-overlay-box .resize-handle {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 8px;
+  height: 8px;
+  background: #3b82f6;
+  border-radius: 50%;
+  cursor: se-resize;
+  display: none;
+}
+.text-overlay-box.selected .resize-handle { display: block; }
+
+/* Seek bar */
+#seek-bar {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #374151;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+#seek-bar::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #f97316;
+  cursor: pointer;
+}
+
+/* Properties panel inputs */
+.prop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.prop-label {
+  width: 50px;
+  font-size: 10px;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+.prop-input {
+  flex: 1;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: #e5e7eb;
+  outline: none;
+}
+.prop-input:focus { border-color: #f97316; }

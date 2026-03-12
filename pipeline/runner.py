@@ -4,14 +4,22 @@ Phase A: news_search + script → waiting_slides (병렬, CPU)
 Phase B: slides + tts + render + upload (큐 순차, GPU)
 """
 from __future__ import annotations
+import io
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 import traceback
 from collections import deque
 from datetime import datetime
+
+# Windows cp949 콘솔에서 유니코드 print 에러 방지
+if sys.stdout and hasattr(sys.stdout, 'encoding') and sys.stdout.encoding and sys.stdout.encoding.lower().replace('-', '') != 'utf8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.stderr and hasattr(sys.stderr, 'encoding') and sys.stderr.encoding and sys.stderr.encoding.lower().replace('-', '') != 'utf8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 from pipeline import config
 from pipeline.agent import generate_script, generate_image_prompts
@@ -166,6 +174,8 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
                 "{날짜}", f"{_dt.month}월 {_dt.day}일"
             ).replace(
                 "{요일}", ["월", "화", "수", "목", "금", "토", "일"][_dt.weekday()] + "요일"
+            ).replace(
+                "{오전오후}", "오전" if _dt.hour < 12 else "오후"
             )
             instructions += (f"\n\n★ 이 채널은 별도 인트로 나레이션이 있습니다: \"{_resolved}\"\n"
                              "인트로 나레이션이 먼저 재생된 후 첫 슬라이드 나레이션이 이어집니다.\n"
@@ -211,9 +221,12 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
                                  "slides": len(script_json.get("slides", [])),
                              })
 
+                # topic을 실제 제목으로 업데이트
+                _yt_title = script_json.get("youtube_title", "").strip()
+                _real_topic = _yt_title or script_json.get("title", "").strip() or topic
                 db.execute(
-                    "UPDATE jobs SET script_json = ?, updated_at = ? WHERE id = ?",
-                    [json.dumps(script_json, ensure_ascii=False), _now(), job_id]
+                    "UPDATE jobs SET script_json = ?, topic = ?, updated_at = ? WHERE id = ?",
+                    [json.dumps(script_json, ensure_ascii=False), _real_topic, _now(), job_id]
                 )
 
             except Exception as e:
@@ -225,7 +238,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
             _update_step(db, job_id, "script", "skipped",
                          output_data={"message": "script 직접 제공"})
 
-        # 이미지 프롬프트 생성 (자동/수동 대본 모두)
+        # 이미지 프롬프트 생성 (자동/수동 대본 모두) — 실패해도 Phase A 계속 진행
         try:
             slides = script_json.get("slides", [])
             slide_layout_a = ch_config.get("slide_layout", "full")
@@ -237,25 +250,27 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
             ]
             if all(p.get("en") for p in _existing_a):
                 image_prompts = _existing_a
-                print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing_a)}개)")
+                print(f"[runner] image_prompt exists in slides ({len(_existing_a)})")
             else:
                 bg_display_mode_a = ch_config.get("bg_display_mode", "zone")
                 image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a, scene_references=image_scene_references, bg_display_mode=bg_display_mode_a, sentences=script_json.get("sentences", []))
-            if image_prompts:
-                meta = {}
-                existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
-                if existing and existing.get("meta_json"):
-                    try:
-                        meta = json.loads(existing["meta_json"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                meta["image_prompts"] = image_prompts
-                db.execute(
-                    "UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
-                    [json.dumps(meta, ensure_ascii=False), _now(), job_id]
-                )
-        except Exception:
-            pass  # 이미지 프롬프트 실패해도 대본은 유지
+        except Exception as e:
+            print(f"[runner] image prompt generation failed (non-fatal): {e}")
+            image_prompts = None
+
+        if image_prompts:
+            meta = {}
+            existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
+            if existing and existing.get("meta_json"):
+                try:
+                    meta = json.loads(existing["meta_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            meta["image_prompts"] = image_prompts
+            db.execute(
+                "UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
+                [json.dumps(meta, ensure_ascii=False), _now(), job_id]
+            )
 
         # Phase A 완료 → waiting_slides
         db.execute(
@@ -263,12 +278,24 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
             ["waiting_slides", _now(), job_id]
         )
 
-    except Exception:
+    except Exception as e:
+        # 실패한 step 찾아서 에러 기록
+        _pending = db.fetchone(
+            "SELECT step_name FROM job_steps WHERE job_id = ? AND status IN ('running','pending') ORDER BY step_order LIMIT 1",
+            [job_id])
+        if _pending:
+            _update_step(db, job_id, _pending["step_name"], "failed",
+                         error_msg=str(e)[:1000])
         db.execute(
             "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
             ["failed", _now(), job_id]
         )
         traceback.print_exc()
+    finally:
+        try:
+            db.checkpoint()
+        except Exception:
+            pass
 
 
 def _get_qa_retry_count(db, job_id: str) -> int:
@@ -306,8 +333,10 @@ def _qa_restart(db, job_id, restart_from, retry_count,
                                          roundup_rules=ch_config_qa.get("roundup_rules", ""),
                                          slide_density=ch_config_qa.get("slide_density", "normal"),
                                          has_outro=bool(ch_config_qa.get("outro_narration", "").strip()))
-            db.execute("UPDATE jobs SET script_json = ?, updated_at = ? WHERE id = ?",
-                       [json.dumps(new_script, ensure_ascii=False), _now(), job_id])
+            _yt_title_qa = new_script.get("youtube_title", "").strip()
+            _real_topic_qa = _yt_title_qa or new_script.get("title", "").strip() or topic
+            db.execute("UPDATE jobs SET script_json = ?, topic = ?, updated_at = ? WHERE id = ?",
+                       [json.dumps(new_script, ensure_ascii=False), _real_topic_qa, _now(), job_id])
             _update_step(db, job_id, "script", "completed",
                          output_data={"sentences": len(new_script.get("sentences", [])),
                                       "slides": len(new_script.get("slides", [])),
@@ -403,10 +432,6 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 if all(p.get("en") for p in _existing):
                     image_prompts = _existing
                     print(f"[runner] 슬라이드에 image_prompt 존재 ({len(_existing)}개)")
-                else:
-                    image_prompts = _existing
-                    print(f"[runner] image_prompt_en 누락 슬라이드 있음 — 있는 것만 사용")
-                if image_prompts:
                     # meta_json에 프롬프트 저장
                     meta = {}
                     existing_meta = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
@@ -418,6 +443,23 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                     meta["image_prompts"] = image_prompts
                     db.execute("UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
                                [json.dumps(meta, ensure_ascii=False), _now(), job_id])
+                else:
+                    # 슬라이드에 프롬프트 없음 → Phase A에서 생성한 meta_json 프롬프트 사용
+                    existing_meta = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
+                    if existing_meta and existing_meta.get("meta_json"):
+                        try:
+                            meta = json.loads(existing_meta["meta_json"])
+                            image_prompts = meta.get("image_prompts", [])
+                            if image_prompts and any(_prompt_en(p) for p in image_prompts):
+                                print(f"[runner] Phase A 프롬프트 사용 ({len(image_prompts)}개)")
+                            else:
+                                image_prompts = []
+                                print("[runner] image_prompt 없음 — 배경 생성 스킵")
+                        except (json.JSONDecodeError, TypeError):
+                            image_prompts = []
+                    else:
+                        image_prompts = []
+                        print("[runner] image_prompt 없음 — 배경 생성 스킵")
 
                     if auto_bg_source == "gemini":
                         gemini_key = ch_config_b.get("gemini_api_key", "")
@@ -1080,6 +1122,7 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
     _narr_vars = {
         "날짜": f"{now.month}월 {now.day}일",
         "요일": ["월", "화", "수", "목", "금", "토", "일"][now.weekday()] + "요일",
+        "오전오후": "오전" if now.hour < 12 else "오후",
     }
     for k, v in _narr_vars.items():
         intro_narration = intro_narration.replace(f"{{{k}}}", v)
@@ -1179,6 +1222,7 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
     return (0.0, 0.0)
 
 
+
 def _load_uploaded_backgrounds(bg_dir: str, slide_count: int,
                                source: str = "upload") -> list[dict]:
     """backgrounds 디렉토리에서 배경 이미지를 슬라이드 순서대로 로드.
@@ -1239,6 +1283,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                 "{날짜}", f"{_dt_fp.month}월 {_dt_fp.day}일"
             ).replace(
                 "{요일}", ["월", "화", "수", "목", "금", "토", "일"][_dt_fp.weekday()] + "요일"
+            ).replace(
+                "{오전오후}", "오전" if _dt_fp.hour < 12 else "오후"
             )
             instructions += (f"\n\n★ 이 채널은 별도 인트로 나레이션이 있습니다: \"{_resolved_fp}\"\n"
                              "인트로 나레이션이 먼저 재생된 후 첫 슬라이드 나레이션이 이어집니다.\n"
@@ -1269,9 +1315,11 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                  "sentences": len(script_json.get("sentences", [])),
                                  "slides": len(script_json.get("slides", [])),
                              })
+                _yt_title_fp = script_json.get("youtube_title", "").strip()
+                _real_topic_fp = _yt_title_fp or script_json.get("title", "").strip() or topic
                 db.execute(
-                    "UPDATE jobs SET script_json = ?, updated_at = ? WHERE id = ?",
-                    [json.dumps(script_json, ensure_ascii=False), _now(), job_id]
+                    "UPDATE jobs SET script_json = ?, topic = ?, updated_at = ? WHERE id = ?",
+                    [json.dumps(script_json, ensure_ascii=False), _real_topic_fp, _now(), job_id]
                 )
             except Exception as e:
                 _update_step(db, job_id, "news_search", "failed", error_msg=str(e))
@@ -1316,10 +1364,6 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
             if all(p.get("en") for p in _existing_s3):
                 image_prompts = _existing_s3
                 print(f"[runner] 슬라이드에 image_prompt 존재 ({len(_existing_s3)}개)")
-            else:
-                image_prompts = _existing_s3
-                print(f"[runner] image_prompt_en 누락 슬라이드 있음 — 있는 것만 사용")
-            if image_prompts:
                 meta = {}
                 existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
                 if existing and existing.get("meta_json"):
@@ -1661,6 +1705,12 @@ class JobQueue:
                 _run_phase_b(db_ch, db, job_id, **kwargs)
             except Exception:
                 traceback.print_exc()
+            finally:
+                # WAL 체크포인트 — 읽기 성능 유지
+                try:
+                    db.checkpoint()
+                except Exception:
+                    pass
 
             with self._lock:
                 self._current_job_id = None
