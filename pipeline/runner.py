@@ -16,7 +16,7 @@ from datetime import datetime
 from pipeline import config
 from pipeline.agent import generate_script, generate_image_prompts
 from pipeline.tts_generator import generate_audio, GOOGLE_CLOUD_VOICES
-from pipeline.slide_generator import generate_slides, generate_chart, generate_infographic, generate_thumbnail
+from pipeline.slide_generator import generate_slides, generate_thumbnail
 from pipeline.sync_engine import build_timeline, merge_slide_audio
 from pipeline.video_renderer import (
     render_segments, concat_segments, render_static_silent,
@@ -193,11 +193,15 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
         if script_json is None:
             _update_step(db, job_id, "news_search", "running")
             try:
+                slide_density = ch_config.get("slide_density", "normal")
+                has_outro = bool(ch_config.get("outro_narration", "").strip())
                 script_json = generate_script(topic, instructions, brand,
                                               target_duration=target_duration,
                                               channel_format=channel_format,
                                               script_rules=script_rules,
-                                              roundup_rules=roundup_rules)
+                                              roundup_rules=roundup_rules,
+                                              slide_density=slide_density,
+                                              has_outro=has_outro)
 
                 _update_step(db, job_id, "news_search", "completed",
                              output_data={"message": "뉴스 검색 완료"})
@@ -236,7 +240,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
                 print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing_a)}개)")
             else:
                 bg_display_mode_a = ch_config.get("bg_display_mode", "zone")
-                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a, scene_references=image_scene_references, bg_display_mode=bg_display_mode_a)
+                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a, scene_references=image_scene_references, bg_display_mode=bg_display_mode_a, sentences=script_json.get("sentences", []))
             if image_prompts:
                 meta = {}
                 existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
@@ -299,7 +303,9 @@ def _qa_restart(db, job_id, restart_from, retry_count,
             new_script = generate_script(topic, instructions + feedback_section, brand,
                                          target_duration=target_duration,
                                          script_rules=ch_config_qa.get("script_rules", ""),
-                                         roundup_rules=ch_config_qa.get("roundup_rules", ""))
+                                         roundup_rules=ch_config_qa.get("roundup_rules", ""),
+                                         slide_density=ch_config_qa.get("slide_density", "normal"),
+                                         has_outro=bool(ch_config_qa.get("outro_narration", "").strip()))
             db.execute("UPDATE jobs SET script_json = ?, updated_at = ? WHERE id = ?",
                        [json.dumps(new_script, ensure_ascii=False), _now(), job_id])
             _update_step(db, job_id, "script", "completed",
@@ -396,10 +402,10 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 ]
                 if all(p.get("en") for p in _existing):
                     image_prompts = _existing
-                    print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing)}개)")
+                    print(f"[runner] 슬라이드에 image_prompt 존재 ({len(_existing)}개)")
                 else:
-                    bg_display_mode_b = ch_config_b.get("bg_display_mode", "zone")
-                    image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_b, layout=slide_layout_b, image_style=image_style_b, scene_references=image_scene_references_b, bg_display_mode=bg_display_mode_b)
+                    image_prompts = _existing
+                    print(f"[runner] image_prompt_en 누락 슬라이드 있음 — 있는 것만 사용")
                 if image_prompts:
                     # meta_json에 프롬프트 저장
                     meta = {}
@@ -413,28 +419,12 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                     db.execute("UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
                                [json.dumps(meta, ensure_ascii=False), _now(), job_id])
 
-                    # 대본 컨텍스트 (인포그래픽용)
-                    full_text = " ".join(s["text"] for s in sentences)
-
-                    # graph 타입 공통 처리 함수
-                    _info_w, _info_h = (1080, 1920) if bg_display_mode == "fullscreen" else (1080, 960)
-                    def _generate_graph_bg(idx, slide):
-                        out = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
-                        try:
-                            generate_infographic(slide, full_text, out, width=_info_w, height=_info_h)
-                            print(f"[runner] bg_{idx+1}.png 인포그래픽 생성 완료")
-                        except Exception as e:
-                            print(f"[runner] bg_{idx+1} 인포그래픽 실패, 기본 차트로 폴백: {e}")
-                            try:
-                                generate_chart(slide, out, width=_info_w, height=_info_h)
-                            except Exception as e2:
-                                print(f"[runner] bg_{idx+1} 차트 폴백도 실패: {e2}")
-
                     if auto_bg_source == "gemini":
                         gemini_key = ch_config_b.get("gemini_api_key", "")
                         if gemini_key:
                             for idx, prompt in enumerate(image_prompts):
-                                slide = slides_data[idx] if idx < len(slides_data) else {}
+                                slide_num = prompt.get("slide", idx + 1) if isinstance(prompt, dict) else idx + 1
+                                slide = slides_data[slide_num - 1] if slide_num <= len(slides_data) else {}
                                 bg_type = slide.get("bg_type", "photo")
                                 if bg_type == "closing":
                                     continue
@@ -452,7 +442,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                         _ar = "1:1" if slide_layout_b in ("center", "top", "bottom") else "9:16"
                                     gemini_generate_image(en_prompt, out, gemini_key,
                                                          aspect_ratio=_ar)
-                                    print(f"[runner] bg_{idx+1}.png Gemini 생성 완료")
+                                    print(f"[runner] bg_{idx+1}.png Gemini 생성 완료 (slide {slide_num})")
                                 except Exception as e:
                                     print(f"[runner] bg_{idx+1} Gemini 생성 실패: {e}")
                         else:
@@ -463,11 +453,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         sd_available = sd_check_available(comfyui_cfg["host"], comfyui_cfg["port"])
                         if sd_available:
                             for idx, prompt in enumerate(image_prompts):
-                                slide = slides_data[idx] if idx < len(slides_data) else {}
+                                slide_num = prompt.get("slide", idx + 1) if isinstance(prompt, dict) else idx + 1
+                                slide = slides_data[slide_num - 1] if slide_num <= len(slides_data) else {}
                                 bg_type = slide.get("bg_type", "photo")
-                                if bg_type == "graph":
-                                    _generate_graph_bg(idx, slide)
-                                    continue
                                 en_prompt = _prompt_en(prompt)
                                 if not en_prompt:
                                     continue
@@ -624,22 +612,27 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 # 슬라이드간 나래이션 갭 (0.3초 무음 패딩)
                 _pad_slide_audio(merged_audio, timeline, gap=0.3)
 
-                # motion 힌트 추출 (meta_json → image_prompts)
+                # motion 힌트 + 슬라이드→bg 매핑 추출 (meta_json → image_prompts)
                 _motion_hints = {}
+                _slide_bg_map = {}  # {slide_num: [bg_idx, ...]}  (1-based)
                 try:
                     _meta_raw = job_row.get("meta_json", "")
                     if _meta_raw:
                         _meta = json.loads(_meta_raw)
                         for i, p in enumerate(_meta.get("image_prompts", [])):
+                            bg_idx = i + 1  # bg_1, bg_2, ...
                             m = p.get("motion", "") if isinstance(p, dict) else ""
                             if m:
-                                _motion_hints[i + 1] = m  # 1-based slide num
+                                _motion_hints[bg_idx] = m
+                            slide_num = p.get("slide", bg_idx) if isinstance(p, dict) else bg_idx
+                            _slide_bg_map.setdefault(slide_num, []).append(bg_idx)
                 except (json.JSONDecodeError, TypeError):
                     pass
 
                 segments = render_segments(timeline["slide_durations"], dirs["image"],
                                            merged_audio, dirs["segment"],
-                                           motion_hints=_motion_hints)
+                                           motion_hints=_motion_hints,
+                                           slide_bg_map=_slide_bg_map)
                 final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
 
                 # 효과음 설정 로드
@@ -1266,7 +1259,9 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                 script_json = generate_script(topic, instructions, brand,
                                               target_duration=target_duration,
                                               script_rules=ch_config_fp.get("script_rules", ""),
-                                              roundup_rules=ch_config_fp.get("roundup_rules", ""))
+                                              roundup_rules=ch_config_fp.get("roundup_rules", ""),
+                                              slide_density=ch_config_fp.get("slide_density", "normal"),
+                                              has_outro=bool(ch_config_fp.get("outro_narration", "").strip()))
                 _update_step(db, job_id, "news_search", "completed",
                              output_data={"message": "뉴스 검색 완료"})
                 _update_step(db, job_id, "script", "completed",
@@ -1320,10 +1315,10 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
             ]
             if all(p.get("en") for p in _existing_s3):
                 image_prompts = _existing_s3
-                print(f"[runner] 슬라이드에 image_prompt 존재 → Claude 프롬프트 생성 스킵 ({len(_existing_s3)}개)")
+                print(f"[runner] 슬라이드에 image_prompt 존재 ({len(_existing_s3)}개)")
             else:
-                bg_display_mode_s3 = ch_config_s3.get("bg_display_mode", "zone")
-                image_prompts = generate_image_prompts(topic, slides_data, prompt_style=image_prompt_style_s3, layout=slide_layout_s3, image_style=image_style_s3, scene_references=image_scene_references_s3, bg_display_mode=bg_display_mode_s3)
+                image_prompts = _existing_s3
+                print(f"[runner] image_prompt_en 누락 슬라이드 있음 — 있는 것만 사용")
             if image_prompts:
                 meta = {}
                 existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
@@ -1337,21 +1332,6 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                            [json.dumps(meta, ensure_ascii=False), _now(), job_id])
 
             bg_source_log = auto_bg_source
-            full_text_fp = " ".join(s["text"] for s in sentences)
-
-            # graph 타입 공통 처리
-            _info_w_fp, _info_h_fp = (1080, 1920) if bg_display_mode == "fullscreen" else (1080, 960)
-            def _gen_graph_fp(idx, slide):
-                output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
-                try:
-                    generate_infographic(slide, full_text_fp, output_path, width=_info_w_fp, height=_info_h_fp)
-                    print(f"[runner] bg_{idx+1}.png 인포그래픽 생성 완료")
-                except Exception as e:
-                    print(f"[runner] bg_{idx+1} 인포그래픽 실패, 차트 폴백: {e}")
-                    try:
-                        generate_chart(slide, output_path, width=_info_w_fp, height=_info_h_fp)
-                    except Exception as e2:
-                        print(f"[runner] bg_{idx+1} 차트 폴백도 실패: {e2}")
 
             if auto_bg_source == "openverse":
                 generate_backgrounds(slides_data, dirs["bg"])
@@ -1393,9 +1373,6 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                     for idx, prompt in enumerate(image_prompts):
                         slide = slides_data[idx] if idx < len(slides_data) else {}
                         bg_type = slide.get("bg_type", "photo")
-                        if bg_type == "graph":
-                            _gen_graph_fp(idx, slide)
-                            continue
                         en_prompt = _prompt_en(prompt)
                         if not en_prompt:
                             continue
@@ -1412,9 +1389,6 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                     for idx, prompt in enumerate(image_prompts):
                         slide = slides_data[idx] if idx < len(slides_data) else {}
                         bg_type = slide.get("bg_type", "photo")
-                        if bg_type == "graph":
-                            _gen_graph_fp(idx, slide)
-                            continue
                         en_prompt = _prompt_en(prompt)
                         if not en_prompt:
                             continue

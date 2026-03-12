@@ -93,7 +93,11 @@ let _prevDashboardHash = "";
 
 async function loadAll() {
   const res = await fetch("/api/dashboard");
-  const data = await res.json();
+  const raw = await res.json();
+  const data = raw.channels || raw;   // {channels, claude_active}
+
+  // Claude 상태 — dashboard 응답에 포함 (별도 API 호출 불필요)
+  _updateClaudeDot(raw.claude_active);
 
   // 변경 감지: 해시 비교로 불필요한 리렌더링 방지
   const hash = JSON.stringify(data.map(ch => ({
@@ -537,7 +541,8 @@ function determineWizardStep(scriptData, stepsData) {
 
   if (status === "pending" || (status === "running" && !script)) return 1;
   if (status === "waiting_slides") {
-    const bgCount = (script?.slides?.length || 1) - 1;
+    const _ipc = (scriptData.image_prompts || []).filter(p => (typeof p === "object" ? p.en : p)).length;
+    const bgCount = _ipc > 0 ? _ipc : (script?.slides || []).filter(s => s.bg_type !== "closing").length;
     const uploadedCount = Object.keys(uploaded_backgrounds || {}).length;
     return uploadedCount > 0 ? 2 : 1;
   }
@@ -559,14 +564,15 @@ function determineWizardStep(scriptData, stepsData) {
 }
 
 function renderWizardNav(step, scriptData, stepsData) {
-  const { status, script, uploaded_backgrounds } = scriptData;
+  const { status, script, uploaded_backgrounds, image_prompts } = scriptData;
   const labels = ["대본 작성", "이미지 + 음성", "영상 제작"];
   const icons = ["📝", "🖼️", "🎬"];
 
   // determine "done" state for each step
   const hasScript = !!script;
   const slides = script?.slides || [];
-  const bgCount = slides.length > 0 ? slides.length - 1 : 0;
+  const _npc = (image_prompts || []).filter(p => (typeof p === "object" ? p.en : p)).length;
+  const bgCount = _npc > 0 ? _npc : slides.filter(s => s.bg_type !== "closing").length;
   const uploadedCount = Object.keys(uploaded_backgrounds || {}).length;
   const stepStatuses = {};
   for (const s of (stepsData.steps || [])) stepStatuses[s.step_name] = s.status || "pending";
@@ -692,7 +698,8 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
 
   const slides = script.slides || [];
   const slideCount = slides.length;
-  const bgCount = slideCount > 0 ? slideCount - 1 : 0;
+  const _imgPromptCount = (image_prompts || []).filter(p => (typeof p === "object" ? p.en : p)).length;
+  const bgCount = _imgPromptCount > 0 ? _imgPromptCount : slides.filter(s => s.bg_type !== "closing").length;
   const uploadedBgs = uploaded_backgrounds || {};
   const uploadedCount = Object.keys(uploadedBgs).length;
   const steps = stepsData.steps || [];
@@ -705,10 +712,22 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
     const items = imgPrompts.map((p, i) => {
       const ko = typeof p === "object" ? (p.ko || "") : "";
       const en = typeof p === "object" ? (p.en || "") : String(p);
+      const motion = typeof p === "object" ? (p.motion || "") : "";
+      const slideNum = typeof p === "object" ? (p.slide || i+1) : i+1;
+      if (!ko && !en) return "";  // 클로징 등 빈 프롬프트 숨김
+      const copyText = [ko, en, motion].filter(Boolean).join("\\n");
+      // 같은 슬라이드에 여러 프롬프트면 슬라이드 번호 표시
+      const slideLabel = slideNum !== (i+1) ? ` <span class="text-gray-600">S${slideNum}</span>` : "";
       return `<div class="text-xs py-1 border-b border-gray-800">
-        <span class="text-orange-400 font-bold mr-1">${i+1}.</span>
-        ${ko ? `<span class="text-gray-300">${esc(ko)}</span><br>` : ""}
-        <span class="text-gray-500">${esc(en)}</span>
+        <div class="flex items-start justify-between gap-1">
+          <div class="flex-1">
+            <span class="text-orange-400 font-bold mr-1">${i+1}.${slideLabel}</span>
+            ${ko ? `<span class="text-gray-300">${esc(ko)}</span><br>` : ""}
+            <span class="text-gray-500">${esc(en)}</span>
+            ${motion ? `<br><span class="text-blue-400">🎬 ${esc(motion)}</span>` : ""}
+          </div>
+          <button onclick="event.stopPropagation(); copyOnePrompt(this, \`${esc(copyText)}\`)" class="copy-icon-btn text-gray-600 hover:text-white flex-shrink-0" title="복사" style="font-size:11px;padding:1px 3px;">&#x1F4CB;</button>
+        </div>
       </div>`;
     }).join("");
     imgPromptsHtml = `<details class="mb-3" open>
@@ -726,16 +745,20 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
     </div>`;
   }
 
-  const bgTypes = slides.map(s => s.bg_type || "photo");
+  // 업로드 슬롯: 프롬프트가 있으면 프롬프트 수 기준, 없으면 슬라이드(closing 제외) 기준
+  const slotCount = hasImgPrompts ? imgPrompts.filter(p => (typeof p === "object" ? p.en : p)).length : bgCount;
   let slotsHtml = `<div class="upload-grid">`;
-  for (let i = 1; i <= bgCount; i++) {
+  for (let i = 1; i <= slotCount; i++) {
+    const promptSlide = hasImgPrompts && imgPrompts[i-1] ? (imgPrompts[i-1].slide || i) : i;
+    const bgType = (slides[promptSlide - 1] || {}).bg_type || "photo";
+    if (bgType === "closing") continue;
     const bgUrl = uploadedBgs[i] || null;
     const hasImage = bgUrl ? "has-image" : "";
-    const bgType = bgTypes[i - 1] || "photo";
-    const bgTypeLabel = {photo:"📷",broll:"🎬",graph:"📊",logo:"🏢",closing:"✕"}[bgType] || "📷";
+    const bgTypeLabel = {photo:"📷",broll:"🎬",graph:"📊",logo:"🏢"}[bgType] || "📷";
     slotsHtml += `
       <div class="upload-slot-wrap" id="slot-wrap-${i}">
-        <div class="upload-slot ${hasImage}" onclick="triggerUpload('${jobId}', ${i})" id="slot-${i}" title="슬라이드 ${i} (${bgType})" data-bg-type="${bgType}">
+        <div class="upload-slot ${hasImage}" onclick="triggerUpload('${jobId}', ${i})" id="slot-${i}" title="배경 ${i} (${bgType})" data-bg-type="${bgType}">
+
           ${bgUrl ? (bgUrl.includes('.mp4') || bgUrl.includes('.gif') ? `<video src="${bgUrl}" autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;"></video>` : `<img src="${bgUrl}" alt="bg_${i}">`) : ""}
           <div class="slot-icon">+</div>
           <div class="slot-number">${bgTypeLabel} ${i}</div>
@@ -773,8 +796,11 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
       <textarea id="prompt-text-ko" rows="2" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-xs text-gray-300 resize-y mb-2"
                 placeholder="한국어 장면 설명..."></textarea>
       <label class="text-xs text-gray-500 mb-1 block">English Prompt</label>
-      <textarea id="prompt-text-en" rows="3" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-xs text-gray-300 resize-y"
+      <textarea id="prompt-text-en" rows="3" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-xs text-gray-300 resize-y mb-2"
                 placeholder="English image generation prompt..."></textarea>
+      <label class="text-xs text-blue-400 mb-1 block">Motion Prompt (영상 변환용)</label>
+      <textarea id="prompt-text-motion" rows="1" class="w-full bg-gray-800 border border-gray-700 rounded p-2 text-xs text-blue-300 resize-y"
+                placeholder="e.g. slow zoom in, gentle pan right..."></textarea>
       <div class="flex gap-2 mt-2">
         <button onclick="saveImagePrompt()" class="prompt-save-btn">저장</button>
         <button onclick="regenerateFromEdit()" class="prompt-save-btn" style="background:rgba(147,51,234,0.2);color:#c084fc;">이미지 생성</button>
@@ -1069,9 +1095,10 @@ function renderQAChecklist(steps) {
 // ─── Wizard: Footer ───
 
 function renderWizardFooter(step, jobId, scriptData, stepsData) {
-  const { status, script, uploaded_backgrounds } = scriptData;
+  const { status, script, uploaded_backgrounds, image_prompts } = scriptData;
   const slides = script?.slides || [];
-  const bgCount = slides.length > 0 ? slides.length - 1 : 0;
+  const _fpc = (image_prompts || []).filter(p => (typeof p === "object" ? p.en : p)).length;
+  const bgCount = _fpc > 0 ? _fpc : slides.filter(s => s.bg_type !== "closing").length;
   const uploadedBgs = uploaded_backgrounds || {};
   const uploadedCount = Object.keys(uploadedBgs).length;
   const stepStatus = {};
@@ -1268,6 +1295,13 @@ function copyPrompt(btn) {
   const el = document.getElementById("genspark-prompt");
   if (!el) return;
   navigator.clipboard.writeText(el.textContent).then(() => {
+    btn.innerHTML = "&#x2705;";
+    setTimeout(() => { btn.innerHTML = "&#x1F4CB;"; }, 1500);
+  });
+}
+
+function copyOnePrompt(btn, text) {
+  navigator.clipboard.writeText(text.replace(/\\n/g, "\n")).then(() => {
     btn.innerHTML = "&#x2705;";
     setTimeout(() => { btn.innerHTML = "&#x1F4CB;"; }, 1500);
   });
@@ -1991,14 +2025,17 @@ function togglePromptEdit(jobId, index) {
     .then(r => r.json())
     .then(data => {
       const prompts = data.image_prompts || [];
+      const taMotion = document.getElementById("prompt-text-motion");
       if (index - 1 < prompts.length && prompts[index - 1]) {
         const p = prompts[index - 1];
         if (typeof p === "object") {
           if (taKo) taKo.value = p.ko || "";
           if (taEn) taEn.value = p.en || "";
+          if (taMotion) taMotion.value = p.motion || "";
         } else {
           if (taKo) taKo.value = "";
           if (taEn) taEn.value = String(p);
+          if (taMotion) taMotion.value = "";
         }
       }
     })
@@ -2015,12 +2052,13 @@ async function saveImagePrompt() {
   if (!_activePromptJobId || !_activePromptIndex) return;
   const taKo = document.getElementById("prompt-text-ko");
   const taEn = document.getElementById("prompt-text-en");
+  const taMotion = document.getElementById("prompt-text-motion");
 
   try {
     await fetch(`/api/jobs/${_activePromptJobId}/image-prompts/${_activePromptIndex}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ko: taKo ? taKo.value : "", en: taEn ? taEn.value : "" }),
+      body: JSON.stringify({ ko: taKo ? taKo.value : "", en: taEn ? taEn.value : "", motion: taMotion ? taMotion.value : "" }),
     });
     const statusEl = document.getElementById("sd-status");
     if (statusEl) statusEl.innerHTML = `<div class="text-xs text-green-400 mb-2">슬롯 ${_activePromptIndex} 프롬프트 저장됨</div>`;
@@ -2631,21 +2669,6 @@ function updateHeaderStatus() {
   if (queued > 0) parts.push(`<span class="text-blue-400">◌ ${queued} 대기</span>`);
   if (waiting > 0) parts.push(`<span class="text-yellow-400">◎ ${waiting} 이미지</span>`);
   el.innerHTML = parts.length > 0 ? parts.join("") : `<span class="text-gray-600">대기 없음</span>`;
-
-  // Claude 상태 표시
-  const dot = document.getElementById("claude-dot");
-  const claudeEl = document.getElementById("header-claude-status");
-  if (dot && claudeEl) {
-    if (running > 0) {
-      dot.classList.add("active");
-      claudeEl.classList.remove("text-gray-500");
-      claudeEl.classList.add("text-gray-300");
-    } else {
-      dot.classList.remove("active");
-      claudeEl.classList.remove("text-gray-300");
-      claudeEl.classList.add("text-gray-500");
-    }
-  }
 }
 
 // ─── Claude 사용량 ───
@@ -2674,6 +2697,22 @@ async function runAllChannels() {
   if (!confirm(`${runnableChannels.length}개 채널을 모두 실행하시겠습니까?`)) return;
   for (const ch of runnableChannels) {
     runChannel(ch.id, null);
+  }
+}
+
+// ─── Claude 프로세스 감지 (dashboard 응답에서 수신) ───
+function _updateClaudeDot(active) {
+  const dot = document.getElementById("claude-dot");
+  const claudeEl = document.getElementById("header-claude-status");
+  if (!dot || !claudeEl) return;
+  if (active) {
+    dot.classList.add("active");
+    claudeEl.classList.remove("text-gray-500");
+    claudeEl.classList.add("text-gray-300");
+  } else {
+    dot.classList.remove("active");
+    claudeEl.classList.remove("text-gray-300");
+    claudeEl.classList.add("text-gray-500");
   }
 }
 
@@ -2735,6 +2774,7 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-target-duration").value = String(cfg.target_duration || 60);
   updateDurationHint();
   document.getElementById("cs-slide-layout").value = cfg.slide_layout || "full";
+  document.getElementById("cs-slide-density").value = cfg.slide_density || "normal";
   document.getElementById("cs-bg-display-mode").value = cfg.bg_display_mode || "zone";
   toggleBgDisplayMode();
   document.getElementById("cs-production-mode").value = cfg.production_mode || "manual";
@@ -2834,6 +2874,7 @@ async function saveChannelSettings() {
   cfg.format = document.getElementById("cs-format").value;
   cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
+  cfg.slide_density = document.getElementById("cs-slide-density").value;
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
@@ -2934,6 +2975,8 @@ function _initChannelDragDrop() {
 
   items.forEach(item => {
     item.addEventListener("dragstart", e => {
+      const tag = e.target.tagName.toLowerCase();
+      if (tag === "textarea" || tag === "input") { e.preventDefault(); return; }
       _draggedChannelId = item.dataset.channelId;
       item.style.opacity = "0.4";
       e.dataTransfer.effectAllowed = "move";
@@ -3046,6 +3089,7 @@ async function saveChannelSettingsSilent() {
   cfg.format = document.getElementById("cs-format").value;
   cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
+  cfg.slide_density = document.getElementById("cs-slide-density").value;
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;

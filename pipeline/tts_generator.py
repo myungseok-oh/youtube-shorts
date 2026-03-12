@@ -3,10 +3,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 import subprocess
 import threading
 import requests
 from pipeline import config
+
+
+def _strip_html(text: str) -> str:
+    """HTML 태그 제거 — sentences에 <span class="hl"> 등이 섞여 들어올 때 방어"""
+    return re.sub(r"<[^>]+>", "", text)
 
 
 EDGE_VOICES = {
@@ -247,9 +253,17 @@ def generate_audio(sentences: list[dict], audio_dir: str,
     """
     os.makedirs(audio_dir, exist_ok=True)
 
+    # sentences 내 HTML 태그 제거 (방어)
+    for sen in sentences:
+        sen["text"] = _strip_html(sen.get("text", ""))
+
     # GPT-SoVITS 모드
     if sovits_cfg and sovits_cfg.get("ref_audio"):
-        return _generate_sovits(sentences, audio_dir, sovits_cfg)
+        if not check_sovits_available(sovits_cfg.get("host", SOVITS_DEFAULT_HOST),
+                                       sovits_cfg.get("port", SOVITS_DEFAULT_PORT)):
+            print("[tts] ⚠️ GPT-SoVITS 서버 미응답 — Edge-TTS로 폴백합니다")
+        else:
+            return _generate_sovits(sentences, audio_dir, sovits_cfg)
 
     rate_str = _format_rate(rate) if rate is not None else "+0%"
 

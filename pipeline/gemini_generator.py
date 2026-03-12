@@ -1,8 +1,7 @@
 """Gemini API 이미지 생성기 — Google AI Studio 무료 티어
 
 google-genai SDK 사용, 공식 모델명:
-- gemini-2.0-flash-exp-image-generation (무료, TEXT+IMAGE 혼합)
-- gemini-2.5-flash-image (무료 제한적)
+- gemini-2.5-flash-image (무료)
 """
 import os
 import time
@@ -10,9 +9,8 @@ from google import genai
 from google.genai import types
 
 
-# 시도할 모델 순서 (무료 티어 우선)
+# 시도할 모델 순서
 IMAGE_MODELS = [
-    "gemini-2.0-flash-exp-image-generation",
     "gemini-2.5-flash-image",
 ]
 

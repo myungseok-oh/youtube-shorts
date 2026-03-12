@@ -179,6 +179,15 @@
           <p class="text-xs text-gray-500 mt-1">라운드업: 여러 뉴스를 한 영상에 짧게 전달 (첫 슬라이드에 주제 목록 소개)</p>
         </div>
         <div>
+          <label class="block text-sm text-gray-400 mb-1">슬라이드 밀도</label>
+          <select id="cs-slide-density"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+            <option value="normal">일반 — 슬라이드당 2~4문장 (정적 배경에 적합)</option>
+            <option value="dense">촘촘하게 — 슬라이드당 1~2문장 (영상 배경에 적합, ~5초/슬라이드)</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">영상 배경(6초) 사용 시 촘촘하게 설정하면 루프 없이 자연스럽게 전환</p>
+        </div>
+        <div>
           <label class="block text-sm text-gray-400 mb-1">영상 제작 방식</label>
           <select id="cs-production-mode" onchange="toggleAutoBgSource()"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">

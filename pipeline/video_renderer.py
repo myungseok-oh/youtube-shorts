@@ -190,7 +190,8 @@ def render_static_with_audio(image_path: str, audio_path: str,
 
 def render_segments(slide_durations: dict, image_dir: str,
                     merged_audio: dict, segment_dir: str,
-                    motion_hints: dict | None = None) -> list[str]:
+                    motion_hints: dict | None = None,
+                    slide_bg_map: dict | None = None) -> list[str]:
     """슬라이드별 세그먼트 영상 생성.
 
     배경 유형에 따라:
@@ -199,7 +200,9 @@ def render_segments(slide_durations: dict, image_dir: str,
     - 배경 없음 → 정적 슬라이드
 
     Args:
-        motion_hints: {slide_num: "slow zoom in", ...} — Ken Burns 프리셋 선택용
+        motion_hints: {bg_idx: "slow zoom in", ...} — Ken Burns 프리셋 선택용
+        slide_bg_map: {slide_num: [bg_idx, ...]} — 슬라이드→배경 파일 매핑
+                      bg_idx가 2개면 duration을 반분하여 세그먼트 2개 생성
 
     Returns:
         세그먼트 MP4 파일 경로 리스트 (순서대로)
@@ -208,34 +211,75 @@ def render_segments(slide_durations: dict, image_dir: str,
     vcfg = config.video_cfg()
     segment_files = []
     hints = motion_hints or {}
+    bg_map = slide_bg_map or {}
 
     for s in sorted(slide_durations.keys()):
         img_path = os.path.join(image_dir, f"slide_{s}.png")
         overlay_path = os.path.join(image_dir, f"slide_{s}_overlay.png")
         audio_path = merged_audio[s]
-        seg_path = os.path.join(segment_dir, f"segment_{s}.mp4")
         dur = slide_durations[s]
-        motion = hints.get(s, "")
-
-        video_bg = _find_video_bg(image_dir, s)
-        image_bg = _find_image_bg(image_dir, s)
         has_overlay = os.path.exists(overlay_path)
 
-        if video_bg and has_overlay:
-            print(f"[video_renderer] slide {s}: video_bg + overlay")
-            _render_video_segment(video_bg, overlay_path, audio_path, seg_path,
-                                  dur, vcfg)
-        elif image_bg and has_overlay:
-            print(f"[video_renderer] slide {s}: Ken Burns ({motion or 'random'}) + overlay")
-            _render_kenburns_segment(image_bg, overlay_path, audio_path,
-                                     seg_path, dur, vcfg, motion=motion)
-        else:
-            print(f"[video_renderer] slide {s}: static (bg={bool(image_bg)}, overlay={has_overlay})")
-            _render_static_segment(img_path, audio_path, seg_path, dur, vcfg)
+        # 슬라이드에 배경이 2개 매핑된 경우 → 분할 렌더링
+        bg_indices = bg_map.get(s, [s])  # 기본: 슬라이드 번호 = bg 번호
+        if len(bg_indices) >= 2 and dur > 3.0:
+            # 오디오를 반분하여 각 배경에 할당
+            half_dur = dur / len(bg_indices)
+            for part_i, bg_idx in enumerate(bg_indices):
+                part_seg = os.path.join(segment_dir, f"segment_{s}_{part_i}.mp4")
+                motion = hints.get(bg_idx, "")
+                video_bg = _find_video_bg(image_dir, bg_idx)
+                image_bg = _find_image_bg(image_dir, bg_idx)
 
-        segment_files.append(seg_path)
+                # 오디오 분할: ffmpeg로 구간 추출
+                part_audio = os.path.join(segment_dir, f"audio_{s}_{part_i}.aac")
+                _split_audio(audio_path, part_audio, part_i * half_dur, half_dur)
+
+                if video_bg and has_overlay:
+                    print(f"[video_renderer] slide {s} part {part_i}: video_bg (bg_{bg_idx}) + overlay")
+                    _render_video_segment(video_bg, overlay_path, part_audio, part_seg,
+                                          half_dur, vcfg)
+                elif image_bg and has_overlay:
+                    print(f"[video_renderer] slide {s} part {part_i}: Ken Burns (bg_{bg_idx}, {motion or 'random'}) + overlay")
+                    _render_kenburns_segment(image_bg, overlay_path, part_audio,
+                                             part_seg, half_dur, vcfg, motion=motion)
+                else:
+                    print(f"[video_renderer] slide {s} part {part_i}: static")
+                    _render_static_segment(img_path, part_audio, part_seg, half_dur, vcfg)
+                segment_files.append(part_seg)
+        else:
+            # 단일 배경 (기존 로직)
+            seg_path = os.path.join(segment_dir, f"segment_{s}.mp4")
+            bg_idx = bg_indices[0] if bg_indices else s
+            motion = hints.get(bg_idx, "")
+            video_bg = _find_video_bg(image_dir, bg_idx)
+            image_bg = _find_image_bg(image_dir, bg_idx)
+
+            if video_bg and has_overlay:
+                print(f"[video_renderer] slide {s}: video_bg + overlay")
+                _render_video_segment(video_bg, overlay_path, audio_path, seg_path,
+                                      dur, vcfg)
+            elif image_bg and has_overlay:
+                print(f"[video_renderer] slide {s}: Ken Burns ({motion or 'random'}) + overlay")
+                _render_kenburns_segment(image_bg, overlay_path, audio_path,
+                                         seg_path, dur, vcfg, motion=motion)
+            else:
+                print(f"[video_renderer] slide {s}: static (bg={bool(image_bg)}, overlay={has_overlay})")
+                _render_static_segment(img_path, audio_path, seg_path, dur, vcfg)
+            segment_files.append(seg_path)
 
     return segment_files
+
+
+def _split_audio(input_path: str, output_path: str, start: float, duration: float):
+    """오디오 파일에서 구간 추출."""
+    subprocess.run([
+        config.ffmpeg(), "-y",
+        "-i", input_path,
+        "-ss", str(start), "-t", str(duration),
+        "-c:a", "aac", "-b:a", "192k",
+        output_path,
+    ], capture_output=True)
 
 
 def _render_static_segment(img_path: str, audio_path: str,

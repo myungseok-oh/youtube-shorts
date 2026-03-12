@@ -262,6 +262,13 @@ async def api_usage():
     return result
 
 
+@app.get("/api/claude-active")
+async def api_claude_active():
+    """Claude CLI 프로세스 실행 중 여부 (agent.py 플래그 기반)"""
+    from pipeline.agent import is_claude_active
+    return {"active": is_claude_active()}
+
+
 # ─── Prompt Defaults API ───
 
 @app.get("/api/prompt-defaults")
@@ -527,7 +534,10 @@ async def api_run_channel(channel_id: str, request: Request):
 
         # 최근 24시간 내 작업 주제 수집 (중복 방지)
         recent_jobs = db.fetchall(
-            "SELECT topic FROM jobs WHERE channel_id = ? AND created_at >= datetime('now', 'localtime', '-24 hours') ORDER BY created_at DESC LIMIT 20",
+            "SELECT topic FROM jobs WHERE channel_id = ? "
+            "AND NOT (status = 'deleted' AND id NOT IN "
+            "  (SELECT job_id FROM job_steps WHERE step_name = 'upload' AND status = 'completed')) "
+            "AND created_at >= datetime('now', 'localtime', '-24 hours') ORDER BY created_at DESC LIMIT 20",
             [channel_id]
         )
         recent_topics = [j["topic"] for j in recent_jobs] if recent_jobs else []
@@ -1155,19 +1165,21 @@ async def api_update_image_prompt(job_id: str, index: int, request: Request):
     body = await request.json()
     new_ko = body.get("ko", "")
     new_en = body.get("en", body.get("prompt", ""))
+    new_motion = body.get("motion", "")
 
     meta = json.loads(job["meta_json"]) if job.get("meta_json") else {}
     prompts = meta.get("image_prompts", [])
 
     idx = index - 1
     while len(prompts) <= idx:
-        prompts.append({"ko": "", "en": ""})
+        prompts.append({"ko": "", "en": "", "motion": ""})
     # 기존 값이 string이면 dict로 변환
     existing = prompts[idx]
     if isinstance(existing, str):
-        existing = {"ko": "", "en": existing}
+        existing = {"ko": "", "en": existing, "motion": ""}
     existing["ko"] = new_ko if new_ko else existing.get("ko", "")
     existing["en"] = new_en if new_en else existing.get("en", "")
+    existing["motion"] = new_motion if new_motion else existing.get("motion", "")
     prompts[idx] = existing
 
     meta["image_prompts"] = prompts
@@ -1805,7 +1817,8 @@ async def api_dashboard():
             "has_intro_bg": _find_channel_image(ch["id"], "intro_bg") is not None,
             "has_outro_bg": _find_channel_image(ch["id"], "outro_bg") is not None,
         })
-    return result
+    from pipeline.agent import is_claude_active
+    return {"channels": result, "claude_active": is_claude_active()}
 
 
 @app.get("/api/bgm")
