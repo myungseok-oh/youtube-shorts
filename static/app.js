@@ -179,7 +179,7 @@ function renderChannels(channels) {
           <span class="drag-handle text-gray-600 cursor-grab text-xs select-none" title="드래그하여 순서 변경">⠿</span>
           <span class="channel-icon">${icon}</span>
           <div class="flex-1 min-w-0">
-            <div class="font-medium text-sm">${esc(ch.name)}${scheduleTag}</div>
+            <div class="font-medium text-sm"><span class="text-gray-500 text-xs mr-1">${ch.id}</span>${esc(ch.name)}${scheduleTag}</div>
             <div class="text-xs text-gray-500 mt-0.5">${statusText}</div>
           </div>
           <button class="ch-settings-btn" onclick="event.stopPropagation(); openChannelSettings('${ch.id}')" title="채널 설정">⚙</button>
@@ -2895,6 +2895,7 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-roundup-rules").value = cfg.roundup_rules || "";
   document.getElementById("cs-image-style").value = cfg.image_style || "mixed";
   document.getElementById("cs-format").value = cfg.format || "single";
+  document.getElementById("cs-bg-media-type").value = cfg.bg_media_type || "video";
   document.getElementById("cs-target-duration").value = String(cfg.target_duration || 60);
   updateDurationHint();
   document.getElementById("cs-slide-layout").value = cfg.slide_layout || "full";
@@ -2904,6 +2905,7 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-production-mode").value = cfg.production_mode || "manual";
   document.getElementById("cs-auto-bg-source").value = cfg.auto_bg_source || "sd_image";
   document.getElementById("cs-gemini-api-key").value = cfg.gemini_api_key || "";
+  document.getElementById("cs-use-subagent").checked = !!cfg.use_subagent;
   toggleAutoBgSource();
   document.getElementById("cs-yt-client-id").value = cfg.youtube_client_id || "";
   document.getElementById("cs-yt-client-secret").value = cfg.youtube_client_secret || "";
@@ -3005,6 +3007,7 @@ async function saveChannelSettings() {
 
   cfg.image_style = document.getElementById("cs-image-style").value;
   cfg.format = document.getElementById("cs-format").value;
+  cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
   cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
   cfg.slide_density = document.getElementById("cs-slide-density").value;
@@ -3012,6 +3015,7 @@ async function saveChannelSettings() {
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _setIfPresent("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
+  cfg.use_subagent = document.getElementById("cs-use-subagent").checked;
 
   // TTS 설정 저장
   cfg.tts_engine = document.getElementById("cs-tts-engine").value;
@@ -3262,6 +3266,7 @@ async function saveChannelSettingsSilent() {
 
   cfg.image_style = document.getElementById("cs-image-style").value;
   cfg.format = document.getElementById("cs-format").value;
+  cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
   cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
   cfg.slide_density = document.getElementById("cs-slide-density").value;
@@ -3269,6 +3274,7 @@ async function saveChannelSettingsSilent() {
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _set("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
+  cfg.use_subagent = document.getElementById("cs-use-subagent").checked;
 
   cfg.trend_sources = [];
   cfg.youtube_api_key = "";

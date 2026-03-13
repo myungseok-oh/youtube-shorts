@@ -146,6 +146,16 @@
           <textarea id="cs-instructions" rows="14"
                     class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed"></textarea>
         </div>
+        <div class="flex items-center justify-between">
+          <div>
+            <label class="block text-sm text-gray-400">서브에이전트 (병렬 검색)</label>
+            <p class="text-xs text-gray-500 mt-1">활성화하면 다주제 뉴스 검색을 서브에이전트로 병렬 처리하여 속도 향상</p>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer ml-4 shrink-0">
+            <input id="cs-use-subagent" type="checkbox" class="sr-only peer">
+            <div class="w-9 h-5 bg-gray-700 peer-checked:bg-orange-500 rounded-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+          </label>
+        </div>
       </div>
 
       <!-- 탭: 영상 -->
@@ -185,6 +195,15 @@
             <option value="roundup">라운드업 — 주제 N개를 한 영상에 묶어서</option>
           </select>
           <p class="text-xs text-gray-500 mt-1">라운드업: 여러 뉴스를 한 영상에 짧게 전달 (첫 슬라이드에 주제 목록 소개)</p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">배경 미디어 타입</label>
+          <select id="cs-bg-media-type"
+                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+            <option value="video">영상 — 6초 기준, 긴 나레이션은 배경 2-3장</option>
+            <option value="image">정적 이미지 — 슬라이드당 배경 1장 (나레이션 길어도)</option>
+          </select>
+          <p class="text-xs text-gray-500 mt-1">정적 이미지: 배경 수 줄여 제작 시간 단축. 영상: 긴 슬라이드에 배경 교체로 시각적 변화</p>
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">슬라이드 밀도</label>

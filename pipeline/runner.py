@@ -205,13 +205,15 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
             try:
                 slide_density = ch_config.get("slide_density", "normal")
                 has_outro = bool(ch_config.get("outro_narration", "").strip())
+                use_subagent = bool(ch_config.get("use_subagent", False))
                 script_json = generate_script(topic, instructions, brand,
                                               target_duration=target_duration,
                                               channel_format=channel_format,
                                               script_rules=script_rules,
                                               roundup_rules=roundup_rules,
                                               slide_density=slide_density,
-                                              has_outro=has_outro)
+                                              has_outro=has_outro,
+                                              use_subagent=use_subagent)
 
                 _update_step(db, job_id, "news_search", "completed",
                              output_data={"message": "뉴스 검색 완료"})
@@ -253,7 +255,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
                 print(f"[runner] image_prompt exists in slides ({len(_existing_a)})")
             else:
                 bg_display_mode_a = ch_config.get("bg_display_mode", "zone")
-                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a, scene_references=image_scene_references, bg_display_mode=bg_display_mode_a, sentences=script_json.get("sentences", []))
+                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a, scene_references=image_scene_references, bg_display_mode=bg_display_mode_a, sentences=script_json.get("sentences", []), bg_media_type=ch_config.get("bg_media_type", "video"))
         except Exception as e:
             print(f"[runner] image prompt generation failed (non-fatal): {e}")
             image_prompts = None
@@ -332,7 +334,8 @@ def _qa_restart(db, job_id, restart_from, retry_count,
                                          script_rules=ch_config_qa.get("script_rules", ""),
                                          roundup_rules=ch_config_qa.get("roundup_rules", ""),
                                          slide_density=ch_config_qa.get("slide_density", "normal"),
-                                         has_outro=bool(ch_config_qa.get("outro_narration", "").strip()))
+                                         has_outro=bool(ch_config_qa.get("outro_narration", "").strip()),
+                                         use_subagent=bool(ch_config_qa.get("use_subagent", False)))
             _yt_title_qa = new_script.get("youtube_title", "").strip()
             _real_topic_qa = _yt_title_qa or new_script.get("title", "").strip() or topic
             db.execute("UPDATE jobs SET script_json = ?, topic = ?, updated_at = ? WHERE id = ?",
@@ -471,6 +474,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 scene_references=image_scene_references_b,
                                 bg_display_mode=bg_display_mode_b,
                                 sentences=sentences,
+                                bg_media_type=ch_config_b.get("bg_media_type", "video"),
                             )
                             if image_prompts and any(_prompt_en(p) for p in image_prompts):
                                 print(f"[runner] Phase B 프롬프트 재생성 성공 ({len(image_prompts)}개)")
@@ -680,8 +684,10 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                     timeline["slide_durations"][first_s] += narration_delay
                     timeline["total_duration"] += narration_delay
 
-                # 슬라이드간 나래이션 갭 (0.3초 무음 패딩)
-                _pad_slide_audio(merged_audio, timeline, gap=0.3)
+                # 슬라이드간 나래이션 갭 (crossfade 겹침 방지용, 최소 crossfade 이상)
+                _xfade_dur = ch_config_pb.get("crossfade_duration", 0.5) or 0.5
+                _pad_gap = max(0.3, _xfade_dur + 0.1)
+                _pad_slide_audio(merged_audio, timeline, gap=_pad_gap)
 
                 # motion 힌트 + 슬라이드→bg 매핑 추출 (meta_json → image_prompts)
                 _motion_hints = {}
@@ -1336,7 +1342,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                               script_rules=ch_config_fp.get("script_rules", ""),
                                               roundup_rules=ch_config_fp.get("roundup_rules", ""),
                                               slide_density=ch_config_fp.get("slide_density", "normal"),
-                                              has_outro=bool(ch_config_fp.get("outro_narration", "").strip()))
+                                              has_outro=bool(ch_config_fp.get("outro_narration", "").strip()),
+                                              use_subagent=bool(ch_config_fp.get("use_subagent", False)))
                 _update_step(db, job_id, "news_search", "completed",
                              output_data={"message": "뉴스 검색 완료"})
                 _update_step(db, job_id, "script", "completed",
@@ -1548,8 +1555,10 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                 timeline["slide_durations"][first_s] += narration_delay_r
                 timeline["total_duration"] += narration_delay_r
 
-            # 슬라이드간 나래이션 갭
-            _pad_slide_audio(merged_audio, timeline, gap=0.3)
+            # 슬라이드간 나래이션 갭 (crossfade 겹침 방지용)
+            _xfade_dur_r = ch_config_fp.get("crossfade_duration", 0.5) or 0.5
+            _pad_gap_r = max(0.3, _xfade_dur_r + 0.1)
+            _pad_slide_audio(merged_audio, timeline, gap=_pad_gap_r)
 
             # motion 힌트 추출 (image_prompts 변수에서 직접)
             _motion_hints_r = {}

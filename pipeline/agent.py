@@ -131,34 +131,54 @@ def is_claude_active() -> bool:
 
 
 def _run_claude(prompt: str, timeout: int = 120, use_web: bool = True,
-                model: str | None = None) -> str:
-    """claude CLI를 호출하고 결과 텍스트 반환"""
+                model: str | None = None, retries: int = 1,
+                use_subagent: bool = False) -> str:
+    """claude CLI를 호출하고 결과 텍스트 반환. 타임아웃 시 retries회 재시도."""
     global _claude_active
     claude_bin = _find_claude_bin()
     cmd = f'"{claude_bin}" -p --output-format json'
     if model:
         cmd += f" --model {model}"
+    tools = []
     if use_web:
-        cmd += " --allowedTools WebSearch,WebFetch"
+        tools.extend(["WebSearch", "WebFetch"])
+    if use_subagent:
+        tools.append("Agent")
+    if tools:
+        cmd += f" --allowedTools {','.join(tools)}"
 
-    with _claude_lock:
-        _claude_active = True
-    try:
-        result = subprocess.run(
-            cmd,
-            input=prompt,
-            capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", shell=True, env=_clean_env(),
-            cwd=tempfile.gettempdir(),
-        )
-    finally:
+    print(f"[claude] cmd: {cmd}")
+    print(f"[claude] use_subagent={use_subagent}, tools={tools}, timeout={timeout}")
+
+    last_err = None
+    for attempt in range(1 + retries):
+        if attempt > 0:
+            print(f"[claude] 재시도 {attempt}/{retries} (이전: 타임아웃)")
         with _claude_lock:
-            _claude_active = False
+            _claude_active = True
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", shell=True, env=_clean_env(),
+                cwd=tempfile.gettempdir(),
+            )
+        except subprocess.TimeoutExpired as e:
+            last_err = e
+            with _claude_lock:
+                _claude_active = False
+            continue
+        finally:
+            with _claude_lock:
+                _claude_active = False
 
-    if result.returncode != 0:
-        raise RuntimeError(f"Claude agent failed: {result.stderr[:500]}")
+        if result.returncode != 0:
+            raise RuntimeError(f"Claude agent failed: {result.stderr[:500]}")
 
-    return result.stdout
+        return result.stdout
+
+    raise subprocess.TimeoutExpired(cmd, timeout) from last_err
 
 
 _DURATION_PRESETS = {
@@ -445,7 +465,8 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
                     target_duration: int = 60, channel_format: str = "single",
                     script_rules: str = "", roundup_rules: str = "",
                     slide_density: str = "normal",
-                    has_outro: bool = False) -> dict:
+                    has_outro: bool = False,
+                    use_subagent: bool = False) -> dict:
     """Claude CLI로 뉴스 검색 + script_json 생성."""
     schema = _build_script_schema(target_duration, channel_format=channel_format,
                                   script_rules=script_rules, roundup_rules=roundup_rules,
@@ -487,12 +508,30 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
 - WebFetch는 정확한 수치/통계 확인이 필요할 때만, 최대 1~2회
 - 검색은 2~3회 이내로 완료할 것
 
+### ★ 날짜 엄격 규칙 (필수)
+- 오늘 날짜는 {date_str}이다. 반드시 오늘({date_str}) 또는 어제 게시된 기사만 사용하라.
+- 2일 이상 지난 기사는 절대 사용 금지. 검색 결과에 오래된 기사만 나오면 해당 주제를 스킵하라.
+- news_date 필드에는 실제 참조한 기사의 게시 날짜를 정확히 기입하라 (거짓 날짜 금지).
+- 대본(sentences)에 날짜를 언급할 때도 실제 기사 날짜와 일치해야 한다.
+
 {schema}
 
 brand 값은 "{brand}"로 설정해.
 """
 
-    raw = _run_claude(prompt, timeout=600, model="claude-sonnet-4-6")
+    # 서브에이전트 사용 시 병렬 검색 지시 추가
+    if use_subagent:
+        prompt += """
+
+### ★ 서브에이전트 병렬 처리 규칙
+- Agent 도구를 사용하여 각 주제의 뉴스 검색을 병렬로 수행하라.
+- 각 서브에이전트에게 하나의 주제에 대한 웹 검색과 핵심 팩트 수집을 맡겨라.
+- 모든 서브에이전트 결과를 수집한 후 최종 script_json을 생성하라.
+- 서브에이전트에게는 WebSearch, WebFetch 도구만 사용하도록 지시하라.
+"""
+
+    raw = _run_claude(prompt, timeout=900, model="claude-sonnet-4-6",
+                      retries=1, use_subagent=use_subagent)
     script = _parse_response(raw, brand)
 
     # 날짜 검증: 오래된 뉴스 차단
@@ -510,7 +549,7 @@ brand 값은 "{brand}"로 설정해.
         except ValueError:
             print(f"[날짜 검증] news_date 파싱 실패, 스킵: {news_date_str}")
     else:
-        print("[날짜 검증] news_date 필드 없음, 스킵")
+        print("[날짜 검증] news_date 필드 없음 — 경고")
 
     return script
 
@@ -752,7 +791,8 @@ def generate_image_prompts(topic: str, slides: list[dict],
                            image_style: str = "mixed",
                            scene_references: str = "",
                            bg_display_mode: str = "zone",
-                           sentences: list[dict] | None = None) -> list[str]:
+                           sentences: list[dict] | None = None,
+                           bg_media_type: str = "video") -> list[str]:
     """대본의 슬라이드 정보로 이미지 생성 프롬프트(영어) 생성.
 
     SD 모델은 영어 프롬프트만 이해하므로 반드시 영어로 출력.
@@ -773,7 +813,7 @@ def generate_image_prompts(topic: str, slides: list[dict],
         clean_main = (s.get("main", "")).replace("<span class=\"hl\">", "").replace("</span>", "")
         bg_type = s.get("bg_type", "photo")
         est_dur = slide_durations.get(i, 5.0)
-        need_two = est_dur > 6.0
+        need_two = (bg_media_type == "video") and (est_dur > 6.0)
         count_label = " [×2 prompts — 나레이션 길어서 배경 2개 필요]" if need_two else ""
         slide_descs.append(f"Slide {i+1}: [bg_type={bg_type}] [{s.get('category', '')}] {clean_main} — {s.get('sub', '')} (~{est_dur:.0f}s){count_label}")
         prompt_count += 2 if need_two else 1
@@ -822,7 +862,7 @@ Output ONLY a JSON array with exactly {prompt_count} items, no other text:
         if s.get("bg_type") == "closing":
             continue
         est_dur = slide_durations.get(i, 5.0)
-        need_two = est_dur > 6.0
+        need_two = (bg_media_type == "video") and (est_dur > 6.0)
         slide_prompt_map.append((i, need_two))
 
     raw = _run_claude(prompt, timeout=120, use_web=False,
