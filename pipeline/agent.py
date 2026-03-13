@@ -825,7 +825,7 @@ Output ONLY a JSON array with exactly {prompt_count} items, no other text:
         need_two = est_dur > 6.0
         slide_prompt_map.append((i, need_two))
 
-    raw = _run_claude(prompt, timeout=60, use_web=False,
+    raw = _run_claude(prompt, timeout=120, use_web=False,
                       model="claude-opus-4-6")
 
     try:

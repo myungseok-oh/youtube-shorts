@@ -445,6 +445,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                [json.dumps(meta, ensure_ascii=False), _now(), job_id])
                 else:
                     # 슬라이드에 프롬프트 없음 → Phase A에서 생성한 meta_json 프롬프트 사용
+                    image_prompts = []
                     existing_meta = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
                     if existing_meta and existing_meta.get("meta_json"):
                         try:
@@ -454,12 +455,40 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 print(f"[runner] Phase A 프롬프트 사용 ({len(image_prompts)}개)")
                             else:
                                 image_prompts = []
-                                print("[runner] image_prompt 없음 — 배경 생성 스킵")
                         except (json.JSONDecodeError, TypeError):
                             image_prompts = []
-                    else:
-                        image_prompts = []
-                        print("[runner] image_prompt 없음 — 배경 생성 스킵")
+
+                    # Phase A에서 프롬프트 생성 실패 → Phase B에서 재생성
+                    if not image_prompts or not any(_prompt_en(p) for p in image_prompts):
+                        print("[runner] image_prompt 없음 - Phase B에서 재생성 시도")
+                        try:
+                            bg_display_mode_b = ch_config_b.get("bg_display_mode", "zone")
+                            image_prompts = generate_image_prompts(
+                                topic, slides_data,
+                                prompt_style=image_prompt_style_b,
+                                layout=slide_layout_b,
+                                image_style=image_style_b,
+                                scene_references=image_scene_references_b,
+                                bg_display_mode=bg_display_mode_b,
+                                sentences=sentences,
+                            )
+                            if image_prompts and any(_prompt_en(p) for p in image_prompts):
+                                print(f"[runner] Phase B 프롬프트 재생성 성공 ({len(image_prompts)}개)")
+                                meta = {}
+                                if existing_meta and existing_meta.get("meta_json"):
+                                    try:
+                                        meta = json.loads(existing_meta["meta_json"])
+                                    except (json.JSONDecodeError, TypeError):
+                                        pass
+                                meta["image_prompts"] = image_prompts
+                                db.execute("UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
+                                           [json.dumps(meta, ensure_ascii=False), _now(), job_id])
+                            else:
+                                image_prompts = []
+                                print("[runner] Phase B 프롬프트 재생성도 빈 결과")
+                        except Exception as regen_err:
+                            print(f"[runner] Phase B 프롬프트 재생성 실패: {regen_err}")
+                            image_prompts = []
 
                     if auto_bg_source == "gemini":
                         gemini_key = ch_config_b.get("gemini_api_key", "")
