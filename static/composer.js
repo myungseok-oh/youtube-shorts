@@ -273,13 +273,20 @@ function renderPreview() {
   const fontFamily = ovr.fontFamily || 'Noto Sans KR';
   const bgOpacity = ovr.bgOpacity !== undefined ? ovr.bgOpacity / 100 : 0.4;
 
+  const ovrRot = ovr.rotation || 0;
   const overlayHtml = `
-    <div id="text-overlay-drag" class="text-overlay-drag ${isHidden ? 'overlay-hidden' : ''}"
-         style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif;"
+    <div id="text-overlay-drag" class="comp-element-box ${isHidden ? 'overlay-hidden' : ''}"
+         style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif; z-index:20; transform:translate(-50%,-50%) rotate(${ovrRot}deg); text-align:center;"
          onmousedown="startOverlayDrag(event)">
       <div class="overlay-main" style="font-size:${mainSize}px; color:${mainColor};">${mainText}</div>
       ${subText ? `<div class="overlay-sub" style="font-size:${subSize}px; color:${subColor};">${subText}</div>` : ""}
-      ${!isHidden ? `<div class="overlay-resize-handle" onmousedown="startOverlayResize(event)"></div>` : ''}
+      ${!isHidden ? `
+        <div class="el-rotate" onmousedown="startOverlayRotate(event)">↻</div>
+        <div class="el-resize el-r-tl" onmousedown="startOverlayResize(event)"></div>
+        <div class="el-resize el-r-tr" onmousedown="startOverlayResize(event)"></div>
+        <div class="el-resize el-r-bl" onmousedown="startOverlayResize(event)"></div>
+        <div class="el-resize el-r-br" onmousedown="startOverlayResize(event)"></div>
+      ` : ''}
     </div>
   `;
 
@@ -342,9 +349,9 @@ function renderPreview() {
   container.innerHTML = `
     <div class="preview-canvas">
       ${bgHtml || '<div class="preview-bg-fallback"></div>'}
-      ${overlayHtml}
-      ${freeTextHtml}
       ${elemHtml}
+      ${freeTextHtml}
+      ${overlayHtml}
       <div class="preview-slide-num">${sl.num}/${composerData.slides.length}</div>
       ${isHidden ? '<div class="preview-hidden-badge">오버레이 숨김</div>' : ''}
     </div>
@@ -389,49 +396,76 @@ function startOverlayDrag(e) {
   document.addEventListener("mouseup", onUp);
 }
 
+function startOverlayRotate(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const sl = getSelectedSlide();
+  if (!sl) return;
+  const overlay = document.getElementById("text-overlay-drag");
+  if (!overlay) return;
+  const rect = overlay.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const ovr = getOverride(sl.num);
+  const startAngle = Math.atan2(e.clientY - cy, e.clientX - cx) * 180 / Math.PI;
+  const origRot = ovr.rotation || 0;
+
+  function onMove(e2) {
+    const angle = Math.atan2(e2.clientY - cy, e2.clientX - cx) * 180 / Math.PI;
+    const newRot = Math.round(origRot + angle - startAngle);
+    setOverride(sl.num, "rotation", newRot);
+    overlay.style.transform = `translate(-50%,-50%) rotate(${newRot}deg)`;
+  }
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    renderPreview();
+  }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
 function startOverlayResize(e) {
   e.preventDefault();
   e.stopPropagation();
   const sl = getSelectedSlide();
   if (!sl) return;
-
   const ovr = getOverride(sl.num);
   const overlay = document.getElementById("text-overlay-drag");
   if (!overlay) return;
 
-  const startX = e.clientX, startY = e.clientY;
-  const origW = parseFloat(overlay.style.width) || 300;
+  const rect = overlay.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const startDist = Math.hypot(e.clientX - cx, e.clientY - cy);
+  const origW = ovr.maxWidth || 1000;
   const origMainSize = ovr.mainSize || 100;
   const origSubSize = ovr.subSize || 52;
 
   function onMove(e2) {
-    const dx = e2.clientX - startX;
-    const dy = e2.clientY - startY;
+    const dist = Math.hypot(e2.clientX - cx, e2.clientY - cy);
+    const scale = dist / (startDist || 1);
 
-    // 너비 조절
-    const newW = Math.max(100 * SCALE, origW + dx);
-    overlay.style.width = `${newW}px`;
-    setOverride(sl.num, "maxWidth", Math.round(newW / SCALE));
+    const newW = Math.max(200, Math.round(origW * scale));
+    setOverride(sl.num, "maxWidth", newW);
+    overlay.style.width = `${newW * SCALE}px`;
 
-    // 높이 방향 → 글자 크기 비례 조절
-    if (Math.abs(dy) > 2) {
-      const sizeScale = 1 + dy / 300;
-      const newMain = Math.round(Math.max(24, Math.min(200, origMainSize * sizeScale)));
-      const newSub = Math.round(Math.max(16, Math.min(120, origSubSize * sizeScale)));
-      setOverride(sl.num, "mainSize", newMain);
-      setOverride(sl.num, "subSize", newSub);
+    const newMain = Math.round(Math.max(24, Math.min(200, origMainSize * scale)));
+    const newSub = Math.round(Math.max(16, Math.min(120, origSubSize * scale)));
+    setOverride(sl.num, "mainSize", newMain);
+    setOverride(sl.num, "subSize", newSub);
 
-      const mainEl = overlay.querySelector(".overlay-main");
-      const subEl = overlay.querySelector(".overlay-sub");
-      if (mainEl) mainEl.style.fontSize = `${newMain * SCALE}px`;
-      if (subEl) subEl.style.fontSize = `${newSub * SCALE}px`;
-    }
+    const mainEl = overlay.querySelector(".overlay-main");
+    const subEl = overlay.querySelector(".overlay-sub");
+    if (mainEl) mainEl.style.fontSize = `${newMain * SCALE}px`;
+    if (subEl) subEl.style.fontSize = `${newSub * SCALE}px`;
   }
 
   function onUp() {
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
-    renderProps();
+    renderPreview();
+    if (_activeTab === 'text') renderTabText();
   }
 
   document.addEventListener("mousemove", onMove);

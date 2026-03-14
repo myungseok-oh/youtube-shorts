@@ -529,22 +529,14 @@
   pointer-events: none;
 }
 
-.text-overlay-drag {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  cursor: move;
-  user-select: none;
-  z-index: 10;
+.overlay-box {
   text-align: center;
   padding: 6px 10px;
-  border: 1px dashed transparent;
   border-radius: 6px;
-  transition: border-color 0.15s;
 }
-.text-overlay-drag:hover { border-color: rgba(99,102,241,0.5); }
-.text-overlay-drag.overlay-hidden {
-  cursor: default;
-  border-color: rgba(99,102,241,0.2);
+.overlay-hidden {
+  cursor: default !important;
+  border-color: rgba(99,102,241,0.2) !important;
 }
 .overlay-main {
   font-weight: 900;
@@ -565,7 +557,7 @@
   position: absolute;
   cursor: move;
   user-select: none;
-  z-index: 12;
+  z-index: 10;
   font-weight: 700;
   text-shadow: 0 2px 6px rgba(0,0,0,0.8);
   border: 1px dashed transparent;
@@ -633,19 +625,6 @@
   background: #32354a;
 }
 
-.overlay-resize-handle {
-  position: absolute;
-  right: -5px; bottom: -5px;
-  width: 12px; height: 12px;
-  background: #6366f1;
-  border: 2px solid #4f46e5;
-  border-radius: 50%;
-  cursor: se-resize;
-  z-index: 20;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-.text-overlay-drag:hover .overlay-resize-handle { opacity: 1; }
 
 /* ─── Narration sentence list ─── */
 .narr-sentence {
