@@ -784,16 +784,15 @@ def generate_image_prompts(topic: str, slides: list[dict],
     auto_bg_source: 배경 소스 (gemini/sd_image/sd_video/openverse) — auto 모드에서 참조
     웹 검색 불필요 — 빠르게 완료됨.
     """
-    # auto 모드: 배경 소스에 따라 전략 결정
+    # 배경 소스에 따라 전략 결정
     _first_slide_single = first_slide_single_bg
     _effective_type = bg_media_type
     if bg_media_type == "auto":
         if auto_bg_source in ("sd_video",):
             _effective_type = "timed"  # 영상 → 시간 기준 교체
-        elif auto_bg_source == "gemini":
-            _effective_type = "mixed"  # Gemini: 이미지+영상 혼합 (슬라이드당 2~3개)
         else:
             _effective_type = "per-sentence"  # 이미지 → 문장별 교체
+    # mixed, single, per-sentence, timed → 채널 config에서 직접 선택
 
     # 슬라이드별 나레이션 길이 추정
     _sents = sentences or []
