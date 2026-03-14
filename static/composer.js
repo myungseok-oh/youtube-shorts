@@ -284,7 +284,6 @@ function renderPreview() {
   container.innerHTML = `
     <div class="preview-canvas">
       ${bgHtml || '<div class="preview-bg-fallback"></div>'}
-      <div class="preview-dim"></div>
       ${overlayHtml}
       <div class="preview-slide-num">${sl.num}/${composerData.slides.length}</div>
       ${isHidden ? '<div class="preview-hidden-badge">오버레이 숨김</div>' : ''}
