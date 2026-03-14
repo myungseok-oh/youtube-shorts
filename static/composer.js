@@ -52,8 +52,12 @@ function renderTimeline() {
     block.draggable = true;
     block.dataset.idx = idx;
     block.dataset.slideNum = sl.num;
-    block.style.minWidth = "80px";
-    block.style.flex = `${Math.max(dur, 1)} 0 0`;
+    const totalDurAll = getTotalDuration() || 1;
+    const pct = (dur / totalDurAll) * 100;
+    block.style.width = `${pct}%`;
+    block.style.minWidth = "40px";
+    block.style.flexShrink = "0";
+    block.style.flexGrow = "0";
 
     // 프레임 스트립: 배경 이미지를 반복 배치
     let framesHtml = "";
@@ -121,32 +125,82 @@ function renderRuler() {
   const ruler = document.getElementById("timeline-ruler");
   if (!ruler) return;
   const total = getTotalDuration() || 1;
-  const steps = Math.ceil(total);
+  const interval = total <= 10 ? 1 : total <= 30 ? 2 : total <= 60 ? 5 : 10;
   let html = "";
-  for (let s = 0; s <= steps; s += Math.max(1, Math.floor(steps / 10))) {
+  for (let s = 0; s <= total; s += interval) {
     const pct = (s / total) * 100;
-    const min = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    html += `<span class="ruler-mark" style="left:${pct}%;">${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')}</span>`;
+    html += `<span class="ruler-mark" style="left:${pct}%;">${_fmtDur(s)}</span>`;
   }
   ruler.innerHTML = html;
-  ruler.onclick = (e) => {
-    const rect = ruler.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    _playheadPos = pct;
-    updatePlayhead();
-  };
 }
 
 let _playheadPos = 0;
+let _isDraggingPlayhead = false;
 
 function updatePlayhead() {
   const ph = document.getElementById("timeline-playhead");
   if (!ph) return;
-  const labelW = 48;
-  const timeline = document.getElementById("timeline");
-  const trackW = timeline.clientWidth - labelW;
-  ph.style.left = `${labelW + _playheadPos * trackW}px`;
+  const trackArea = document.getElementById("timeline-tracks");
+  if (!trackArea) return;
+  const w = trackArea.clientWidth;
+  ph.style.left = `${_playheadPos * w}px`;
+}
+
+function onTimelineMouseDown(e) {
+  const trackArea = document.getElementById("timeline-tracks");
+  if (!trackArea) return;
+  const rect = trackArea.getBoundingClientRect();
+
+  function posFromEvent(ev) {
+    return Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+  }
+
+  _playheadPos = posFromEvent(e);
+  updatePlayhead();
+  _isDraggingPlayhead = true;
+
+  // 재생 중이면 해당 시간으로 이동
+  if (_previewing) {
+    const total = getTotalDuration() || 1;
+    _previewStartTime = performance.now() - _playheadPos * total * 1000;
+    _previewAudioPlayed = new Set();
+    _previewSlideIdx = -1;
+    if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
+  }
+
+  function onMove(ev) {
+    _playheadPos = posFromEvent(ev);
+    updatePlayhead();
+    if (_previewing) {
+      const total = getTotalDuration() || 1;
+      _previewStartTime = performance.now() - _playheadPos * total * 1000;
+      _previewAudioPlayed = new Set();
+      _previewSlideIdx = -1;
+      if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
+    }
+    // 비 재생 중이면 해당 슬라이드 선택
+    if (!_previewing) {
+      const total = getTotalDuration() || 1;
+      const t = _playheadPos * total;
+      _buildSlideTimeMap();
+      for (let i = 0; i < _slideTimeMap.length; i++) {
+        if (t >= _slideTimeMap[i].start && t < _slideTimeMap[i].end) {
+          const slideIdx = composeState.slide_order.indexOf(_slideTimeMap[i].num);
+          if (slideIdx >= 0 && slideIdx !== selectedSlide) selectSlide(slideIdx);
+          break;
+        }
+      }
+    }
+  }
+
+  function onUp() {
+    _isDraggingPlayhead = false;
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  }
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
 }
 
 function selectSlide(idx) {
@@ -708,13 +762,6 @@ function _previewTick() {
   const pos = elapsed / total;
   _playheadPos = pos;
   updatePlayhead();
-
-  // 타임라인 자동 스크롤
-  const slideTrack = document.getElementById("slide-track");
-  if (slideTrack && slideTrack.scrollWidth > slideTrack.clientWidth) {
-    const scrollTarget = pos * slideTrack.scrollWidth - slideTrack.clientWidth / 2;
-    slideTrack.scrollLeft = Math.max(0, scrollTarget);
-  }
 
   // 상태 표시
   const statusEl = document.getElementById("audio-status");

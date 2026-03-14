@@ -80,27 +80,25 @@
 
   <!-- Timeline (Bottom) -->
   <div id="timeline" class="comp-timeline">
-    <!-- 플레이헤드 -->
-    <div id="timeline-playhead" class="comp-playhead"></div>
-    <!-- 타임라인 눈금 -->
-    <div id="timeline-ruler" class="comp-timeline-ruler"></div>
-    <!-- 슬라이드 트랙 -->
-    <div class="comp-track track-slides">
-      <div class="comp-track-label">슬라이드</div>
-      <div id="slide-track" class="comp-track-body"></div>
-    </div>
-    <!-- SFX 트랙 -->
-    <div class="comp-track track-sfx">
-      <div class="comp-track-label">SFX</div>
-      <div id="timeline-sfx" class="comp-track-body comp-track-drop">
-        <div id="sfx-markers" class="absolute inset-0"></div>
+    <div class="comp-timeline-inner">
+      <!-- 라벨 칼럼 -->
+      <div class="comp-track-labels">
+        <div class="comp-tl-corner"></div>
+        <div class="comp-track-label tl-slides">슬라이드</div>
+        <div class="comp-track-label tl-sfx">SFX</div>
+        <div class="comp-track-label tl-bgm">BGM</div>
       </div>
-    </div>
-    <!-- BGM 트랙 -->
-    <div class="comp-track track-bgm">
-      <div class="comp-track-label">BGM</div>
-      <div id="timeline-bgm" class="comp-track-body comp-track-drop">
-        <div id="bgm-bar-container" class="absolute inset-0"></div>
+      <!-- 트랙 영역 (플레이헤드 포함) -->
+      <div id="timeline-tracks" class="comp-track-area" onmousedown="onTimelineMouseDown(event)">
+        <div id="timeline-playhead" class="comp-playhead"></div>
+        <div id="timeline-ruler" class="comp-timeline-ruler"></div>
+        <div id="slide-track" class="comp-track-row tl-slides"></div>
+        <div id="timeline-sfx" class="comp-track-row tl-sfx comp-track-drop">
+          <div id="sfx-markers" class="absolute inset-0"></div>
+        </div>
+        <div id="timeline-bgm" class="comp-track-row tl-bgm comp-track-drop">
+          <div id="bgm-bar-container" class="absolute inset-0"></div>
+        </div>
       </div>
     </div>
   </div>

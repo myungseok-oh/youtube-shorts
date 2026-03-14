@@ -266,10 +266,45 @@
   background: #1a1c24;
   border-top: 1px solid #2a2d38;
   flex-shrink: 0;
+  overflow: hidden;
+}
+.comp-timeline-inner {
+  display: flex;
+  height: 100%;
+}
+
+/* 라벨 칼럼 */
+.comp-track-labels {
+  width: 48px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  background: #1e2028;
+  border-right: 1px solid #2a2d38;
+}
+.comp-tl-corner {
+  height: 22px;
+  border-bottom: 1px solid #2a2d38;
+}
+.comp-track-label {
+  font-size: 8px;
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.comp-track-label.tl-slides { flex: 3; }
+.comp-track-label.tl-sfx { flex: 1; border-top: 1px solid #22242e; }
+.comp-track-label.tl-bgm { flex: 1; border-top: 1px solid #22242e; }
+
+/* 트랙 영역 (플레이헤드 포함) */
+.comp-track-area {
+  flex: 1;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  user-select: none;
 }
 
 /* Playhead */
@@ -280,27 +315,27 @@
   background: #f97316;
   z-index: 30;
   pointer-events: none;
-  left: 48px;
+  left: 0;
+  transition: none;
 }
 .comp-playhead::before {
   content: "";
   position: absolute;
-  top: -2px;
+  top: -1px;
   left: -6px;
   width: 0; height: 0;
   border-left: 7px solid transparent;
   border-right: 7px solid transparent;
   border-top: 8px solid #f97316;
 }
+
+/* 눈금 */
 .comp-timeline-ruler {
   height: 22px;
   background: #1e2028;
   border-bottom: 1px solid #2a2d38;
-  margin-left: 48px;
-  flex-shrink: 0;
   position: relative;
-  cursor: pointer;
-  user-select: none;
+  flex-shrink: 0;
 }
 .ruler-mark {
   position: absolute;
@@ -320,41 +355,21 @@
   height: 4px;
   background: #3a3d48;
 }
-.comp-track {
-  display: flex;
-  min-height: 28px;
-}
-.comp-track.track-slides {
-  flex: 3;
-}
-.comp-track.track-sfx,
-.comp-track.track-bgm {
-  flex: 1;
-}
-.comp-track-label {
-  width: 48px;
-  font-size: 8px;
-  color: #6b7280;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-right: 1px solid #2a2d38;
-  flex-shrink: 0;
-  background: #1e2028;
-}
-.comp-track-body {
-  flex: 1;
+
+/* 트랙 행 */
+.comp-track-row {
   position: relative;
   display: flex;
   gap: 1px;
   align-items: stretch;
-  overflow-x: auto;
-  overflow-y: hidden;
   padding: 2px;
 }
+.comp-track-row.tl-slides { flex: 3; }
+.comp-track-row.tl-sfx { flex: 1; border-top: 1px solid #22242e; }
+.comp-track-row.tl-bgm { flex: 1; border-top: 1px solid #22242e; }
+
 .comp-track-drop {
   background: #1a1c24;
-  border-bottom: 1px solid #22242e;
 }
 .comp-track-drop.sfx-drag-hover {
   background: rgba(99,102,241,0.08) !important;
