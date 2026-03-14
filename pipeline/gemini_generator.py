@@ -132,7 +132,21 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
         if operation.response and operation.response.generated_videos:
             video = operation.response.generated_videos[0]
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-            video.video.save(output_path)
+            # 리모트 영상 → 파일 다운로드
+            try:
+                video.video.save(output_path)
+            except Exception:
+                # save 미지원 시 uri에서 직접 다운로드
+                uri = video.video.uri
+                if uri:
+                    import urllib.request
+                    urllib.request.urlretrieve(uri, output_path)
+                elif hasattr(video.video, 'video_bytes') and video.video.video_bytes:
+                    with open(output_path, "wb") as f:
+                        f.write(video.video.video_bytes)
+                else:
+                    print(f"[gemini] cannot save video: no uri or bytes")
+                    return False
             print(f"[gemini] video saved: {os.path.basename(output_path)} "
                   f"(model={VIDEO_MODEL}, {elapsed}s)")
             return True
