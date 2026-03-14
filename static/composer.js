@@ -636,11 +636,29 @@ async function uploadSlideAudio(slideNum, input) {
 
 // ─── Audio Playback ───
 
-function previewAudio(path) {
-  stopAllAudio();
+let _previewAudioPath = null;
+
+function previewAudio(path, btnEl) {
+  // 같은 파일 재클릭 → 정지
+  if (_playingAudio && _previewAudioPath === path && !_playingAudio.paused) {
+    _playingAudio.pause();
+    _playingAudio.currentTime = 0;
+    _playingAudio = null;
+    _previewAudioPath = null;
+    if (btnEl) btnEl.textContent = '▶';
+    return;
+  }
+  // 다른 파일 또는 새로 재생
+  if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
+  _previewAudioPath = path;
   _playingAudio = new Audio(path);
   _playingAudio.play().catch(() => {});
-  _playingAudio.addEventListener("ended", () => { _playingAudio = null; });
+  if (btnEl) btnEl.textContent = '■';
+  _playingAudio.addEventListener("ended", () => {
+    _playingAudio = null;
+    _previewAudioPath = null;
+    if (btnEl) btnEl.textContent = '▶';
+  });
 }
 
 let _previewing = false;
@@ -985,7 +1003,7 @@ function renderTabSfx() {
   html += `<div class="comp-tab-subtitle">타임라인에 드래그하세요</div>`;
   (composerData.sfx_list || []).forEach(s => {
     html += `<div class="audio-item" draggable="true" ondragstart="onSfxDragStart(event, '${s.file}')">
-      <button class="audio-play-btn" onclick="previewAudio('${s.path}')">&#9654;</button>
+      <button class="audio-play-btn" onclick="previewAudio('${s.path}', this)">&#9654;</button>
       <span class="flex-1 truncate">${s.file.replace(/\.[^.]+$/, '')}</span>
       <span style="font-size:9px;color:#6b7280;">${s.duration.toFixed(1)}s</span>
     </div>`;
@@ -1004,7 +1022,7 @@ function renderTabBgm() {
   (composerData.bgm_list || []).forEach(s => {
     const isActive = composeState.bgm && composeState.bgm.file === s.file;
     html += `<div class="audio-item ${isActive ? 'bgm-active' : ''}">
-      <button class="audio-play-btn" onclick="previewAudio('${s.path}')">&#9654;</button>
+      <button class="audio-play-btn" onclick="previewAudio('${s.path}', this)">&#9654;</button>
       <span class="flex-1 truncate">${s.file.replace(/\.[^.]+$/, '')}</span>
       <span style="font-size:9px;color:#6b7280;">${s.duration ? (s.duration > 60 ? Math.floor(s.duration/60)+'m' : s.duration.toFixed(0)+'s') : ''}</span>
       <button class="audio-apply-btn ${isActive ? 'applied' : ''}" onclick="applyBgm('${_esc(s.file)}', '${_esc(s.path)}', ${s.duration || 0})">${isActive ? '적용됨' : '적용'}</button>
@@ -1290,7 +1308,7 @@ function renderTabNarration() {
       html += `<div class="narr-sentence">
         <span class="narr-idx">${si + 1}</span>
         <span class="narr-text" title="${_esc(sen.text)}">${_esc(sen.text)}</span>
-        ${audioInfo ? `<button class="narr-play" onclick="previewAudio('${audioInfo.path}')">&#9654; ${audioInfo.duration.toFixed(1)}s</button>` : `<span style="font-size:8px;color:#f97316;">미생성</span>`}
+        ${audioInfo ? `<button class="narr-play" onclick="previewAudio('${audioInfo.path}', this)">&#9654; ${audioInfo.duration.toFixed(1)}s</button>` : `<span style="font-size:8px;color:#f97316;">미생성</span>`}
       </div>`;
     });
   }
