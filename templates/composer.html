@@ -42,6 +42,10 @@
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
         <span>배경음</span>
       </button>
+      <button class="comp-icon-tab" data-tab="elements" onclick="switchTab('elements')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span>요소</span>
+      </button>
       <button class="comp-icon-tab" data-tab="text" onclick="switchTab('text')">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>
         <span>텍스트</span>
@@ -55,6 +59,7 @@
     <!-- Tab Panel -->
     <div class="comp-tab-panel" id="tab-panel">
       <div id="tab-media" class="comp-tab-content active"></div>
+      <div id="tab-elements" class="comp-tab-content"></div>
       <div id="tab-sfx" class="comp-tab-content"></div>
       <div id="tab-bgm" class="comp-tab-content"></div>
       <div id="tab-text" class="comp-tab-content"></div>

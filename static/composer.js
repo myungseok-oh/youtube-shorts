@@ -283,18 +283,60 @@ function renderPreview() {
     </div>
   `;
 
-  // 자유 텍스트
+  // 자유 텍스트 (회전 + 4코너 리사이즈)
   const freeTexts = (composeState.freeTexts || []).filter(ft => ft.slideNum === sl.num);
   let freeTextHtml = "";
-  freeTexts.forEach((ft, fi) => {
+  freeTexts.forEach((ft) => {
     const ftIdx = (composeState.freeTexts || []).indexOf(ft);
     const ftX = (ft.x || 540) * SCALE;
     const ftY = (ft.y || 960) * SCALE;
     const ftSize = (ft.size || 48) * SCALE;
     const ftFont = ft.fontFamily || 'Noto Sans KR';
-    freeTextHtml += `<div class="free-text-drag" data-ft-idx="${ftIdx}"
-      style="left:${ftX}px;top:${ftY}px;font-size:${ftSize}px;color:${ft.color || '#ffffff'};font-family:'${ftFont}',sans-serif;"
-      onmousedown="startFreeTextDrag(event, ${ftIdx})">${_esc(ft.text)}<div class="free-text-resize" onmousedown="startFreeTextResize(event, ${ftIdx})"></div></div>`;
+    const ftRot = ft.rotation || 0;
+    freeTextHtml += `<div class="comp-element-box" data-ft-idx="${ftIdx}"
+      style="left:${ftX}px;top:${ftY}px;font-size:${ftSize}px;color:${ft.color || '#ffffff'};font-family:'${ftFont}',sans-serif;transform:translate(-50%,-50%) rotate(${ftRot}deg);"
+      onmousedown="startFreeTextDrag(event, ${ftIdx})">${_esc(ft.text)}
+      <div class="el-rotate" onmousedown="startElementRotate(event, 'freeText', ${ftIdx})">↻</div>
+      <div class="el-resize el-r-tl" onmousedown="startFreeTextResize(event, ${ftIdx})"></div>
+      <div class="el-resize el-r-tr" onmousedown="startFreeTextResize(event, ${ftIdx})"></div>
+      <div class="el-resize el-r-bl" onmousedown="startFreeTextResize(event, ${ftIdx})"></div>
+      <div class="el-resize el-r-br" onmousedown="startFreeTextResize(event, ${ftIdx})"></div>
+    </div>`;
+  });
+
+  // 요소 (말풍선/이미지)
+  const elements = (composeState.elements || []).filter(e => e.slideNum === sl.num);
+  let elemHtml = "";
+  elements.forEach((elem) => {
+    const eIdx = composeState.elements.indexOf(elem);
+    const eX = (elem.x || 540) * SCALE;
+    const eY = (elem.y || 500) * SCALE;
+    const eW = (elem.width || 300) * SCALE;
+    const eH = (elem.height || 250) * SCALE;
+    const eRot = elem.rotation || 0;
+
+    let inner = "";
+    if (elem.type === "bubble") {
+      const bSvg = BUBBLE_SVGS[elem.bubbleIdx]?.svg || '';
+      const fillSvg = bSvg.replace(/fill="white"/g, `fill="${elem.fillColor || '#ffffff'}"`);
+      inner = `<svg viewBox="0 0 100 95" width="100%" height="100%" style="position:absolute;inset:0;">${fillSvg}</svg>`;
+      if (elem.text) {
+        inner += `<div style="position:absolute;inset:10%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:${(elem.textSize||36)*SCALE}px;color:${elem.textColor||'#000'};font-weight:700;word-break:keep-all;line-height:1.2;z-index:2;">${_esc(elem.text)}</div>`;
+      }
+    } else if (elem.type === "image") {
+      inner = `<img src="${elem.dataUrl}" style="width:100%;height:100%;object-fit:contain;" draggable="false">`;
+    }
+
+    elemHtml += `<div class="comp-element-box" data-el-idx="${eIdx}"
+      style="left:${eX}px;top:${eY}px;width:${eW}px;height:${eH}px;transform:translate(-50%,-50%) rotate(${eRot}deg);"
+      onmousedown="startElementDrag(event, ${eIdx})">
+      ${inner}
+      <div class="el-rotate" onmousedown="startElementRotate(event, 'element', ${eIdx})">↻</div>
+      <div class="el-resize el-r-tl" onmousedown="startElementResize(event, ${eIdx})"></div>
+      <div class="el-resize el-r-tr" onmousedown="startElementResize(event, ${eIdx})"></div>
+      <div class="el-resize el-r-bl" onmousedown="startElementResize(event, ${eIdx})"></div>
+      <div class="el-resize el-r-br" onmousedown="startElementResize(event, ${eIdx})"></div>
+    </div>`;
   });
 
   container.innerHTML = `
@@ -302,6 +344,7 @@ function renderPreview() {
       ${bgHtml || '<div class="preview-bg-fallback"></div>'}
       ${overlayHtml}
       ${freeTextHtml}
+      ${elemHtml}
       <div class="preview-slide-num">${sl.num}/${composerData.slides.length}</div>
       ${isHidden ? '<div class="preview-hidden-badge">오버레이 숨김</div>' : ''}
     </div>
@@ -847,6 +890,7 @@ function switchTab(tab) {
   if (tab === 'bgm') renderTabBgm();
   if (tab === 'sfx') renderTabSfx();
   if (tab === 'media') renderTabMedia();
+  if (tab === 'elements') renderTabElements();
 }
 
 // ─── Tab: Media ───
@@ -948,6 +992,116 @@ function renderTabBgm() {
     html += `<div style="font-size:10px;color:#4b5563;padding:12px;">data/bgm/ 폴더에 배경음을 추가하세요</div>`;
   }
   el.innerHTML = html;
+}
+
+// ─── Tab: Elements (요소 — 말풍선/이미지) ───
+
+const BUBBLE_SVGS = [
+  { name:"둥근말풍선", svg:`<path d="M50,5C25,5,5,22,5,43c0,13,8,24,20,31l-5,16,18-12c4,1,8,1,12,1,25,0,45-17,45-38S75,5,50,5Z" fill="white"/>` },
+  { name:"구름말풍선", svg:`<path d="M25,70c-3,8-10,14-10,14s12-2,18-6c5,2,11,3,17,3c22,0,40-15,40-33S72,15,50,15S10,30,10,48c0,9,5,17,15,22Z" fill="white"/><circle cx="12" cy="78" r="4" fill="white"/><circle cx="6" cy="86" r="2.5" fill="white"/>` },
+  { name:"사각말풍선", svg:`<rect x="5" y="5" width="90" height="60" rx="8" fill="white"/><polygon points="20,65 30,65 15,85" fill="white"/>` },
+  { name:"둥근사각", svg:`<rect x="5" y="10" width="90" height="55" rx="20" fill="white"/><polygon points="50,65 60,65 55,80" fill="white"/>` },
+  { name:"생각풍선", svg:`<ellipse cx="50" cy="38" rx="40" ry="28" fill="white"/><ellipse cx="28" cy="30" rx="18" ry="14" fill="white"/><ellipse cx="72" cy="32" rx="16" ry="12" fill="white"/><ellipse cx="50" cy="18" rx="22" ry="12" fill="white"/><circle cx="22" cy="72" r="6" fill="white"/><circle cx="14" cy="82" r="4" fill="white"/><circle cx="8" cy="88" r="2.5" fill="white"/>` },
+  { name:"외침풍선", svg:`<polygon points="50,2 58,28 95,28 64,46 75,78 50,56 25,78 36,46 5,28 42,28" fill="white"/>` },
+  { name:"타원말풍선", svg:`<ellipse cx="50" cy="40" rx="44" ry="32" fill="white"/><polygon points="35,68 45,68 25,90" fill="white"/>` },
+  { name:"물결말풍선", svg:`<path d="M15,15 Q5,15 5,25 Q5,60 5,60 Q5,70 15,70 L25,70 L15,88 L35,70 L85,70 Q95,70 95,60 L95,25 Q95,15 85,15Z" fill="white" stroke="none"/>` },
+  { name:"우측말풍선", svg:`<rect x="5" y="5" width="90" height="60" rx="12" fill="white"/><polygon points="75,65 85,65 88,82" fill="white"/>` },
+];
+
+function renderTabElements() {
+  const el = document.getElementById("tab-elements");
+  const sl = getSelectedSlide();
+  let html = `<div class="comp-tab-title">요소</div>`;
+
+  // 말풍선
+  html += `<div class="comp-tab-subtitle">말풍선</div>`;
+  html += `<div class="elements-grid">`;
+  BUBBLE_SVGS.forEach((b, i) => {
+    html += `<div class="element-item" onclick="addBubbleElement(${i})" title="${b.name}">
+      <svg viewBox="0 0 100 95" width="100%" height="100%">${b.svg}</svg>
+    </div>`;
+  });
+  html += `</div>`;
+
+  // 현재 슬라이드의 요소 목록
+  const elems = (composeState.elements || []).filter(e => e.slideNum === (sl ? sl.num : -1));
+  if (elems.length > 0) {
+    html += `<div class="comp-tab-subtitle" style="margin-top:12px;">배치된 요소 (${elems.length})</div>`;
+    elems.forEach(elem => {
+      const eIdx = composeState.elements.indexOf(elem);
+      html += `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #22242e;">
+        <svg viewBox="0 0 100 95" width="24" height="24" style="flex-shrink:0;"><rect width="100" height="95" rx="4" fill="#2a2d38"/>${BUBBLE_SVGS[elem.bubbleIdx]?.svg || ''}</svg>
+        <span style="flex:1;font-size:9px;color:#d1d5db;">${elem.name || '말풍선'}</span>
+        <button onclick="removeElement(${eIdx})" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:14px;">&times;</button>
+      </div>`;
+    });
+  }
+
+  // 이미지 업로드
+  html += `<div class="comp-tab-subtitle" style="margin-top:12px;">이미지 요소</div>`;
+  html += `<input type="file" accept="image/*" id="element-img-upload" class="hidden" onchange="addImageElement(this)">`;
+  html += `<button onclick="document.getElementById('element-img-upload').click()" style="width:100%;padding:6px;background:#2a2d38;color:#9ca3af;border:1px dashed #3a3d48;border-radius:6px;font-size:10px;cursor:pointer;">+ 이미지 추가</button>`;
+
+  el.innerHTML = html;
+}
+
+function addBubbleElement(bubbleIdx) {
+  const sl = getSelectedSlide();
+  if (!sl) return;
+  if (!composeState.elements) composeState.elements = [];
+  composeState.elements.push({
+    id: `el_${Date.now()}`,
+    type: "bubble",
+    slideNum: sl.num,
+    bubbleIdx,
+    name: BUBBLE_SVGS[bubbleIdx]?.name || "말풍선",
+    x: 540, y: 500,
+    width: 400, height: 300,
+    rotation: 0,
+    text: "",
+    textSize: 36,
+    textColor: "#000000",
+    fillColor: "#ffffff",
+  });
+  _dirty = true;
+  renderPreview();
+  renderTabElements();
+}
+
+function addImageElement(input) {
+  // 이미지 파일을 data URL로 변환하여 요소로 추가
+  const file = input.files[0];
+  if (!file) return;
+  const sl = getSelectedSlide();
+  if (!sl) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    if (!composeState.elements) composeState.elements = [];
+    composeState.elements.push({
+      id: `el_${Date.now()}`,
+      type: "image",
+      slideNum: sl.num,
+      name: file.name,
+      x: 540, y: 960,
+      width: 300, height: 300,
+      rotation: 0,
+      dataUrl: e.target.result,
+    });
+    _dirty = true;
+    renderPreview();
+    renderTabElements();
+  };
+  reader.readAsDataURL(file);
+  input.value = "";
+}
+
+function removeElement(idx) {
+  if (composeState.elements) {
+    composeState.elements.splice(idx, 1);
+    _dirty = true;
+    renderPreview();
+    renderTabElements();
+  }
 }
 
 // ─── Tab: Text (Overlay) ───
@@ -1393,6 +1547,73 @@ function removeFreeText(idx) {
     renderPreview();
     renderTabText();
   }
+}
+
+// ─── Element Drag / Rotate / Resize ───
+
+function startElementDrag(e, idx) {
+  e.preventDefault();
+  const elem = composeState.elements[idx];
+  if (!elem) return;
+  const el = e.currentTarget;
+  const startX = e.clientX, startY = e.clientY;
+  const origX = elem.x, origY = elem.y;
+  function onMove(e2) {
+    elem.x = Math.round(origX + (e2.clientX - startX) / SCALE);
+    elem.y = Math.round(origY + (e2.clientY - startY) / SCALE);
+    el.style.left = `${elem.x * SCALE}px`;
+    el.style.top = `${elem.y * SCALE}px`;
+    _dirty = true;
+  }
+  function onUp() { document.removeEventListener("mousemove",onMove); document.removeEventListener("mouseup",onUp); }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function startElementRotate(e, type, idx) {
+  e.preventDefault();
+  e.stopPropagation();
+  const box = e.target.parentElement;
+  const rect = box.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const startAngle = Math.atan2(e.clientY - cy, e.clientX - cx) * 180 / Math.PI;
+  let obj;
+  if (type === 'element') obj = composeState.elements[idx];
+  else if (type === 'freeText') obj = composeState.freeTexts[idx];
+  if (!obj) return;
+  const origRot = obj.rotation || 0;
+  function onMove(e2) {
+    const angle = Math.atan2(e2.clientY - cy, e2.clientX - cx) * 180 / Math.PI;
+    obj.rotation = Math.round(origRot + angle - startAngle);
+    box.style.transform = `translate(-50%,-50%) rotate(${obj.rotation}deg)`;
+    _dirty = true;
+  }
+  function onUp() { document.removeEventListener("mousemove",onMove); document.removeEventListener("mouseup",onUp); renderPreview(); }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function startElementResize(e, idx) {
+  e.preventDefault();
+  e.stopPropagation();
+  const elem = composeState.elements[idx];
+  if (!elem) return;
+  const startX = e.clientX, startY = e.clientY;
+  const origW = elem.width || 300, origH = elem.height || 250;
+  const aspect = origW / origH;
+  function onMove(e2) {
+    const dx = (e2.clientX - startX) / SCALE;
+    const dy = (e2.clientY - startY) / SCALE;
+    const delta = (dx + dy) / 2;
+    elem.width = Math.max(50, Math.round(origW + delta));
+    elem.height = Math.max(50, Math.round(elem.width / aspect));
+    _dirty = true;
+    renderPreview();
+  }
+  function onUp() { document.removeEventListener("mousemove",onMove); document.removeEventListener("mouseup",onUp); }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
 }
 
 // ─── Free Text Drag ───
