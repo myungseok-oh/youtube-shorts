@@ -316,7 +316,7 @@
   z-index: 30;
   pointer-events: none;
   left: 0;
-  transition: none;
+  will-change: transform;
 }
 .comp-playhead::before {
   content: "";
@@ -327,6 +327,15 @@
   border-left: 7px solid transparent;
   border-right: 7px solid transparent;
   border-top: 8px solid #f97316;
+}
+.comp-playhead::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: -3px;
+  width: 8px; height: 3px;
+  background: #f97316;
+  border-radius: 0 0 2px 2px;
 }
 
 /* 눈금 */

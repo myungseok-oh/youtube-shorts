@@ -143,7 +143,8 @@ function updatePlayhead() {
   const trackArea = document.getElementById("timeline-tracks");
   if (!trackArea) return;
   const w = trackArea.clientWidth;
-  ph.style.left = `${_playheadPos * w}px`;
+  const px = _playheadPos * w;
+  ph.style.transform = `translateX(${px}px)`;
 }
 
 function onTimelineMouseDown(e) {
@@ -743,7 +744,12 @@ function _previewTick() {
   if (curSlideIdx !== _previewSlideIdx) {
     _previewSlideIdx = curSlideIdx;
     const slideOrderIdx = composeState.slide_order.indexOf(_slideTimeMap[curSlideIdx].num);
-    if (slideOrderIdx >= 0) selectSlide(slideOrderIdx);
+    if (slideOrderIdx >= 0) {
+      // 재생 중에는 가벼운 갱신만 (DOM 재생성 최소화)
+      selectedSlide = slideOrderIdx;
+      document.querySelectorAll(".slide-block").forEach((el, i) => el.classList.toggle("active", i === slideOrderIdx));
+      renderPreview();
+    }
 
     // 해당 슬라이드의 나레이션 재생
     const slideKey = `slide_${curSlideIdx}`;
@@ -751,7 +757,6 @@ function _previewTick() {
       _previewAudioPlayed.add(slideKey);
       const audioFiles = _slideTimeMap[curSlideIdx].audioFiles;
       if (audioFiles.length > 0) {
-        // 이전 나레이션 정지
         if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
         _playAudioChain(audioFiles, 0, () => {});
       }
