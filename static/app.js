@@ -767,26 +767,32 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
       const ko = typeof p === "object" ? (p.ko || "") : "";
       const en = typeof p === "object" ? (p.en || "") : String(p);
       const motion = typeof p === "object" ? (p.motion || "") : "";
+      const media = typeof p === "object" ? (p.media || "image") : "image";
       const slideNum = typeof p === "object" ? (p.slide || i+1) : i+1;
       if (!ko && !en) return "";  // 클로징 등 빈 프롬프트 숨김
       const copyText = [ko, en, motion].filter(Boolean).join("\\n");
       // 같은 슬라이드에 여러 프롬프트면 슬라이드 번호 표시
       const slideLabel = slideNum !== (i+1) ? ` <span class="text-gray-600">S${slideNum}</span>` : "";
+      const mediaBadge = media === "video"
+        ? `<span class="ml-1 px-1 rounded text-[10px] font-bold bg-purple-700 text-purple-200">VIDEO</span>`
+        : `<span class="ml-1 px-1 rounded text-[10px] font-bold bg-gray-700 text-gray-400">IMAGE</span>`;
       return `<div class="text-xs py-1 border-b border-gray-800">
         <div class="flex items-start justify-between gap-1">
           <div class="flex-1">
-            <span class="text-orange-400 font-bold mr-1">${i+1}.${slideLabel}</span>
-            ${ko ? `<span class="text-gray-300">${esc(ko)}</span><br>` : ""}
-            <span class="text-gray-500">${esc(en)}</span>
+            <span class="text-orange-400 font-bold mr-1">${i+1}.${slideLabel}</span>${mediaBadge}
+            ${ko ? `<br><span class="text-gray-300">${esc(ko)}</span>` : ""}
+            <br><span class="text-gray-500">${esc(en)}</span>
             ${motion ? `<br><span class="text-blue-400">🎬 ${esc(motion)}</span>` : ""}
           </div>
           <button onclick="event.stopPropagation(); copyOnePrompt(this, \`${esc(copyText)}\`)" class="copy-icon-btn text-gray-600 hover:text-white flex-shrink-0" title="복사" style="font-size:11px;padding:1px 3px;">&#x1F4CB;</button>
         </div>
       </div>`;
     }).join("");
+    const _videoCount = imgPrompts.filter(p => typeof p === "object" && p.media === "video").length;
+    const _videoLabel = _videoCount > 0 ? ` <span class="text-purple-400 font-normal">🎥 ${_videoCount}video</span>` : "";
     imgPromptsHtml = `<details class="mb-2" open>
       <summary class="flex items-center justify-between text-xs font-semibold text-gray-400 cursor-pointer mb-1">
-        <span>이미지 프롬프트 <span class="text-orange-400 font-normal">${(_slideLayout === "center" || _slideLayout === "top" || _slideLayout === "bottom") ? "📐 1080×960" : "📐 1080×1920"}</span></span>
+        <span>이미지 프롬프트 <span class="text-orange-400 font-normal">${(_slideLayout === "center" || _slideLayout === "top" || _slideLayout === "bottom") ? "📐 1080×960" : "📐 1080×1920"}</span>${_videoLabel}</span>
         <button onclick="event.stopPropagation(); copyImagePrompts(this)" class="copy-icon-btn" title="복사">&#x1F4CB;</button>
       </summary>
       <div class="bg-gray-900 rounded p-2 prompt-scroll-area" id="image-prompts-box">${items}</div>
@@ -1555,13 +1561,20 @@ async function previewVoice() {
 // ─── Channel Settings Tabs ───
 
 function switchSettingsTab(tabName) {
-  document.querySelectorAll(".cs-tab-content").forEach(el => el.classList.add("hidden"));
+  document.querySelectorAll(".cs-tab-content").forEach(el => {
+    el.classList.add("hidden");
+    el.style.display = "none";
+  });
   document.querySelectorAll(".cs-tab-btn").forEach(btn => {
     btn.classList.remove("text-orange-400", "border-b-2", "border-orange-400");
     btn.classList.add("text-gray-500", "hover:text-gray-300");
   });
   const tab = document.getElementById("cs-tab-" + tabName);
-  if (tab) tab.classList.remove("hidden");
+  if (tab) {
+    tab.classList.remove("hidden");
+    // 프롬프트 탭은 flex column으로 표시 (textarea가 남은 공간 채우도록)
+    tab.style.display = (tabName === "prompt") ? "flex" : "block";
+  }
   const btn = document.querySelector(`.cs-tab-btn[data-cs-tab="${tabName}"]`);
   if (btn) {
     btn.classList.add("text-orange-400", "border-b-2", "border-orange-400");
@@ -2401,8 +2414,7 @@ async function uploadSlideImage(jobId, index, input) {
       img.alt = `bg_${index}`;
       slot.prepend(img);
 
-      // 자동 슬라이드 재렌더 + 새로고침
-      await fetch(`/api/jobs/${jobId}/rerender-slides`, { method: "POST" });
+      // UI만 갱신 (슬라이드 재렌더는 Phase B에서 처리)
       _lastDetailStatus = null;
       await refreshJobDetail(jobId);
     }
@@ -2430,8 +2442,7 @@ async function bulkUploadImages(jobId, input) {
     });
   }
 
-  // 자동 슬라이드 재렌더
-  await fetch(`/api/jobs/${jobId}/rerender-slides`, { method: "POST" });
+  // UI만 갱신 (슬라이드 재렌더는 Phase B에서 처리)
   _lastDetailStatus = null;
   await refreshJobDetail(jobId);
 }
@@ -2983,6 +2994,9 @@ async function openChannelSettings(channelId) {
 
   document.getElementById("cs-bg-display-mode").value = cfg.bg_display_mode || "zone";
   toggleBgDisplayMode();
+  document.getElementById("cs-zone-ratio").value = cfg.slide_zone_ratio || "";
+  document.getElementById("cs-text-bg").value = cfg.slide_text_bg != null ? cfg.slide_text_bg : 4;
+  document.getElementById("cs-text-bg-label").textContent = cfg.slide_text_bg != null ? cfg.slide_text_bg : 4;
   document.getElementById("cs-production-mode").value = cfg.production_mode || "manual";
   document.getElementById("cs-auto-bg-source").value = cfg.auto_bg_source || "sd_image";
   document.getElementById("cs-gemini-api-key").value = cfg.gemini_api_key || "";
@@ -3094,6 +3108,8 @@ async function saveChannelSettings() {
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
 
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
+  cfg.slide_zone_ratio = document.getElementById("cs-zone-ratio").value.trim();
+  cfg.slide_text_bg = parseInt(document.getElementById("cs-text-bg").value) || 4;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _setIfPresent("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
@@ -3354,6 +3370,8 @@ async function saveChannelSettingsSilent() {
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
 
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
+  cfg.slide_zone_ratio = document.getElementById("cs-zone-ratio").value.trim();
+  cfg.slide_text_bg = parseInt(document.getElementById("cs-text-bg").value) || 4;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _set("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
@@ -3475,7 +3493,7 @@ ${scriptRules}
 메인 텍스트: 12~20자, 강한 키워드 중심, 강조는 <span class="hl">키워드</span>
 보조 텍스트: 20~30자, 핵심 설명
 
-bg_type: ${imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 사진 스타일)' : imageStyle === 'infographic' ? '모든 슬라이드 "graph" 고정 (인포그래픽/일러스트/차트 스타일)' : '슬라이드별 배경 유형 선택 (photo=실사, graph=인포그래픽, broll=B-roll, logo=로고)'}
+bg_type: ${imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 사진 스타일)' : imageStyle === 'infographic' ? '모든 슬라이드 "graph" 고정 (인포그래픽/일러스트/차트 스타일)' : imageStyle === 'anime' ? '모든 슬라이드 "photo" 고정 (애니메이션/디지털 일러스트 스타일)' : '슬라이드별 배경 유형 선택 (photo=실사, graph=인포그래픽, broll=B-roll, logo=로고)'}
 슬라이드 레이아웃: ${slideLayout}${imagePromptStyle ? `
 
 [이미지 프롬프트 스타일]
@@ -3500,7 +3518,7 @@ ${imagePromptStyle}` : ''}
   "category": "",
   "slides": [
     {
-      "bg_type": "${imageStyle === 'photo' ? 'photo' : imageStyle === 'infographic' ? 'graph' : ''}",
+      "bg_type": "${imageStyle === 'photo' || imageStyle === 'anime' ? 'photo' : imageStyle === 'infographic' ? 'graph' : ''}",
       "main_text": "핵심 <span class=\\"hl\\">강조</span> 텍스트",
       "sub_text": "",
       "image_prompt_ko": ["한국어 프롬프트1", "한국어 프롬프트2"],

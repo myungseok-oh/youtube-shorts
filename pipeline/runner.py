@@ -35,6 +35,7 @@ from pipeline.youtube_uploader import upload_video
 from pipeline.image_generator import generate_backgrounds
 from pipeline.sd_generator import agent_generate_image, generate_video as sd_generate_video, check_available as sd_check_available
 from pipeline.gemini_generator import generate_image as gemini_generate_image
+from pipeline.gemini_generator import generate_video as gemini_generate_video
 # from pipeline.qa_agent import run_qa  # QA 비활성화
 
 
@@ -500,7 +501,11 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 en_prompt = _prompt_en(prompt)
                                 if not en_prompt:
                                     continue
-                                out = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                                # media 추천: "video"이면 Veo 영상 생성 시도
+                                media_rec = prompt.get("media", "image") if isinstance(prompt, dict) else "image"
+                                # graph/overview는 항상 이미지
+                                if bg_type in ("graph", "overview"):
+                                    media_rec = "image"
                                 try:
                                     if idx > 0:
                                         time.sleep(5)  # Gemini 분당 요청 제한 대응
@@ -509,9 +514,28 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                         _ar = "9:16"
                                     else:
                                         _ar = "1:1" if slide_layout_b in ("center", "top", "bottom") else "9:16"
-                                    gemini_generate_image(en_prompt, out, gemini_key,
-                                                         aspect_ratio=_ar)
-                                    print(f"[runner] bg_{idx+1}.png Gemini 생성 완료 (slide {slide_num})")
+
+                                    if media_rec == "video":
+                                        out = os.path.join(dirs["bg"], f"bg_{idx + 1}.mp4")
+                                        # Veo는 9:16 또는 16:9만 지원 (1:1 불가)
+                                        # center/top/bottom 레이아웃 → 16:9, full → 9:16
+                                        _var = "16:9" if slide_layout_b in ("center", "top", "bottom") else "9:16"
+                                        ok = gemini_generate_video(en_prompt, out, gemini_key,
+                                                                   aspect_ratio=_var, duration=6)
+                                        if ok:
+                                            print(f"[runner] bg_{idx+1}.mp4 Gemini 영상 생성 완료 (slide {slide_num})")
+                                        else:
+                                            # 영상 실패 시 이미지로 폴백
+                                            print(f"[runner] bg_{idx+1} 영상 실패 -> 이미지 폴백")
+                                            out = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                                            gemini_generate_image(en_prompt, out, gemini_key,
+                                                                  aspect_ratio=_ar)
+                                            print(f"[runner] bg_{idx+1}.png Gemini 이미지 폴백 완료 (slide {slide_num})")
+                                    else:
+                                        out = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                                        gemini_generate_image(en_prompt, out, gemini_key,
+                                                              aspect_ratio=_ar)
+                                        print(f"[runner] bg_{idx+1}.png Gemini 생성 완료 (slide {slide_num})")
                                 except Exception as e:
                                     print(f"[runner] bg_{idx+1} Gemini 생성 실패: {e}")
                         else:
@@ -561,7 +585,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                           date=date_str, brand=brand,
                                           backgrounds=bg_results,
                                           layout=slide_layout,
-                                          bg_display_mode=bg_display_mode)
+                                          bg_display_mode=bg_display_mode,
+                                          zone_ratio=ch_config_pb.get("slide_zone_ratio", ""),
+                                          text_bg=ch_config_pb.get("slide_text_bg", 4))
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,
@@ -1058,12 +1084,31 @@ def _pad_slide_audio(merged_audio: dict, timeline: dict, gap: float = 0.3):
     """각 슬라이드 오디오에 무음 패딩 추가.
 
     - 끝 패딩: 마지막 슬라이드 제외 (나래이션 간 자연스러운 쉼)
-    - 앞 패딩: 첫 슬라이드 제외 (acrossfade가 블렌딩하는 구간을 무음으로 채워 나레이션 보호)
-      앞 패딩 >= crossfade duration 이면 acrossfade는 무음만 블렌딩하고 나레이션은 온전히 재생됨.
+    - 앞 패딩: 첫 슬라이드 제외 (crossfade가 블렌딩하는 구간을 무음으로 채워 나레이션 보호)
+      앞 패딩 >= crossfade duration 이면 crossfade는 무음만 블렌딩하고 나레이션은 온전히 재생됨.
+
+    주의: 원본 오디오의 샘플레이트/채널 수를 감지하여 무음 패딩도 동일하게 맞춤.
     """
     sorted_keys = sorted(merged_audio.keys())
     if len(sorted_keys) <= 1:
         return
+
+    def _probe_audio(path: str) -> tuple[int, int]:
+        """오디오 파일의 (sample_rate, channels) 반환."""
+        try:
+            r = subprocess.run(
+                [config.ffprobe(), "-v", "quiet", "-print_format", "json",
+                 "-show_streams", path],
+                capture_output=True, text=True
+            )
+            import json as _json
+            info = _json.loads(r.stdout)
+            for st in info.get("streams", []):
+                if st.get("codec_type") == "audio":
+                    return int(st.get("sample_rate", 44100)), int(st.get("channels", 1))
+        except Exception:
+            pass
+        return 44100, 1
 
     for idx, s_key in enumerate(sorted_keys):
         audio_path = merged_audio[s_key]
@@ -1072,16 +1117,18 @@ def _pad_slide_audio(merged_audio: dict, timeline: dict, gap: float = 0.3):
 
         is_first = (idx == 0)
         is_last = (idx == len(sorted_keys) - 1)
+        sr, ch = _probe_audio(audio_path)
+        cl = "stereo" if ch >= 2 else "mono"
 
-        # 앞 패딩: 첫 슬라이드 제외 (acrossfade 나레이션 보호)
+        # 앞 패딩: 첫 슬라이드 제외 (crossfade 나레이션 보호)
         if not is_first:
             pre_padded = audio_path + ".prepad.wav"
             result = subprocess.run([
                 config.ffmpeg(), "-y",
-                "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={gap}",
+                "-f", "lavfi", "-i", f"anullsrc=r={sr}:cl={cl}:d={gap}",
                 "-i", audio_path,
-                "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[out]",
-                "-map", "[out]", "-ar", "44100", "-ac", "2",
+                "-filter_complex", f"[0:a][1:a]concat=n=2:v=0:a=1[out]",
+                "-map", "[out]", "-ar", str(sr), "-ac", str(ch),
                 pre_padded
             ], capture_output=True)
             if result.returncode == 0 and os.path.exists(pre_padded):
@@ -1096,7 +1143,7 @@ def _pad_slide_audio(merged_audio: dict, timeline: dict, gap: float = 0.3):
                 config.ffmpeg(), "-y",
                 "-i", audio_path,
                 "-af", f"apad=pad_dur={gap}",
-                "-ar", "44100", "-ac", "2",
+                "-ar", str(sr), "-ac", str(ch),
                 padded
             ], capture_output=True)
             if result.returncode == 0 and os.path.exists(padded):
@@ -1440,7 +1487,9 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                         en_prompt = _prompt_en(prompt)
                         if not en_prompt:
                             continue
-                        output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                        media_rec = prompt.get("media", "image") if isinstance(prompt, dict) else "image"
+                        if bg_type in ("graph", "overview"):
+                            media_rec = "image"
                         try:
                             if idx > 0:
                                 time.sleep(5)  # Gemini 분당 요청 제한 대응
@@ -1448,9 +1497,27 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                 _ar = "9:16"
                             else:
                                 _ar = "1:1" if slide_layout_s3 in ("center", "top", "bottom") else "9:16"
-                            gemini_generate_image(en_prompt, output_path, gemini_key,
-                                                  aspect_ratio=_ar)
-                            print(f"[runner] bg_{idx+1}.png Gemini 생성 완료")
+
+                            if media_rec == "video":
+                                output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.mp4")
+                                # Veo는 9:16 또는 16:9만 지원 (1:1 불가)
+                                # center/top/bottom 레이아웃 → 16:9, full → 9:16
+                                _var = "16:9" if slide_layout_s3 in ("center", "top", "bottom") else "9:16"
+                                ok = gemini_generate_video(en_prompt, output_path, gemini_key,
+                                                           aspect_ratio=_var, duration=6)
+                                if ok:
+                                    print(f"[runner] bg_{idx+1}.mp4 Gemini 영상 생성 완료")
+                                else:
+                                    print(f"[runner] bg_{idx+1} 영상 실패 -> 이미지 폴백")
+                                    output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                                    gemini_generate_image(en_prompt, output_path, gemini_key,
+                                                          aspect_ratio=_ar)
+                                    print(f"[runner] bg_{idx+1}.png Gemini 이미지 폴백 완료")
+                            else:
+                                output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                                gemini_generate_image(en_prompt, output_path, gemini_key,
+                                                      aspect_ratio=_ar)
+                                print(f"[runner] bg_{idx+1}.png Gemini 생성 완료")
                         except Exception as e:
                             print(f"[runner] bg_{idx+1} Gemini 생성 실패: {e}")
                 else:
@@ -1503,7 +1570,9 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                           date=date_str, brand=brand,
                                           backgrounds=bg_results,
                                           layout=slide_layout,
-                                          bg_display_mode=bg_display_mode)
+                                          bg_display_mode=bg_display_mode,
+                                          zone_ratio=ch_config_fp.get("slide_zone_ratio", ""),
+                                          text_bg=ch_config_fp.get("slide_text_bg", 4))
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,

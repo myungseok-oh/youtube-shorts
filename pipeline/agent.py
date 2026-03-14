@@ -198,11 +198,10 @@ DEFAULT_SCRIPT_RULES = """\
   - 6~7초처럼 어중간한 길이는 피하라. 배경 영상이 5초 단위로 교체된다.
 - sentences에 채널명 언급 금지
 - 문장 종결 다양하게, 채널 지침 톤 준수
-- slides: 6~8개(closing 포함), 강조 키워드는 <span class="hl">...</span>
+- slides: 6~8개, 강조 키워드는 <span class="hl">...</span>
 - 첫 슬라이드: category에 주제에 맞는 태그(예: "경제","정치","코인","테크","사회" 등), main 짧고 강렬. "속보"는 실제 속보일 때만 사용
-- 마지막 슬라이드: 자동 처리. main에 짧은 마무리. bg_type: "closing". 나레이션(sentences) 배정 금지
 - youtube_title: 100자 이내, 클릭 유도. 채널 지침 제목 형식 따를 것
-- bg_type: photo(장소/사물) | broll(시네마틱, 1~2개만) | graph(인포그래픽) | logo(기업 건물) | closing(마지막)
+- bg_type: photo(장소/사물) | broll(시네마틱, 1~2개만) | graph(인포그래픽) | logo(기업 건물)
   - main/sub 텍스트가 이미지 프롬프트로 변환되므로 시각화 가능한 구체적 내용 필수"""
 
 DEFAULT_ROUNDUP_RULES = """\
@@ -226,11 +225,6 @@ DEFAULT_ROUNDUP_RULES = """\
    - sentences: 각 주제당 2~3문장 (핵심 팩트만)
    - bg_type: 주제에 맞게 photo/graph/logo 선택
 
-3. **마지막 슬라이드 (Closing)**: 자동 처리됨
-   - main: 짧은 마무리 문구
-   - bg_type: "closing"
-   - 나레이션(sentences) 배정 금지 — 구독/좋아요 텍스트가 자동 표시됨
-
 ### 대본 규칙
 - 전체 문장 14~20개, 각 15~25자
 - 전체 50~60초 (한국어 읽기 속도 초당 4~5음절), 총 200~300자
@@ -244,7 +238,7 @@ DEFAULT_ROUNDUP_RULES = """\
 - 강조할 숫자나 키워드는 슬라이드(main/sub)에서 <span class="hl">...</span>으로 감싸기
 - sentences(나레이션)는 TTS가 읽는 텍스트이므로 HTML 태그 금지, 순수 텍스트만
 - youtube_title: 100자 이내, 클릭 유도. 채널 지침의 제목 형식 따를 것.
-- bg_type: overview(첫 슬라이드 전용), photo(장소/사물), broll(시네마틱), graph(데이터), logo(기업), closing(마지막)
+- bg_type: overview(첫 슬라이드 전용), photo(장소/사물), broll(시네마틱), graph(데이터), logo(기업)
 - ★ 첫 슬라이드는 반드시 bg_type: "overview"로 지정할 것"""
 
 
@@ -258,8 +252,7 @@ def _build_script_schema(channel_format: str = "single",
 
     rules_text = script_rules.strip() if script_rules and script_rules.strip() else DEFAULT_SCRIPT_RULES
 
-    if has_outro:
-        rules_text += "\n- ★ 이 채널은 별도 아웃트로가 있으므로 closing 슬라이드를 생성하지 마라. 마지막 콘텐츠 슬라이드로 끝내라."
+    # has_outro는 별도 아웃트로 세그먼트 — closing 슬라이드와 무관 (closing 자체 미생성)
 
     return f"""\
 다음 JSON 형식으로만 출력해. 다른 텍스트 없이 JSON만.
@@ -280,8 +273,7 @@ def _build_roundup_schema(roundup_rules: str = "",
                           has_outro: bool = False) -> str:
     """라운드업(멀티뉴스) 형식 스키마."""
     rules_text = roundup_rules.strip() if roundup_rules and roundup_rules.strip() else DEFAULT_ROUNDUP_RULES
-    if has_outro:
-        rules_text += "\n- ★ 이 채널은 별도 아웃트로가 있으므로 closing 슬라이드를 생성하지 마라. 마지막 콘텐츠 슬라이드로 끝내라."
+    # has_outro는 별도 아웃트로 세그먼트 — closing 슬라이드와 무관 (closing 자체 미생성)
 
     return f"""\
 다음 JSON 형식으로만 출력해. 다른 텍스트 없이 JSON만 출력해.
@@ -716,6 +708,16 @@ def _image_style_instruction(image_style: str) -> str:
             "- Do NOT use realistic photography style\n"
             "- Use split screens for comparisons, bar charts for statistics, icons for concepts"
         )
+    elif image_style == "anime":
+        return (
+            "★ ALL slides must use ANIME/ILLUSTRATION style.\n"
+            "- Use keywords: anime-style illustration, digital art, cel-shaded, vibrant colors, clean lines\n"
+            "- People/characters: anime-style faces, expressive features, stylized proportions\n"
+            "- Backgrounds: semi-realistic or painted style environments\n"
+            "- Do NOT use realistic photography or photojournalism style\n"
+            "- Reference styles: studio ghibli, modern anime, digital illustration\n"
+            "- Keep scenes bright, warm, and visually appealing"
+        )
     return (
         "Use the style that best matches each slide's bg_type:\n"
         "- photo/broll/logo → photorealistic style (realistic, sharp focus, 8k, photojournalism)\n"
@@ -846,21 +848,28 @@ Slides:
 {_image_size_instruction(layout, bg_display_mode)}
 
 ## 출력 형식
-각 슬라이드에 대해 ko, en, motion 3개 필드를 생성.
+각 슬라이드에 대해 ko, en, motion, media 4개 필드를 생성.
 **[xN prompts]로 표시된 슬라이드는 서로 다른 장면의 프롬프트를 N개 연속 출력하라.**
 (같은 주제를 다른 앵글/장소/스케일로. 예: wide shot -> close-up, 외부 -> 내부, 전경 -> 디테일)
 
 - ko: 촬영 현장을 구체적으로 (예: "울산 정유소 증류탑 야경, 가스 플레어 불빛")
 - en: 영어 이미지 프롬프트, 30-60 words, 5요소 필수 (Subject, Setting, Lighting, Camera, Style)
 - motion: 이 장면을 영상으로 만들 때의 카메라 움직임 (예: "slow zoom in", "gentle pan left", "slow zoom out")
-- closing 타입 → {{"ko":"", "en":"", "motion":""}}
+- media: "image" 또는 "video" — 이 장면을 정적 이미지와 4초 영상 중 어떤 것으로 제작할지 추천
+  ★ media 판단 기준:
+  - "video" 추천: 움직임이 자연스러운 장면 (동물의 행동/움직임, 물결, 바람에 흔들리는 나뭇잎, 도시 야경, 자연 풍경, 불꽃, 연기 등)
+  - "image" 추천: 정보 전달, 데이터, 인포그래픽, 정적 사물, 건물 외관, 로고
+  - graph/overview 타입은 항상 "image"
+  - 전체 프롬프트 중 30~40%만 "video"로 추천할 것 (과하면 산만해짐)
+  - "video" 프롬프트의 en 필드에는 움직임 묘사 키워드 추가 (gentle movement, swaying, flowing 등)
+- closing 타입 → {{"ko":"", "en":"", "motion":"", "media":"image"}}
 - ★ 모든 프롬프트는 반드시 서로 다른 장소/피사체/앵글을 사용하라. 같은 건물, 같은 장면, 같은 구도 반복 금지.
   - 예: 슬라이드1 "증권거래소 외관" → 슬라이드2 "공장 내부" → 슬라이드3 "항구 컨테이너" (모두 다른 장소)
   - 나쁜 예: 슬라이드1 "trading floor monitors" → 슬라이드2 "stock exchange screens" (같은 장면)
 - 이미지 사이즈에 맞는 composition 키워드 포함
 
 Output ONLY a JSON array with exactly {prompt_count} items, no other text:
-[{{"ko":"한국어 설명", "en":"English prompt", "motion":"camera movement"}}, ...]"""
+[{{"ko":"한국어 설명", "en":"English prompt", "motion":"camera movement", "media":"image"}}, ...]"""
 
     # 슬라이드→프롬프트 매핑 (slide 필드 추가용)
     slide_prompt_map = []  # [(slide_idx_0based, bg_count), ...]
@@ -900,10 +909,12 @@ Output ONLY a JSON array with exactly {prompt_count} items, no other text:
                                 "ko": str(p["ko"]),
                                 "en": str(p["en"]),
                                 "motion": str(p.get("motion", "")),
+                                "media": str(p.get("media", "image")),
                                 "slide": slide_idx + 1,  # 1-based
                             })
                         else:
                             result.append({"ko": "", "en": str(p), "motion": "",
+                                           "media": "image",
                                            "slide": slide_idx + 1})
                     prompt_idx += 1
             return result

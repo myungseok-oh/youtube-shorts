@@ -305,15 +305,17 @@ async def _run_channel_auto(ch: dict):
         trends = collect_trends(trend_sources, youtube_api_key=yt_api_key)
         trend_context = format_trend_context(trends)
 
-    # 최근 24시간 중복 방지
-    recent_jobs = db.fetchall(
-        "SELECT topic FROM jobs WHERE channel_id = ? "
+    # 최근 24시간 중복 방지 (연관 채널 포함)
+    dedup_ids_s = [channel_id] + [c for c in cfg.get("dedup_channels", []) if c != channel_id]
+    ph_s = ",".join("?" for _ in dedup_ids_s)
+    recent_jobs_s = db.fetchall(
+        f"SELECT topic FROM jobs WHERE channel_id IN ({ph_s}) "
         "AND NOT (status = 'deleted' AND id NOT IN "
         "  (SELECT job_id FROM job_steps WHERE step_name = 'upload' AND status = 'completed')) "
-        "AND created_at >= datetime('now', 'localtime', '-24 hours') ORDER BY created_at DESC LIMIT 20",
-        [channel_id]
+        "AND created_at >= datetime('now', 'localtime', '-24 hours') ORDER BY created_at DESC LIMIT 30",
+        dedup_ids_s
     )
-    recent_topics = [j["topic"] for j in recent_jobs] if recent_jobs else []
+    recent_topics = [j["topic"] for j in recent_jobs_s] if recent_jobs_s else []
 
     # 고정 주제 또는 파싱
     if cfg.get("fixed_topic"):
@@ -686,13 +688,15 @@ async def api_run_channel(channel_id: str, request: Request):
             trends = collect_trends(trend_sources, youtube_api_key=yt_api_key)
             trend_context = format_trend_context(trends)
 
-        # 최근 24시간 내 작업 주제 수집 (중복 방지)
+        # 최근 24시간 내 작업 주제 수집 (중복 방지 — 연관 채널 포함)
+        dedup_ids = [channel_id] + [c for c in cfg.get("dedup_channels", []) if c != channel_id]
+        placeholders = ",".join("?" for _ in dedup_ids)
         recent_jobs = db.fetchall(
-            "SELECT topic FROM jobs WHERE channel_id = ? "
+            f"SELECT topic FROM jobs WHERE channel_id IN ({placeholders}) "
             "AND NOT (status = 'deleted' AND id NOT IN "
             "  (SELECT job_id FROM job_steps WHERE step_name = 'upload' AND status = 'completed')) "
-            "AND created_at >= datetime('now', 'localtime', '-24 hours') ORDER BY created_at DESC LIMIT 20",
-            [channel_id]
+            "AND created_at >= datetime('now', 'localtime', '-24 hours') ORDER BY created_at DESC LIMIT 30",
+            dedup_ids
         )
         recent_topics = [j["topic"] for j in recent_jobs] if recent_jobs else []
 
@@ -1898,7 +1902,9 @@ async def api_rerender_slides(job_id: str):
         generate_slides, slides_data, img_dir,
         date=date_str, brand=brand,
         backgrounds=bg_results, layout=slide_layout,
-        skip_overlay=True
+        skip_overlay=True,
+        zone_ratio=ch_cfg.get("slide_zone_ratio", ""),
+        text_bg=ch_cfg.get("slide_text_bg", 4)
     )
 
     return {"ok": True, "layout": slide_layout, "slides": len(slide_paths)}

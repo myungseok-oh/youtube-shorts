@@ -181,6 +181,19 @@
           <p class="text-xs text-gray-500 mt-1">전체 화면은 9:16 이미지 생성, 텍스트 영역에 반투명 오버레이 적용</p>
         </div>
         <div>
+          <label class="block text-sm text-gray-400 mb-1">영역 비율 (상:중:하)</label>
+          <input id="cs-zone-ratio" type="text" placeholder="예: 1.5:7:1.5 (기본 3:4:3)"
+                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+          <p class="text-xs text-gray-500 mt-1">center/top/bottom 레이아웃의 텍스트:이미지:텍스트 비율. 비우면 기본값</p>
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">텍스트 배경 불투명도 <span id="cs-text-bg-label" class="text-orange-400">4</span>/10</label>
+          <input id="cs-text-bg" type="range" min="0" max="10" step="1" value="4"
+                 oninput="document.getElementById('cs-text-bg-label').textContent=this.value"
+                 class="w-full accent-orange-500">
+          <p class="text-xs text-gray-500 mt-1">0=투명, 10=완전 검정</p>
+        </div>
+        <div>
           <label class="block text-sm text-gray-400 mb-1">영상 형식</label>
           <select id="cs-format"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
@@ -281,6 +294,7 @@
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
             <option value="photo">포토 — 실사 사진 스타일 (건물, 장소, 사물)</option>
             <option value="infographic">인포그래픽 — 일러스트/차트/다이어그램 스타일</option>
+            <option value="anime">애니메 — 애니메이션/디지털 일러스트 스타일</option>
             <option value="mixed">혼합 — bg_type에 따라 자동 (photo→실사, graph→인포그래픽)</option>
           </select>
           <p class="text-xs text-gray-500 mt-1">포토: 뉴스 현장감, 인포그래픽: 데이터/비교 중심, 혼합: 슬라이드별 자동 판단</p>
@@ -496,35 +510,33 @@
       </div>
 
       <!-- 탭: 프롬프트 -->
-      <div id="cs-tab-prompt" class="cs-tab-content hidden space-y-5">
-        <p class="text-xs text-gray-500">대본 생성 시 AI에게 전달되는 지침입니다. 비워두면 기본값 사용. 수정하면 이 채널에만 적용됩니다.</p>
+      <div id="cs-tab-prompt" class="cs-tab-content hidden" style="display:none; flex-direction:column; gap:12px; height:100%; min-height:0;">
+        <p class="text-xs text-gray-500 flex-shrink-0">대본 생성 시 AI에게 전달되는 지침입니다. 비워두면 기본값 사용. 수정하면 이 채널에만 적용됩니다.</p>
 
         <!-- 대본 규칙 (단일) -->
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
+        <div class="flex flex-col flex-1 min-h-0 gap-1">
+          <div class="flex items-center justify-between flex-shrink-0">
             <h4 class="text-sm text-gray-300 font-medium">대본 지침 (단일)</h4>
             <button onclick="fillPromptDefault('cs-script-rules','script_rules')"
                     class="text-xs text-orange-400 hover:text-orange-300 transition">기본값 채우기</button>
           </div>
-          <textarea id="cs-script-rules" rows="8"
-                    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono leading-relaxed"
+          <textarea id="cs-script-rules"
+                    class="w-full flex-1 min-h-0 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed resize-none"
                     placeholder="비워두면 기본값 적용"></textarea>
-          <p class="text-[10px] text-gray-600">변수: {sentences}, {chars}, {seconds}, {slides}, {per_slide}</p>
         </div>
 
-        <div class="border-t border-gray-700"></div>
+        <div class="border-t border-gray-700 flex-shrink-0"></div>
 
         <!-- 대본 규칙 (라운드업) -->
-        <div class="space-y-2">
-          <div class="flex items-center justify-between">
+        <div class="flex flex-col flex-1 min-h-0 gap-1">
+          <div class="flex items-center justify-between flex-shrink-0">
             <h4 class="text-sm text-gray-300 font-medium">대본 지침 (라운드업)</h4>
             <button onclick="fillPromptDefault('cs-roundup-rules','roundup_rules')"
                     class="text-xs text-orange-400 hover:text-orange-300 transition">기본값 채우기</button>
           </div>
-          <textarea id="cs-roundup-rules" rows="8"
-                    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs font-mono leading-relaxed"
+          <textarea id="cs-roundup-rules"
+                    class="w-full flex-1 min-h-0 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed resize-none"
                     placeholder="비워두면 기본값 적용"></textarea>
-          <p class="text-[10px] text-gray-600">변수: {sentences}, {chars}, {seconds}, {slides}, {per_slide}</p>
         </div>
 
       </div>

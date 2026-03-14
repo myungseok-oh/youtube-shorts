@@ -38,6 +38,19 @@ const bgDisplayMode = data.bgDisplayMode || 'zone';
 const skipOverlay = data.skipOverlay || false;
 const total = slides.length;
 
+// 상:중:하 비율 (center/top/bottom 레이아웃 전용)
+const _zoneRatioRaw = data.zoneRatio || '';  // "1.5:7:1.5", "2:6:2" 등
+const _zoneRatioParts = _zoneRatioRaw.split(':').map(Number).filter(n => n > 0);
+const zoneRatio = _zoneRatioParts.length === 3 ? _zoneRatioParts : [3, 4, 3]; // 기본값
+const _zrTotal = zoneRatio[0] + zoneRatio[1] + zoneRatio[2];
+const zoneTopPct = (zoneRatio[0] / _zrTotal * 100).toFixed(1);
+const zoneMidPct = (zoneRatio[1] / _zrTotal * 100).toFixed(1);
+const zoneBotPct = (zoneRatio[2] / _zrTotal * 100).toFixed(1);
+
+// 텍스트 영역 배경 불투명도 (0~10, 기본 4)
+const _textBgVal = data.textBg != null ? Number(data.textBg) : 4;
+const textBgOpacity = Math.max(0, Math.min(1, _textBgVal / 10));
+
 function bgInfo(index) {
   const bg = backgrounds[index];
   if (!bg) return { css: '', source: '', dataUrl: '' };
@@ -274,7 +287,7 @@ function zonedStyles(accent) {
       display: flex; flex-direction: column;
       justify-content: center; align-items: center;
       padding: 40px 60px;
-      background: linear-gradient(180deg, rgba(5,8,20,0.40) 0%, rgba(5,8,20,0.20) 100%);
+      background: rgba(5,8,20,${textBgOpacity});
     }
     .main-text {
       font-size: 100px; font-weight: 900;
@@ -867,11 +880,11 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
   let bodyContent = '';
   if (layout === 'center') {
     bodyContent = `
-      <div class="text-zone" style="height:35%;justify-content:flex-end;padding-bottom:20px;">
+      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
         <div class="main-text" style="font-size:120px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
       </div>
-      ${imageZoneHTML(bgData, 40)}
-      <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">
+      ${imageZoneHTML(bgData, parseFloat(zoneMidPct))}
+      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
         ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
       </div>
     `;
@@ -913,11 +926,11 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
   let bodyContent = '';
   if (layout === 'center') {
     bodyContent = `
-      <div class="text-zone" style="height:25%;justify-content:flex-end;padding-bottom:20px;">
+      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
         <div class="main-text" style="font-size:100px;">${slide.main}</div>
       </div>
-      ${imageZoneHTML(bgData, 50)}
-      <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">
+      ${imageZoneHTML(bgData, parseFloat(zoneMidPct))}
+      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
         ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
       </div>
     `;

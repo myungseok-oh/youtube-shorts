@@ -13,7 +13,9 @@ def generate_slides(slides_data: list[dict], output_dir: str,
                     backgrounds: list[dict] | None = None,
                     layout: str = "full",
                     bg_display_mode: str = "zone",
-                    skip_overlay: bool = False) -> list[str]:
+                    skip_overlay: bool = False,
+                    zone_ratio: str = "",
+                    text_bg: int = 4) -> list[str]:
     """슬라이드 데이터를 받아 PNG 이미지 생성.
 
     Args:
@@ -44,6 +46,8 @@ def generate_slides(slides_data: list[dict], output_dir: str,
         "layout": layout,
         "bgDisplayMode": bg_display_mode,
         "skipOverlay": skip_overlay,
+        "zoneRatio": zone_ratio,
+        "textBg": text_bg,
     }
 
     # 임시 JSON 파일에 입력 데이터 저장

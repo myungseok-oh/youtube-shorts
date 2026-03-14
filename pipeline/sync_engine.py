@@ -84,7 +84,9 @@ def merge_slide_audio(slide_audio_map: dict, segment_dir: str,
                     f.write(f"file '{abs_fp}'\n")
             subprocess.run(
                 [config.ffmpeg(), "-y", "-f", "concat", "-safe", "0",
-                 "-i", list_file, "-c", "copy", merged_path],
+                 "-i", list_file,
+                 "-codec:a", "libmp3lame", "-q:a", "2",
+                 merged_path],
                 capture_output=True
             )
 
