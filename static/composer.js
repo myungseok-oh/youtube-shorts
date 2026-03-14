@@ -24,7 +24,8 @@ async function initComposer() {
   composeState.slide_overrides = composeState.slide_overrides || {};
 
   renderTimeline();
-  renderSidebar();
+  renderTabMedia();
+  renderTabAudio();
   if (composeState.slide_order.length > 0) {
     selectSlide(0);
   }
@@ -127,8 +128,14 @@ function selectSlide(idx) {
   document.querySelectorAll(".slide-block").forEach((el, i) => {
     el.classList.toggle("active", i === idx);
   });
+  // 미디어 탭 하이라이트 갱신
+  document.querySelectorAll(".media-item").forEach((el, i) => {
+    el.classList.toggle("active", i === idx);
+  });
   renderPreview();
-  renderProps();
+  // 활성 탭 갱신
+  if (_activeTab === 'text') renderTabText();
+  if (_activeTab === 'narration') renderTabNarration();
 }
 
 // ─── Preview (Visual Overlay Editor) ───
@@ -293,187 +300,11 @@ function startOverlayResize(e) {
   document.addEventListener("mouseup", onUp);
 }
 
-// ─── Properties Panel ───
-
+// renderProps → 활성 탭 갱신으로 대체
 function renderProps() {
-  const container = document.getElementById("props-content");
-  const sl = getSelectedSlide();
-
-  if (!sl) {
-    container.innerHTML = `<div class="text-xs text-gray-500">슬라이드를 선택하세요</div>`;
-    return;
-  }
-
-  const dur = getSlideDuration(sl.num);
-  const slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
-  const chCfg = composerData.channel_config || {};
-  const curEngine = chCfg.tts_engine || "edge-tts";
-  const ovr = getOverride(sl.num);
-  const isHidden = ovr.hidden === true;
-  const ovrMain = ovr.main !== undefined ? ovr.main : (sl.main || "").replace(/<[^>]*>/g, "");
-  const ovrSub = ovr.sub !== undefined ? ovr.sub : (sl.sub || "").replace(/<[^>]*>/g, "");
-  const ovrMainSize = ovr.mainSize || 100;
-  const ovrSubSize = ovr.subSize || 52;
-  const ovrX = ovr.x !== undefined ? ovr.x : 540;
-  const ovrY = ovr.y !== undefined ? ovr.y : 960;
-  const sentences = sl.sentences || [];
-  const bgm = composeState.bgm;
-
-  let html = `<div class="props-grid">`;
-
-  // ═══ 좌측 칼럼: 오버레이 + 배경 ═══
-  html += `<div class="props-col">`;
-
-  // ── 슬라이드 기본 + 오버레이 (합침) ──
-  html += `
-    <div class="flex items-center justify-between mb-2">
-      <span class="prop-section-title" style="color:#a78bfa; margin:0;">슬라이드 ${sl.num} <span class="text-gray-600 font-normal">${sl.bg_type}</span></span>
-      <label class="flex items-center gap-1 cursor-pointer">
-        <input type="checkbox" ${isHidden ? '' : 'checked'} onchange="toggleOverlay(${sl.num}, !this.checked)"
-               class="accent-purple-500" style="width:13px;height:13px;">
-        <span class="text-[9px] text-gray-400">오버레이</span>
-      </label>
-    </div>
-    <div class="prop-row"><span class="prop-label">길이</span>
-      <input class="prop-input" type="number" value="${dur.toFixed(1)}" min="1" max="30" step="0.5"
-             onchange="updateSlideDuration(${sl.num}, +this.value)">
-      <span class="text-[9px] text-gray-600 ml-1">초</span>
-    </div>`;
-
-  // 오버레이 편집
-  html += `<div style="${isHidden ? 'opacity:0.3;pointer-events:none;' : ''}">
-    <div class="prop-row"><span class="prop-label">제목</span>
-      <input class="prop-input" value="${_esc(ovrMain)}" onchange="updateOverride(${sl.num}, 'main', this.value)">
-    </div>
-    <div class="prop-row"><span class="prop-label">부제</span>
-      <input class="prop-input" value="${_esc(ovrSub)}" onchange="updateOverride(${sl.num}, 'sub', this.value)">
-    </div>
-    <div class="prop-grid-2col">
-      <div class="prop-row"><span class="prop-label-s">제목</span>
-        <input class="prop-input" type="number" value="${ovrMainSize}" min="20" max="200" step="4"
-               onchange="updateOverride(${sl.num}, 'mainSize', +this.value)" title="제목 크기">
-      </div>
-      <div class="prop-row"><span class="prop-label-s">부제</span>
-        <input class="prop-input" type="number" value="${ovrSubSize}" min="16" max="120" step="4"
-               onchange="updateOverride(${sl.num}, 'subSize', +this.value)" title="부제 크기">
-      </div>
-      <div class="prop-row"><span class="prop-label-s">너비</span>
-        <input class="prop-input" type="number" value="${ovr.maxWidth || 1000}" min="200" max="1080" step="20"
-               onchange="updateOverride(${sl.num}, 'maxWidth', +this.value)">
-      </div>
-      <div class="prop-row">
-        <span class="prop-label-s">배경</span>
-        <input class="prop-input" type="range" min="0" max="100" step="5" value="${ovr.bgOpacity !== undefined ? ovr.bgOpacity : 40}"
-               oninput="updateOverride(${sl.num}, 'bgOpacity', +this.value); this.nextElementSibling.textContent=this.value+'%';"
-               style="flex:1;">
-        <span class="text-[8px] text-gray-500 w-6">${ovr.bgOpacity !== undefined ? ovr.bgOpacity : 40}%</span>
-      </div>
-      <div class="prop-row"><span class="prop-label-s">X</span>
-        <input class="prop-input" type="number" value="${ovrX}" min="0" max="1080"
-               onchange="updateOverride(${sl.num}, 'x', +this.value)">
-      </div>
-      <div class="prop-row"><span class="prop-label-s">Y</span>
-        <input class="prop-input" type="number" value="${ovrY}" min="0" max="1920"
-               onchange="updateOverride(${sl.num}, 'y', +this.value)">
-      </div>
-    </div>
-    <div class="prop-grid-2col mt-1">
-      <div class="prop-row">
-        <input type="color" value="${ovr.mainColor || '#ffffff'}" style="width:22px;height:18px;border:none;background:none;cursor:pointer;padding:0;"
-               onchange="updateOverride(${sl.num}, 'mainColor', this.value)" title="제목 색">
-        <span class="text-[8px] text-gray-500">제목</span>
-      </div>
-      <div class="prop-row">
-        <input type="color" value="${ovr.subColor || '#d1d5db'}" style="width:22px;height:18px;border:none;background:none;cursor:pointer;padding:0;"
-               onchange="updateOverride(${sl.num}, 'subColor', this.value)" title="부제 색">
-        <span class="text-[8px] text-gray-500">부제</span>
-      </div>
-    </div>
-    <div class="prop-row mt-1"><span class="prop-label-s">폰트</span>
-      <select class="prop-input" style="font-size:9px;" onchange="updateOverride(${sl.num}, 'fontFamily', this.value)">
-        ${['Noto Sans KR', 'Black Han Sans', 'Jua', 'Do Hyeon', 'Gothic A1', 'Nanum Gothic', 'Nanum Myeongjo', 'Gaegu'].map(f =>
-          `<option value="${f}" ${(ovr.fontFamily || 'Noto Sans KR') === f ? 'selected' : ''}>${f}</option>`
-        ).join('')}
-      </select>
-    </div>
-    <button onclick="resetOverride(${sl.num})" class="w-full px-2 py-0.5 bg-gray-800 hover:bg-gray-700 rounded text-[9px] mt-1">초기화</button>
-  </div>`;
-
-  // ── 배경 이미지 ──
-  html += `<div class="mt-3 pt-2 border-t border-gray-800">
-    <span class="prop-section-title" style="color:#3b82f6;">배경</span>
-    <input type="file" accept="image/*,video/mp4" id="bg-upload-input" class="hidden"
-           onchange="uploadSlideBg(${sl.num}, this)">
-    <button onclick="document.getElementById('bg-upload-input').click()"
-      class="w-full px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded text-[10px] transition">
-      ${sl.bg_url ? '이미지 교체' : '이미지 업로드'}
-    </button>
-  </div>`;
-
-  html += `</div>`; // props-col end
-
-  // ═══ 우측 칼럼: 나레이션 + BGM ═══
-  html += `<div class="props-col">`;
-
-  // ── 나레이션 ──
-  html += `<span class="prop-section-title" style="color:#10b981;">나레이션</span>`;
-  if (sentences.length > 0) {
-    html += `<div class="mb-1" style="max-height:140px;overflow-y:auto;">`;
-    sentences.forEach((sen, si) => {
-      const audioInfo = slideAudio.find(a => a.sentence_idx === si);
-      const hasA = !!audioInfo;
-      html += `<div class="flex items-center gap-1 py-0.5 border-b border-gray-800">
-        <span class="text-[8px] text-gray-600">${si + 1}</span>
-        <span class="flex-1 text-[9px] text-gray-300 truncate" title="${_esc(sen.text)}">${_esc(_truncate(sen.text, 35))}</span>
-        ${hasA ? `<button onclick="previewAudio('${audioInfo.path}')" class="text-[9px] text-green-400 hover:text-green-300 flex-shrink-0">&#9654;${audioInfo.duration.toFixed(1)}s</button>` : `<span class="text-[8px] text-gray-600">-</span>`}
-      </div>`;
-    });
-    html += `</div>`;
-  }
-
-  html += `
-    <div class="prop-row mt-1"><span class="prop-label-s">TTS</span>
-      <select id="tts-engine" class="prop-input" style="font-size:9px;">
-        <option value="edge-tts" ${curEngine === 'edge-tts' ? 'selected' : ''}>Edge</option>
-        <option value="google-cloud" ${curEngine === 'google-cloud' ? 'selected' : ''}>Google</option>
-        <option value="gpt-sovits" ${curEngine === 'gpt-sovits' ? 'selected' : ''}>SoVITS</option>
-      </select>
-    </div>
-    <div class="flex gap-1 mt-1">
-      <button onclick="generateTTS(${sl.num})" id="btn-gen-tts"
-        class="flex-1 px-2 py-1 bg-emerald-800 hover:bg-emerald-700 rounded text-[10px] font-medium transition">
-        TTS 생성
-      </button>
-      <button onclick="generateAllTTS()" id="btn-gen-all-tts"
-        class="px-2 py-1 bg-emerald-900 hover:bg-emerald-800 rounded text-[9px] transition">전체</button>
-    </div>
-    <div class="mt-1">
-      <input type="file" accept="audio/*" id="audio-upload-input" class="hidden"
-             onchange="uploadSlideAudio(${sl.num}, this)">
-      <button onclick="document.getElementById('audio-upload-input').click()"
-        class="w-full px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded text-[9px] transition">음성 업로드</button>
-    </div>
-    <div id="tts-status" class="text-[9px] text-gray-500 mt-0.5"></div>`;
-
-  // ── BGM ──
-  html += `<div class="mt-3 pt-2 border-t border-gray-800">
-    <span class="prop-section-title" style="color:#10b981;">BGM</span>`;
-  if (bgm) {
-    html += `
-      <div class="text-[9px] text-emerald-400 truncate mb-1">${_esc(bgm.file)}</div>
-      <div class="prop-row"><span class="prop-label-s">볼륨</span>
-        <input class="prop-input" type="number" value="${bgm.volume}" min="0" max="1" step="0.01" onchange="updateBgmProp('volume', +this.value)">
-      </div>
-      <button onclick="removeBgm()" class="w-full px-2 py-0.5 bg-red-800 hover:bg-red-700 rounded text-[9px] mt-1">제거</button>`;
-  } else {
-    html += `<div class="text-[9px] text-gray-600">좌측에서 BGM 선택</div>`;
-  }
-  html += `</div>`;
-
-  html += `</div>`; // props-col end
-  html += `</div>`; // props-grid end
-
-  container.innerHTML = html;
+  if (_activeTab === 'text') renderTabText();
+  if (_activeTab === 'narration') renderTabNarration();
+  if (_activeTab === 'media') renderTabMedia();
 }
 
 // ─── Slide Duration ───
@@ -683,53 +514,218 @@ function _playNextInQueue() {
   });
 }
 
-// ─── Sidebar (SFX/BGM) ───
+// ─── Tab System ───
 
-function renderSidebar() {
-  const sfxEl = document.getElementById("sfx-list");
-  sfxEl.innerHTML = (composerData.sfx_list || []).map(s => `
-    <div class="sfx-item" draggable="true"
-         ondragstart="onSfxDragStart(event, '${s.file}')"
-         title="${s.file} (${s.duration.toFixed(1)}s)">
-      <span class="sfx-preview" onclick="previewAudio('${s.path}')">&#9654;</span>
-      <span class="flex-1 truncate">${s.file.replace(/\.[^.]+$/, '')}</span>
-      <span class="text-gray-600 text-[9px]">${s.duration.toFixed(1)}s</span>
-    </div>
-  `).join("");
+let _activeTab = 'media';
 
-  const bgmEl = document.getElementById("bgm-list");
-  bgmEl.innerHTML = (composerData.bgm_list || []).map(s => {
-    const isActive = composeState.bgm && composeState.bgm.file === s.file;
-    return `
-    <div class="sfx-item ${isActive ? 'bgm-active' : ''}" title="${s.file}">
-      <span class="sfx-preview" onclick="previewAudio('${s.path}')">&#9654;</span>
-      <span class="flex-1 truncate">${s.file.replace(/\.[^.]+$/, '')}</span>
-      <button onclick="applyBgm('${_esc(s.file)}', '${_esc(s.path)}', ${s.duration || 0})"
-        class="px-1.5 py-0.5 bg-emerald-800 hover:bg-emerald-700 rounded text-[9px] font-medium flex-shrink-0">${isActive ? '적용됨' : '적용'}</button>
-    </div>`;
-  }).join("");
+function switchTab(tab) {
+  _activeTab = tab;
+  document.querySelectorAll('.comp-icon-tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
+  document.querySelectorAll('.comp-tab-content').forEach(el => el.classList.toggle('active', el.id === `tab-${tab}`));
+  // 탭 전환 시 컨텐츠 갱신
+  if (tab === 'text') renderTabText();
+  if (tab === 'narration') renderTabNarration();
 }
 
-function toggleSection(name) {
-  const section = document.querySelector(`.sidebar-section[data-section="${name}"]`);
-  if (!section) return;
-  const body = section.querySelector(".sidebar-section-body");
-  section.classList.toggle("open");
-  body.classList.toggle("hidden");
-}
+// ─── Tab: Media ───
 
-function filterSidebar(query) {
-  const q = query.toLowerCase().trim();
-  document.querySelectorAll(".sfx-item").forEach(el => {
-    const text = (el.textContent || "").toLowerCase();
-    el.style.display = !q || text.includes(q) ? "" : "none";
+function renderTabMedia() {
+  const el = document.getElementById("tab-media");
+  const slides = getOrderedSlides();
+  let html = `<div class="comp-tab-title">배경 이미지</div>`;
+  html += `<div class="media-grid">`;
+  slides.forEach((sl, idx) => {
+    const isActive = idx === selectedSlide;
+    if (sl.bg_url) {
+      const isVideo = sl.bg_url.includes('.mp4') || sl.bg_url.includes('.gif');
+      html += `<div class="media-item ${isActive ? 'active' : ''}" onclick="selectSlide(${idx})">
+        ${isVideo ? `<video src="${sl.bg_url}" muted autoplay loop playsinline></video>` : `<img src="${sl.bg_url}" draggable="false">`}
+        <div class="media-item-badge">${sl.num}</div>
+        <div class="media-item-label">${sl.bg_type}</div>
+      </div>`;
+    } else {
+      html += `<div class="media-item ${isActive ? 'active' : ''}" onclick="selectSlide(${idx})" style="display:flex;align-items:center;justify-content:center;">
+        <div class="media-item-badge">${sl.num}</div>
+        <span style="font-size:9px;color:#6b7280;">없음</span>
+      </div>`;
+    }
   });
-  if (q) {
-    document.querySelectorAll(".sidebar-section").forEach(s => {
-      s.classList.add("open");
-      s.querySelector(".sidebar-section-body").classList.remove("hidden");
+  html += `<div class="media-upload-btn" onclick="document.getElementById('bg-upload-input-tab').click()">+ 이미지 업로드</div>`;
+  html += `</div>`;
+  html += `<input type="file" accept="image/*,video/mp4" id="bg-upload-input-tab" class="hidden" onchange="uploadCurrentSlideBg(this)">`;
+  el.innerHTML = html;
+}
+
+function uploadCurrentSlideBg(input) {
+  const sl = getSelectedSlide();
+  if (sl) uploadSlideBg(sl.num, input);
+}
+
+// ─── Tab: Audio ───
+
+function renderTabAudio() {
+  const el = document.getElementById("tab-audio");
+  let html = `<div class="comp-tab-title">효과음 (SFX)</div>`;
+  html += `<div class="comp-tab-subtitle">타임라인에 드래그하세요</div>`;
+  (composerData.sfx_list || []).forEach(s => {
+    html += `<div class="audio-item" draggable="true" ondragstart="onSfxDragStart(event, '${s.file}')">
+      <button class="audio-play-btn" onclick="previewAudio('${s.path}')">&#9654;</button>
+      <span class="flex-1 truncate">${s.file.replace(/\.[^.]+$/, '')}</span>
+      <span style="font-size:9px;color:#6b7280;">${s.duration.toFixed(1)}s</span>
+    </div>`;
+  });
+  html += `<div class="comp-tab-title" style="margin-top:16px;">배경 음악 (BGM)</div>`;
+  (composerData.bgm_list || []).forEach(s => {
+    const isActive = composeState.bgm && composeState.bgm.file === s.file;
+    html += `<div class="audio-item ${isActive ? 'bgm-active' : ''}">
+      <button class="audio-play-btn" onclick="previewAudio('${s.path}')">&#9654;</button>
+      <span class="flex-1 truncate">${s.file.replace(/\.[^.]+$/, '')}</span>
+      <button class="audio-apply-btn ${isActive ? 'applied' : ''}" onclick="applyBgm('${_esc(s.file)}', '${_esc(s.path)}', ${s.duration || 0})">${isActive ? '적용됨' : '적용'}</button>
+    </div>`;
+  });
+  if (composeState.bgm) {
+    html += `<div style="margin-top:8px;">
+      <div class="ctrl-row"><span class="ctrl-label">볼륨</span>
+        <input class="ctrl-input" type="number" value="${composeState.bgm.volume}" min="0" max="1" step="0.01" onchange="updateBgmProp('volume', +this.value)">
+      </div>
+      <button onclick="removeBgm()" style="width:100%;padding:4px;background:#3b1c1c;color:#f87171;border:none;border-radius:4px;font-size:10px;cursor:pointer;margin-top:4px;">BGM 제거</button>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+// ─── Tab: Text (Overlay) ───
+
+function renderTabText() {
+  const el = document.getElementById("tab-text");
+  const sl = getSelectedSlide();
+  if (!sl) { el.innerHTML = `<div class="text-xs text-gray-600" style="padding:20px;">슬라이드를 선택하세요</div>`; return; }
+
+  const ovr = getOverride(sl.num);
+  const isHidden = ovr.hidden === true;
+  const ovrMain = ovr.main !== undefined ? ovr.main : (sl.main || "").replace(/<[^>]*>/g, "");
+  const ovrSub = ovr.sub !== undefined ? ovr.sub : (sl.sub || "").replace(/<[^>]*>/g, "");
+
+  let html = `<div class="comp-tab-title">오버레이 편집 <span style="color:#6b7280;font-weight:400;">슬라이드 ${sl.num}</span></div>`;
+  html += `<div class="ctrl-section">
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;">
+      <input type="checkbox" ${isHidden ? '' : 'checked'} onchange="toggleOverlay(${sl.num}, !this.checked)"
+             style="accent-color:#6366f1;width:14px;height:14px;">
+      <span style="font-size:11px;color:#d1d5db;">오버레이 표시</span>
+    </label>
+  </div>`;
+
+  html += `<div style="${isHidden ? 'opacity:0.3;pointer-events:none;' : ''}">`;
+  html += `<div class="ctrl-section">
+    <div class="ctrl-row"><span class="ctrl-label">제목</span>
+      <input class="ctrl-input" value="${_esc(ovrMain)}" onchange="updateOverride(${sl.num}, 'main', this.value)">
+    </div>
+    <div class="ctrl-row"><span class="ctrl-label">부제</span>
+      <input class="ctrl-input" value="${_esc(ovrSub)}" onchange="updateOverride(${sl.num}, 'sub', this.value)">
+    </div>
+  </div>`;
+
+  html += `<div class="ctrl-section">
+    <div class="comp-tab-subtitle">크기 / 위치</div>
+    <div class="ctrl-grid-2">
+      <div class="ctrl-row"><span class="ctrl-label">제목</span><input class="ctrl-input" type="number" value="${ovr.mainSize || 100}" min="20" max="200" step="4" onchange="updateOverride(${sl.num}, 'mainSize', +this.value)"></div>
+      <div class="ctrl-row"><span class="ctrl-label">부제</span><input class="ctrl-input" type="number" value="${ovr.subSize || 52}" min="16" max="120" step="4" onchange="updateOverride(${sl.num}, 'subSize', +this.value)"></div>
+      <div class="ctrl-row"><span class="ctrl-label">너비</span><input class="ctrl-input" type="number" value="${ovr.maxWidth || 1000}" min="200" max="1080" step="20" onchange="updateOverride(${sl.num}, 'maxWidth', +this.value)"></div>
+      <div class="ctrl-row"><span class="ctrl-label">X</span><input class="ctrl-input" type="number" value="${ovr.x !== undefined ? ovr.x : 540}" min="0" max="1080" onchange="updateOverride(${sl.num}, 'x', +this.value)"></div>
+      <div class="ctrl-row"><span class="ctrl-label">Y</span><input class="ctrl-input" type="number" value="${ovr.y !== undefined ? ovr.y : 960}" min="0" max="1920" onchange="updateOverride(${sl.num}, 'y', +this.value)"></div>
+    </div>
+  </div>`;
+
+  html += `<div class="ctrl-section">
+    <div class="comp-tab-subtitle">스타일</div>
+    <div class="ctrl-grid-2">
+      <div class="ctrl-row"><span class="ctrl-label">제목색</span>
+        <input type="color" value="${ovr.mainColor || '#ffffff'}" style="width:28px;height:20px;border:none;background:none;cursor:pointer;padding:0;" onchange="updateOverride(${sl.num}, 'mainColor', this.value)">
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">부제색</span>
+        <input type="color" value="${ovr.subColor || '#d1d5db'}" style="width:28px;height:20px;border:none;background:none;cursor:pointer;padding:0;" onchange="updateOverride(${sl.num}, 'subColor', this.value)">
+      </div>
+    </div>
+    <div class="ctrl-row"><span class="ctrl-label">폰트</span>
+      <select class="ctrl-input" style="font-size:10px;" onchange="updateOverride(${sl.num}, 'fontFamily', this.value)">
+        ${['Noto Sans KR','Black Han Sans','Jua','Do Hyeon','Gothic A1','Nanum Gothic','Nanum Myeongjo','Gaegu'].map(f =>
+          `<option value="${f}" ${(ovr.fontFamily || 'Noto Sans KR') === f ? 'selected' : ''}>${f}</option>`
+        ).join('')}
+      </select>
+    </div>
+    <div class="ctrl-row"><span class="ctrl-label">배경</span>
+      <input type="range" min="0" max="100" step="5" value="${ovr.bgOpacity !== undefined ? ovr.bgOpacity : 40}"
+             oninput="updateOverride(${sl.num}, 'bgOpacity', +this.value); this.nextElementSibling.textContent=this.value+'%';"
+             style="flex:1;accent-color:#6366f1;">
+      <span style="font-size:9px;color:#6b7280;width:28px;text-align:right;">${ovr.bgOpacity !== undefined ? ovr.bgOpacity : 40}%</span>
+    </div>
+  </div>`;
+  html += `<button onclick="resetOverride(${sl.num})" style="width:100%;padding:5px;background:#2a2d38;color:#9ca3af;border:none;border-radius:5px;font-size:10px;cursor:pointer;">초기화</button>`;
+  html += `</div>`;
+
+  el.innerHTML = html;
+}
+
+// ─── Tab: Narration ───
+
+function renderTabNarration() {
+  const el = document.getElementById("tab-narration");
+  const sl = getSelectedSlide();
+  if (!sl) { el.innerHTML = `<div class="text-xs text-gray-600" style="padding:20px;">슬라이드를 선택하세요</div>`; return; }
+
+  const slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
+  const sentences = sl.sentences || [];
+  const chCfg = composerData.channel_config || {};
+  const curEngine = chCfg.tts_engine || "edge-tts";
+  const dur = getSlideDuration(sl.num);
+
+  let html = `<div class="comp-tab-title">나레이션 <span style="color:#6b7280;font-weight:400;">슬라이드 ${sl.num}</span></div>`;
+
+  // 슬라이드 길이
+  html += `<div class="ctrl-row" style="margin-bottom:8px;"><span class="ctrl-label">길이</span>
+    <input class="ctrl-input" type="number" value="${dur.toFixed(1)}" min="1" max="30" step="0.5" onchange="updateSlideDuration(${sl.num}, +this.value)">
+    <span style="font-size:9px;color:#6b7280;">초</span>
+  </div>`;
+
+  // 문장 리스트
+  if (sentences.length > 0) {
+    html += `<div class="comp-tab-subtitle">문장 (${sentences.length})</div>`;
+    sentences.forEach((sen, si) => {
+      const audioInfo = slideAudio.find(a => a.sentence_idx === si);
+      html += `<div class="narr-sentence">
+        <span class="narr-idx">${si + 1}</span>
+        <span class="narr-text" title="${_esc(sen.text)}">${_esc(sen.text)}</span>
+        ${audioInfo ? `<button class="narr-play" onclick="previewAudio('${audioInfo.path}')">&#9654; ${audioInfo.duration.toFixed(1)}s</button>` : `<span style="font-size:8px;color:#4b5563;">-</span>`}
+      </div>`;
     });
   }
+
+  // TTS
+  html += `<div class="ctrl-section" style="margin-top:10px;">
+    <div class="ctrl-row"><span class="ctrl-label">TTS</span>
+      <select id="tts-engine" class="ctrl-input" style="font-size:10px;">
+        <option value="edge-tts" ${curEngine === 'edge-tts' ? 'selected' : ''}>Edge TTS</option>
+        <option value="google-cloud" ${curEngine === 'google-cloud' ? 'selected' : ''}>Google Cloud</option>
+        <option value="gpt-sovits" ${curEngine === 'gpt-sovits' ? 'selected' : ''}>GPT-SoVITS</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:4px;margin-top:4px;">
+      <button onclick="generateTTS(${sl.num})" id="btn-gen-tts"
+        style="flex:1;padding:6px;background:#065f46;color:#34d399;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;">TTS 생성</button>
+      <button onclick="generateAllTTS()" id="btn-gen-all-tts"
+        style="padding:6px 10px;background:#064e3b;color:#6ee7b7;border:none;border-radius:5px;font-size:10px;cursor:pointer;">전체</button>
+    </div>
+  </div>`;
+
+  // 음성 업로드
+  html += `<div style="margin-top:6px;">
+    <input type="file" accept="audio/*" id="audio-upload-input" class="hidden" onchange="uploadSlideAudio(${sl.num}, this)">
+    <button onclick="document.getElementById('audio-upload-input').click()"
+      style="width:100%;padding:5px;background:#2a2d38;color:#9ca3af;border:none;border-radius:5px;font-size:10px;cursor:pointer;">음성 파일 업로드</button>
+  </div>`;
+  html += `<div id="tts-status" style="font-size:9px;color:#6b7280;margin-top:4px;"></div>`;
+
+  el.innerHTML = html;
 }
 
 // ─── SFX Drag & Drop ───

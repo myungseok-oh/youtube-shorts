@@ -9,94 +9,90 @@
   <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Do+Hyeon&family=Gaegu:wght@400;700&family=Gothic+A1:wght@400;700;900&family=Jua&family=Nanum+Gothic:wght@400;700&family=Nanum+Myeongjo:wght@400;700&family=Noto+Sans+KR:wght@400;700;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/composer.css">
 </head>
-<body class="bg-gray-950 text-white min-h-screen flex flex-col">
+<body class="bg-[#15171e] text-white min-h-screen flex flex-col select-none">
 
   <!-- Header -->
-  <header class="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-800 flex-shrink-0">
+  <header class="comp-header">
     <div class="flex items-center gap-3">
-      <a href="/" class="text-gray-400 hover:text-white text-sm">&larr; 대시보드</a>
-      <span class="text-sm text-gray-500">|</span>
-      <span class="text-sm font-medium">{{ job_id }}</span>
-      <span class="text-xs text-gray-600">영상 편집</span>
+      <a href="/" class="text-gray-400 hover:text-white text-xs">&larr; 대시보드</a>
+      <span class="text-xs text-gray-600">|</span>
+      <span class="text-xs font-medium text-gray-300">{{ job_id }}</span>
     </div>
     <div class="flex items-center gap-2">
-      <button id="btn-save" onclick="saveCompose()"
-        class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">
-        저장
-      </button>
-      <button id="btn-render" onclick="startRender()"
-        class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 rounded text-xs font-medium transition">
-        렌더링 시작
-      </button>
+      <button id="btn-save" onclick="saveCompose()" class="comp-btn comp-btn-secondary">저장</button>
+      <button id="btn-render" onclick="startRender()" class="comp-btn comp-btn-primary">렌더링 시작</button>
     </div>
   </header>
 
-  <!-- Main: Preview (left) + Properties (right) -->
+  <!-- Main -->
   <div class="flex-1 flex overflow-hidden">
 
-    <!-- Left: SFX/BGM sidebar (collapsible) -->
-    <aside id="res-panel" class="w-48 bg-gray-900 border-r border-gray-800 flex flex-col overflow-y-auto flex-shrink-0">
-      <div class="p-2 border-b border-gray-800">
-        <input type="text" id="sidebar-search" placeholder="검색..."
-               oninput="filterSidebar(this.value)"
-               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 outline-none focus:border-orange-500">
-      </div>
-      <div class="sidebar-section" data-section="sfx">
-        <div class="sidebar-section-header" onclick="toggleSection('sfx')">
-          <span class="sidebar-arrow">&#9654;</span>
-          <span class="text-xs font-semibold text-gray-400">효과음</span>
-        </div>
-        <div class="sidebar-section-body hidden" id="sfx-body">
-          <div id="sfx-list" class="space-y-1"></div>
-        </div>
-      </div>
-      <div class="sidebar-section" data-section="bgm">
-        <div class="sidebar-section-header" onclick="toggleSection('bgm')">
-          <span class="sidebar-arrow">&#9654;</span>
-          <span class="text-xs font-semibold text-gray-400">BGM</span>
-        </div>
-        <div class="sidebar-section-body hidden" id="bgm-body">
-          <div id="bgm-list" class="space-y-1"></div>
-        </div>
-      </div>
-    </aside>
+    <!-- Icon Sidebar -->
+    <nav class="comp-icon-sidebar">
+      <button class="comp-icon-tab active" data-tab="media" onclick="switchTab('media')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+        <span>미디어</span>
+      </button>
+      <button class="comp-icon-tab" data-tab="audio" onclick="switchTab('audio')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        <span>오디오</span>
+      </button>
+      <button class="comp-icon-tab" data-tab="text" onclick="switchTab('text')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>
+        <span>텍스트</span>
+      </button>
+      <button class="comp-icon-tab" data-tab="narration" onclick="switchTab('narration')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        <span>나레이션</span>
+      </button>
+    </nav>
 
-    <!-- Center: Preview + Audio controls -->
-    <div class="flex flex-col flex-shrink-0" style="width:280px;">
-      <div class="flex-1 flex items-center justify-center bg-black relative">
-        <div id="canvas-container" class="relative" style="width:225px;height:400px;">
-          <div id="slide-preview" class="w-full h-full bg-gray-900 flex items-center justify-center">
+    <!-- Tab Panel -->
+    <div class="comp-tab-panel" id="tab-panel">
+      <div id="tab-media" class="comp-tab-content active"></div>
+      <div id="tab-audio" class="comp-tab-content"></div>
+      <div id="tab-text" class="comp-tab-content"></div>
+      <div id="tab-narration" class="comp-tab-content"></div>
+    </div>
+
+    <!-- Preview -->
+    <div class="comp-preview-area">
+      <div class="comp-preview-wrap">
+        <div id="canvas-container" class="comp-canvas">
+          <div id="slide-preview" class="w-full h-full bg-[#1a1c24] flex items-center justify-center rounded-lg overflow-hidden">
             <span class="text-gray-600 text-xs">슬라이드를 선택하세요</span>
           </div>
         </div>
       </div>
-      <div class="flex items-center gap-2 px-3 py-1.5 bg-gray-900 border-t border-gray-800">
-        <button id="btn-play-slide" onclick="playSlideAudio()" class="text-sm" title="현재 슬라이드 나레이션 재생">&#9654;</button>
-        <span id="audio-status" class="text-[10px] text-gray-400 font-mono flex-1">00:00</span>
-        <button onclick="playAllSlides()" class="text-[10px] text-gray-400 hover:text-white px-2 py-0.5 bg-gray-800 rounded">&#9654; 전체</button>
-      </div>
-    </div>
-
-    <!-- Right: Properties (compact grid) -->
-    <div class="flex-1 bg-gray-900 border-l border-gray-800 overflow-y-auto">
-      <div class="p-3" id="props-content">
-        <div class="text-xs text-gray-500">슬라이드를 선택하세요</div>
+      <div class="comp-playback">
+        <button id="btn-play-slide" onclick="playSlideAudio()" class="comp-play-btn">&#9654;</button>
+        <span id="audio-status" class="text-[10px] text-gray-400 font-mono">00:00</span>
+        <div class="flex-1"></div>
+        <button onclick="playAllSlides()" class="text-[10px] text-gray-500 hover:text-white px-2 py-0.5 rounded hover:bg-gray-800">&#9654; 전체 미리듣기</button>
       </div>
     </div>
   </div>
 
   <!-- Timeline (Bottom) -->
-  <div id="timeline" class="bg-gray-900 border-t border-gray-800 flex flex-col flex-shrink-0" style="height:180px;">
-    <div id="timeline-body" class="relative flex-1 mx-2 mt-1">
-      <div id="slide-track" class="flex gap-1 h-full overflow-x-auto pb-1" style="align-items:stretch;"></div>
+  <div id="timeline" class="comp-timeline">
+    <!-- 타임라인 눈금 -->
+    <div id="timeline-ruler" class="comp-timeline-ruler"></div>
+    <!-- 슬라이드 트랙 -->
+    <div class="comp-track">
+      <div class="comp-track-label">슬라이드</div>
+      <div id="slide-track" class="comp-track-body"></div>
     </div>
-    <div class="mx-2 mb-1">
-      <div id="timeline-sfx" class="relative" style="height:28px; background:#0d1117; border:1px dashed #374151; border-radius:4px;">
-        <div class="absolute left-2 top-0.5 text-[8px] text-gray-600 pointer-events-none select-none">SFX</div>
+    <!-- SFX 트랙 -->
+    <div class="comp-track">
+      <div class="comp-track-label">SFX</div>
+      <div id="timeline-sfx" class="comp-track-body comp-track-drop">
         <div id="sfx-markers" class="absolute inset-0"></div>
       </div>
-      <div id="timeline-bgm" class="relative" style="height:22px; background:#0d1117; border:1px dashed #374151; border-radius:0 0 4px 4px; margin-top:1px;">
-        <div class="absolute left-2 top-0.5 text-[8px] text-gray-600 pointer-events-none select-none">BGM</div>
+    </div>
+    <!-- BGM 트랙 -->
+    <div class="comp-track">
+      <div class="comp-track-label">BGM</div>
+      <div id="timeline-bgm" class="comp-track-body comp-track-drop">
         <div id="bgm-bar-container" class="absolute inset-0"></div>
       </div>
     </div>
