@@ -678,6 +678,9 @@ function stopAllAudio() {
     _previewBgm.pause();
     _previewBgm = null;
   }
+  // SFX 오디오 정리
+  if (_sfxAudios) { _sfxAudios.forEach(a => { a.pause(); }); _sfxAudios = []; }
+  _sfxFired = new Set();
   if (_previewTimer) {
     cancelAnimationFrame(_previewTimer);
     _previewTimer = null;
@@ -812,15 +815,9 @@ async function playAllSlides() {
   const pb2 = document.getElementById("btn-play") || document.getElementById("btn-play-slide");
   if (pb2) pb2.innerHTML = "&#9646;&#9646;";
 
-  // BGM 시작
-  if (composeState.bgm && composeState.bgm.path) {
-    _previewBgm = new Audio(composeState.bgm.path);
-    _previewBgm.volume = composeState.bgm.volume || 0.1;
-    _previewBgm.loop = true;
-    _previewBgm.play().catch(() => {});
-  }
-
+  _sfxFired = new Set();
   _buildSlideTimeMap();
+  _syncBgm(0);
   _previewTick();
 }
 
@@ -851,6 +848,59 @@ function _buildSlideTimeMap() {
     const audioFiles = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
     _slideTimeMap.push({ num: sl.num, start: t, end: t + dur, audioFiles });
     t += dur;
+  });
+}
+
+let _sfxFired = new Set();
+let _sfxAudios = [];
+
+function _syncBgm(elapsed) {
+  const bgm = composeState.bgm;
+  if (!bgm || !bgm.path) {
+    if (_previewBgm) { _previewBgm.pause(); _previewBgm = null; }
+    return;
+  }
+  const inRange = elapsed >= bgm.start_time && elapsed < bgm.end_time;
+  if (inRange) {
+    if (!_previewBgm) {
+      _previewBgm = new Audio(bgm.path);
+      _previewBgm.loop = true;
+    }
+    _previewBgm.volume = bgm.volume || 0.1;
+    // 페이드인
+    const fi = bgm.fade_in || 0;
+    if (fi > 0 && elapsed - bgm.start_time < fi) {
+      _previewBgm.volume = (bgm.volume || 0.1) * ((elapsed - bgm.start_time) / fi);
+    }
+    // 페이드아웃
+    const fo = bgm.fade_out || 0;
+    if (fo > 0 && bgm.end_time - elapsed < fo) {
+      _previewBgm.volume = (bgm.volume || 0.1) * ((bgm.end_time - elapsed) / fo);
+    }
+    const bgmOffset = elapsed - bgm.start_time;
+    // 오디오 위치가 크게 벗어났으면 보정
+    if (_previewBgm.paused || Math.abs(_previewBgm.currentTime - bgmOffset) > 1) {
+      _previewBgm.currentTime = bgmOffset % (_previewBgm.duration || 999);
+    }
+    if (_previewBgm.paused) _previewBgm.play().catch(() => {});
+  } else {
+    if (_previewBgm && !_previewBgm.paused) _previewBgm.pause();
+  }
+}
+
+function _triggerSfx(elapsed) {
+  (composeState.sfx_markers || []).forEach(m => {
+    if (_sfxFired.has(m.id)) return;
+    if (elapsed >= m.time && elapsed < m.time + 0.3) {
+      _sfxFired.add(m.id);
+      const sfxInfo = (composerData.sfx_list || []).find(s => s.file === m.file);
+      if (sfxInfo) {
+        const a = new Audio(sfxInfo.path);
+        a.volume = m.volume || 0.8;
+        a.play().catch(() => {});
+        _sfxAudios.push(a);
+      }
+    }
   });
 }
 
@@ -909,6 +959,10 @@ function _previewTick() {
     // 플레이헤드 위치 (퍼센트)
     _playheadPos = elapsed / total;
     updatePlayhead();
+
+    // BGM + SFX 동기화
+    _syncBgm(elapsed);
+    _triggerSfx(elapsed);
 
     // 상태 표시
     const statusEl = document.getElementById("audio-status");
