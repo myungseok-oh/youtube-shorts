@@ -269,13 +269,56 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
+}
+
+/* Playhead */
+.comp-playhead {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  background: #f97316;
+  z-index: 30;
+  pointer-events: none;
+  left: 48px;
+}
+.comp-playhead::before {
+  content: "";
+  position: absolute;
+  top: -2px;
+  left: -6px;
+  width: 0; height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 8px solid #f97316;
 }
 .comp-timeline-ruler {
-  height: 20px;
+  height: 22px;
   background: #1e2028;
   border-bottom: 1px solid #2a2d38;
   margin-left: 48px;
   flex-shrink: 0;
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+}
+.ruler-mark {
+  position: absolute;
+  top: 4px;
+  font-size: 8px;
+  color: #6b7280;
+  font-family: monospace;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.ruler-mark::after {
+  content: "";
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  width: 1px;
+  height: 4px;
+  background: #3a3d48;
 }
 .comp-track {
   display: flex;

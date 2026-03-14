@@ -122,6 +122,40 @@ function renderTimeline() {
 
   renderSfxMarkers();
   renderBgmTrack();
+  renderRuler();
+  updatePlayhead();
+}
+
+function renderRuler() {
+  const ruler = document.getElementById("timeline-ruler");
+  if (!ruler) return;
+  const total = getTotalDuration() || 1;
+  const steps = Math.ceil(total);
+  let html = "";
+  for (let s = 0; s <= steps; s += Math.max(1, Math.floor(steps / 10))) {
+    const pct = (s / total) * 100;
+    const min = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    html += `<span class="ruler-mark" style="left:${pct}%;">${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')}</span>`;
+  }
+  ruler.innerHTML = html;
+  ruler.onclick = (e) => {
+    const rect = ruler.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    _playheadPos = pct;
+    updatePlayhead();
+  };
+}
+
+let _playheadPos = 0;
+
+function updatePlayhead() {
+  const ph = document.getElementById("timeline-playhead");
+  if (!ph) return;
+  const labelW = 48;
+  const timeline = document.getElementById("timeline");
+  const trackW = timeline.clientWidth - labelW;
+  ph.style.left = `${labelW + _playheadPos * trackW}px`;
 }
 
 function selectSlide(idx) {
