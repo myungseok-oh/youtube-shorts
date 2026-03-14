@@ -570,10 +570,17 @@ function stopAllAudio() {
     _previewTimer = null;
   }
   _previewing = false;
-  document.getElementById("btn-play-slide").innerHTML = "&#9654;";
+  const pb = document.getElementById("btn-play") || document.getElementById("btn-play-slide");
+  if (pb) pb.innerHTML = "&#9654;";
 }
 
-// 현재 슬라이드만 미리듣기
+// ▶ 버튼: 재생/정지 토글
+async function togglePreview() {
+  if (_previewing) { stopAllAudio(); return; }
+  await playAllSlides();
+}
+
+// (legacy) 현재 슬라이드만 미리듣기
 async function playSlideAudio() {
   if (_previewing) { stopAllAudio(); return; }
   const sl = getSelectedSlide();
@@ -688,7 +695,8 @@ async function playAllSlides() {
   _previewSlideIdx = -1;
   _previewAudioPlayed = new Set();
 
-  document.getElementById("btn-play-slide").innerHTML = "&#9646;&#9646;";
+  const pb2 = document.getElementById("btn-play") || document.getElementById("btn-play-slide");
+  if (pb2) pb2.innerHTML = "&#9646;&#9646;";
 
   // BGM 시작
   if (composeState.bgm && composeState.bgm.path) {
@@ -1273,7 +1281,7 @@ function _truncate(s, max) {
 
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
-  if (e.key === " ") { e.preventDefault(); playSlideAudio(); }
+  if (e.key === " ") { e.preventDefault(); togglePreview(); }
   if (e.key === "ArrowLeft" && selectedSlide > 0) selectSlide(selectedSlide - 1);
   if (e.key === "ArrowRight" && selectedSlide < composeState.slide_order.length - 1) selectSlide(selectedSlide + 1);
   if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveCompose(); }
