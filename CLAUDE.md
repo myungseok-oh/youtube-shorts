@@ -266,21 +266,27 @@ POST http://127.0.0.1:9880/tts
 - **MP3 concat 재인코딩**: `sync_engine.py` — `-c copy` 대신 libmp3lame 재인코딩으로 문장 시작 음절 씹힘 수정
 - **오디오 패딩 포맷 매칭**: `_pad_slide_audio()` — ffprobe로 원본 오디오 샘플레이트/채널 감지 → 무음 패딩 동일 포맷 생성
 - **동물심리 60초 채널** (ch-0006): 반려동물 행동 심리학 교양 채널 추가
-- **프리프로덕션 편집기(Composer)**: `/composer/{job_id}` — 영상 제작 전 슬라이드+나레이션+SFX/BGM 조립
-  - 슬라이드 타임라인: 배경 이미지 순서 변경(드래그), 이미지 추가/교체
-  - 나레이션: 슬라이드별 TTS 생성 / 음성 파일 업로드 / 미리듣기
-  - 오버레이 편집: 텍스트 내용/위치/크기 수정, 오버레이 숨김(제거)
-  - SFX/BGM: 드래그 앤 드롭 배치
-  - 저장 후 렌더링 시작 → Phase B 실행
+- **프리프로덕션 편집기(Composer)**: `/composer/{job_id}` — CapCut 스타일 영상 편집기
+  - **UI**: 아이콘 탭 사이드바 (미디어/효과음/배경음/요소/텍스트/나레이션) + 미리보기(9:16) + 타임라인
+  - **미디어 탭**: 배경 이미지 2열 그리드, 업로드, 슬라이드 삭제
+  - **효과음 탭**: SFX 드래그 배치, 볼륨/페이드인/아웃, 타임라인 좌우 핸들로 시작/길이 조절
+  - **배경음 탭**: BGM 적용, 볼륨/시작/종료/페이드인/아웃, 타임라인 드래그 이동+좌우 핸들
+  - **요소 탭**: 말풍선 SVG 9종 + 이미지 요소, 드래그/회전/4코너 리사이즈
+  - **텍스트 탭**: 오버레이 편집 (제목/부제/크기/색/폰트/위치/회전/불투명도), 텍스트 강조(부분 컬러), 자유 텍스트 추가
+  - **나레이션 탭**: 문장 리스트, TTS 엔진 선택(Edge/Google/SoVITS), 슬라이드별/전체 TTS 생성, 음성 업로드
+  - **미리보기**: ▶ 재생/정지 토글, 슬라이드 순서대로 배경+오버레이+나레이션+BGM+SFX 동시 재생
+  - **타임라인**: 프레임 스트립, 플레이헤드(60fps), 클릭/드래그 탐색, SFX/BGM 트랙
+  - 빈 closing 슬라이드 자동 제외, TTS 미생성 시 자동 생성 후 재생
   - 파일: `templates/composer.html`, `static/composer.js`, `static/composer.css`, `pipeline/composer.py`
   - API: `GET /api/jobs/{id}/composer`, `POST /api/jobs/{id}/composer/save`, `POST /api/jobs/{id}/composer/tts`, `POST /api/jobs/{id}/composer/audio/{n}`, `GET /api/jobs/{id}/audio/{filename}`
-  - 오버레이 설정: `compose_data.json`의 `slide_overrides` → `generate_slides.js`에 전달
+  - 편집 데이터: `compose_data.json` (slide_order, slide_overrides, freeTexts, elements, sfx_markers, bgm)
 - **슬라이드 오버레이 오버라이드**: `generate_slides.js`에 `slideOverrides` 입력 지원
-  - `buildCustomContent()`: 커스텀 위치/크기로 텍스트 렌더링
+  - `buildCustomContent()`: 커스텀 위치/크기/색/폰트/회전/불투명도
   - `buildHiddenOverlay()`: 텍스트 없이 배경만 렌더링 (오버레이 제거)
   - `slide_generator.py` → `generate_slides()` 함수에 `slide_overrides` 파라미터 추가
   - `runner.py`: Phase B에서 `compose_data.json`의 `slide_overrides` 자동 로드
 - **YouTube 썸네일 2MB 제한 대응**: `slide_generator.py`에서 썸네일 생성 직후 2MB 초과 시 JPEG 변환+압축
+- **스크롤바 스타일**: 전역 `*` 셀렉터로 얇은 다크 스크롤바 적용
 
 ---
 
