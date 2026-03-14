@@ -15,9 +15,11 @@ async function initComposer() {
   composerData = await r.json();
   composeState = composerData.compose_data || { slide_order: [], slide_durations: {}, sfx_markers: [], bgm: null };
 
-  // 초기 슬라이드 순서: compose_data에 없으면 기본 순서
+  // 초기 슬라이드 순서: compose_data에 없으면 기본 순서 (빈 closing 제외)
   if (!composeState.slide_order || composeState.slide_order.length === 0) {
-    composeState.slide_order = composerData.slides.map(s => s.num);
+    composeState.slide_order = composerData.slides
+      .filter(s => !(s.bg_type === "closing" && (!s.sentences || s.sentences.length === 0) && !s.bg_url))
+      .map(s => s.num);
   }
   composeState.sfx_markers = composeState.sfx_markers || [];
   composeState.bgm = composeState.bgm || null;
@@ -840,17 +842,23 @@ function renderTabMedia() {
   html += `<div class="media-grid">`;
   slides.forEach((sl, idx) => {
     const isActive = idx === selectedSlide;
+    const isClosing = sl.bg_type === "closing";
+    // closing + 문장 없음 + 배경 없음 → 숨김
+    if (isClosing && (!sl.sentences || sl.sentences.length === 0) && !sl.bg_url) return;
+
     if (sl.bg_url) {
       const isVideo = sl.bg_url.includes('.mp4') || sl.bg_url.includes('.gif');
       html += `<div class="media-item ${isActive ? 'active' : ''}" onclick="selectSlide(${idx})">
         ${isVideo ? `<video src="${sl.bg_url}" muted autoplay loop playsinline></video>` : `<img src="${sl.bg_url}" draggable="false">`}
         <div class="media-item-badge">${sl.num}</div>
         <div class="media-item-label">${sl.bg_type}</div>
+        <button class="media-item-delete" onclick="event.stopPropagation(); removeSlide(${idx})" title="삭제">&times;</button>
       </div>`;
     } else {
       html += `<div class="media-item ${isActive ? 'active' : ''}" onclick="selectSlide(${idx})" style="display:flex;align-items:center;justify-content:center;">
         <div class="media-item-badge">${sl.num}</div>
         <span style="font-size:9px;color:#6b7280;">없음</span>
+        <button class="media-item-delete" onclick="event.stopPropagation(); removeSlide(${idx})" title="삭제">&times;</button>
       </div>`;
     }
   });
@@ -858,6 +866,16 @@ function renderTabMedia() {
   html += `</div>`;
   html += `<input type="file" accept="image/*,video/mp4" id="bg-upload-input-tab" class="hidden" onchange="uploadCurrentSlideBg(this)">`;
   el.innerHTML = html;
+}
+
+function removeSlide(idx) {
+  if (composeState.slide_order.length <= 1) return;
+  composeState.slide_order.splice(idx, 1);
+  _dirty = true;
+  if (selectedSlide >= composeState.slide_order.length) selectedSlide = composeState.slide_order.length - 1;
+  renderTimeline();
+  renderTabMedia();
+  renderPreview();
 }
 
 function uploadCurrentSlideBg(input) {
