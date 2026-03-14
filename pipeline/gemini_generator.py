@@ -2,7 +2,7 @@
 
 google-genai SDK 사용, 공식 모델명:
 - gemini-2.5-flash-image (이미지, 무료)
-- veo-2.0-generate-001 (영상, 무료 티어 제한적)
+- veo-3.1-generate-001 (영상, Veo 3.1 Fast image-to-video)
 """
 import os
 import time
@@ -145,44 +145,6 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
         err_msg = str(e)
         print(f"[gemini] video {VIDEO_MODEL} failed: {err_msg[:300]}")
 
-    return False
-
-
-# 하위 호환: 텍스트 → 영상 (폴백용)
-def generate_video(prompt: str, output_path: str, api_key: str,
-                   aspect_ratio: str = "9:16", duration: int = 6) -> bool:
-    """텍스트 → 영상 직접 생성 (이미지 없이). 폴백용."""
-    client = genai.Client(api_key=api_key)
-    try:
-        print(f"[gemini] text-to-video start: {VIDEO_MODEL} ({duration}s, {aspect_ratio})")
-        operation = client.models.generate_videos(
-            model=VIDEO_MODEL,
-            prompt=prompt,
-            config=types.GenerateVideosConfig(
-                personGeneration="dont_allow",
-                aspectRatio=aspect_ratio,
-                numberOfVideos=1,
-                durationSeconds=max(duration, 5),
-                generateAudio=False,
-            ),
-        )
-        elapsed = 0
-        while not operation.done:
-            if elapsed >= VIDEO_POLL_TIMEOUT:
-                return False
-            time.sleep(VIDEO_POLL_INTERVAL)
-            elapsed += VIDEO_POLL_INTERVAL
-            operation = client.operations.get(operation)
-
-        if operation.response and operation.response.generated_videos:
-            video = operation.response.generated_videos[0]
-            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-            client.files.download(file=video.video)
-            video.video.save(output_path)
-            print(f"[gemini] video saved: {os.path.basename(output_path)} ({elapsed}s)")
-            return True
-    except Exception as e:
-        print(f"[gemini] text-to-video failed: {str(e)[:300]}")
     return False
 
 

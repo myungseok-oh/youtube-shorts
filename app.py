@@ -32,7 +32,7 @@ from pipeline.sd_generator import (
     check_available as sd_check_available,
 )
 from pipeline.slide_generator import generate_slides, generate_chart, generate_infographic
-from pipeline.gemini_generator import generate_image as gemini_gen_image
+from pipeline.gemini_generator import generate_image as gemini_generate_image
 from pipeline.gemini_generator import image_to_video as gemini_image_to_video
 
 db = Database(config.db_path())
@@ -1608,7 +1608,7 @@ async def api_sd_generate_single(job_id: str, index: int, request: Request):
         _ar = "1:1" if slide_layout in ("center", "top", "bottom") else "9:16"
         output_path = os.path.join(bg_dir, f"bg_{index}.png")
         ok = await asyncio.to_thread(
-            gemini_gen_image, prompt, output_path, gemini_key, _ar
+            gemini_generate_image, prompt, output_path, gemini_key, _ar
         )
         if not ok:
             raise HTTPException(500, "Gemini 이미지 생성 실패")
@@ -1837,7 +1837,7 @@ async def api_sd_generate_auto(job_id: str):
                 _ar = "1:1" if slide_layout in ("center", "top", "bottom") else "9:16"
                 output_path = os.path.join(bg_dir, f"bg_{idx}.png")
                 await asyncio.to_thread(
-                    gemini_gen_image, en_prompt, output_path, gemini_key,
+                    gemini_generate_image, en_prompt, output_path, gemini_key,
                     _ar
                 )
                 gemini_count += 1
