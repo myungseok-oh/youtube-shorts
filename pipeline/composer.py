@@ -17,14 +17,14 @@ def get_composer_data(job_id: str, script: dict | None = None,
     if script:
         raw_slides = script.get("slides", [])
         sentences = script.get("sentences", [])
+        # 문장→슬라이드 매핑으로 정확한 오디오 연결
+        slide_audio_map = get_slide_audio_files(job_id, script)
+
         for i, sl in enumerate(raw_slides):
             slide_num = i + 1
-            # 해당 슬라이드의 문장들
             slide_sents = [s for s in sentences if s.get("slide") == slide_num]
-            # 배경 이미지/영상 찾기
             bg_file, bg_url = _find_bg(bg_dir, slide_num, job_id)
-            # 나레이션 오디오 찾기 (슬라이드별)
-            audio_files = _find_slide_audio(audio_dir, slide_num, len(slide_sents), job_id)
+            audio_files = slide_audio_map.get(slide_num, [])
 
             slides.append({
                 "num": slide_num,
