@@ -487,66 +487,152 @@ function previewAudio(path) {
   _playingAudio.addEventListener("ended", () => { _playingAudio = null; });
 }
 
+let _previewing = false;
+let _previewSlideIdx = 0;
+let _previewAudioIdx = 0;
+let _previewStartTime = 0;
+let _previewBgm = null;
+let _previewTimer = null;
+
 function stopAllAudio() {
   if (_playingAudio) {
     _playingAudio.pause();
     _playingAudio.currentTime = 0;
     _playingAudio = null;
   }
+  if (_previewBgm) {
+    _previewBgm.pause();
+    _previewBgm = null;
+  }
+  if (_previewTimer) {
+    cancelAnimationFrame(_previewTimer);
+    _previewTimer = null;
+  }
+  _previewing = false;
+  document.getElementById("btn-play-slide").innerHTML = "&#9654;";
 }
 
+// 현재 슬라이드만 미리듣기
 function playSlideAudio() {
+  if (_previewing) { stopAllAudio(); return; }
   const sl = getSelectedSlide();
   if (!sl) return;
   const slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
   if (slideAudio.length === 0) return;
 
   stopAllAudio();
-  _playSlideAudioSequence(slideAudio, 0);
+  document.getElementById("btn-play-slide").innerHTML = "&#9646;&#9646;";
+  _previewing = true;
+  _playAudioChain(slideAudio, 0, () => { stopAllAudio(); });
 }
 
-function _playSlideAudioSequence(audioList, idx) {
-  if (idx >= audioList.length) {
-    document.getElementById("btn-play-slide").innerHTML = "&#9654;";
-    return;
-  }
-  document.getElementById("btn-play-slide").innerHTML = "&#9646;&#9646;";
+function _playAudioChain(audioList, idx, onDone) {
+  if (!_previewing || idx >= audioList.length) { if (onDone) onDone(); return; }
   _playingAudio = new Audio(audioList[idx].path);
   _playingAudio.play().catch(() => {});
   _playingAudio.addEventListener("ended", () => {
-    _playSlideAudioSequence(audioList, idx + 1);
+    _playAudioChain(audioList, idx + 1, onDone);
   });
 }
 
+// 전체 미리보기: 슬라이드 순서대로 배경+오버레이+나레이션 재생
 function playAllSlides() {
+  if (_previewing) { stopAllAudio(); return; }
   stopAllAudio();
-  const slides = getOrderedSlides();
-  _allPlayQueue = [];
-  slides.forEach(sl => {
-    const slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
-    slideAudio.forEach(a => _allPlayQueue.push({ ...a, slideNum: sl.num }));
-  });
-  _allPlayIdx = 0;
-  _playNextInQueue();
+  _previewing = true;
+  _previewSlideIdx = 0;
+  _previewStartTime = performance.now();
+
+  document.getElementById("btn-play-slide").innerHTML = "&#9646;&#9646;";
+
+  // BGM 시작
+  if (composeState.bgm && composeState.bgm.path) {
+    _previewBgm = new Audio(composeState.bgm.path);
+    _previewBgm.volume = composeState.bgm.volume || 0.1;
+    _previewBgm.loop = true;
+    _previewBgm.play().catch(() => {});
+  }
+
+  _previewNextSlide();
 }
 
-function _playNextInQueue() {
-  if (_allPlayIdx >= _allPlayQueue.length) {
-    document.getElementById("audio-status").textContent = "재생 완료";
+function _previewNextSlide() {
+  if (!_previewing) return;
+  const slides = getOrderedSlides();
+  if (_previewSlideIdx >= slides.length) {
+    // 끝
+    stopAllAudio();
+    document.getElementById("audio-status").textContent = "미리보기 완료";
+    _playheadPos = 1;
+    updatePlayhead();
     return;
   }
-  const item = _allPlayQueue[_allPlayIdx];
-  // 해당 슬라이드 하이라이트
-  const slideIdx = composeState.slide_order.indexOf(item.slideNum);
-  if (slideIdx >= 0) selectSlide(slideIdx);
 
-  document.getElementById("audio-status").textContent = `재생 중: 슬라이드 ${item.slideNum} (${_allPlayIdx + 1}/${_allPlayQueue.length})`;
-  _playingAudio = new Audio(item.path);
-  _playingAudio.play().catch(() => {});
-  _playingAudio.addEventListener("ended", () => {
-    _allPlayIdx++;
-    _playNextInQueue();
-  });
+  const sl = slides[_previewSlideIdx];
+  const slideIdx = composeState.slide_order.indexOf(sl.num);
+  selectSlide(slideIdx);
+
+  const dur = getSlideDuration(sl.num);
+  const slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
+
+  document.getElementById("audio-status").textContent =
+    `미리보기: ${_previewSlideIdx + 1}/${slides.length} (${dur.toFixed(1)}s)`;
+
+  // 플레이헤드 애니메이션 시작
+  _animatePlayheadForSlide();
+
+  if (slideAudio.length > 0) {
+    // 오디오 있으면 오디오 재생, 오디오 끝나면 다음 (단, 최소 duration만큼 대기)
+    const audioStartTime = performance.now();
+    _playAudioChain(slideAudio, 0, () => {
+      const elapsed = (performance.now() - audioStartTime) / 1000;
+      const remaining = Math.max(0, dur - elapsed);
+      setTimeout(() => {
+        _previewSlideIdx++;
+        _previewNextSlide();
+      }, remaining * 1000);
+    });
+  } else {
+    // 오디오 없으면 duration만큼 대기
+    setTimeout(() => {
+      _previewSlideIdx++;
+      _previewNextSlide();
+    }, dur * 1000);
+  }
+}
+
+function _animatePlayheadForSlide() {
+  if (!_previewing) return;
+  const slides = getOrderedSlides();
+  const total = getTotalDuration() || 1;
+  // 현재까지 경과한 시간 계산
+  let elapsed = 0;
+  for (let i = 0; i < _previewSlideIdx; i++) {
+    elapsed += getSlideDuration(slides[i].num);
+  }
+  // 현재 슬라이드 내 진행률은 audio currentTime으로 추정
+  const curSlideDur = getSlideDuration(slides[_previewSlideIdx]?.num || 0) || 1;
+  const curElapsed = _playingAudio ? _playingAudio.currentTime : 0;
+  const pos = (elapsed + Math.min(curElapsed, curSlideDur)) / total;
+
+  _playheadPos = Math.min(1, pos);
+  updatePlayhead();
+
+  const statusEl = document.getElementById("audio-status");
+  const totalElapsed = elapsed + curElapsed;
+  const m = Math.floor(totalElapsed / 60);
+  const s = Math.floor(totalElapsed % 60);
+  if (statusEl) {
+    statusEl.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} / ${_fmtDur(total)} — 슬라이드 ${_previewSlideIdx + 1}/${slides.length}`;
+  }
+
+  _previewTimer = requestAnimationFrame(_animatePlayheadForSlide);
+}
+
+function _fmtDur(sec) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
 
 // ─── Tab System ───
