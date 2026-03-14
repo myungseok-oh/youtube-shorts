@@ -110,8 +110,8 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
         operation = client.models.generate_videos(
             model=VIDEO_MODEL,
             prompt=f"Cinematic motion, {prompt}",
+            image=image,
             config=types.GenerateVideosConfig(
-                input_image=image,
                 aspect_ratio="9:16",
                 number_of_videos=1,
                 duration_seconds=max(duration, 5),
