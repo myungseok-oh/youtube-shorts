@@ -654,7 +654,7 @@ async function playAllSlides() {
   if (_previewing) { stopAllAudio(); return; }
 
   // 오디오 파일 존재 여부 확인
-  const hasAnyAudio = _checkHasAudio();
+  const hasAnyAudio = _checkAllHaveAudio();
   if (!hasAnyAudio) {
     // TTS 미생성 → 자동 생성 후 재생
     const statusEl = document.getElementById("audio-status");
@@ -710,13 +710,13 @@ async function playAllSlides() {
   _previewTick();
 }
 
-function _checkHasAudio() {
+function _checkAllHaveAudio() {
   if (!composerData.slide_audio) return false;
   for (const num of composeState.slide_order) {
     const audios = composerData.slide_audio[num];
-    if (audios && audios.length > 0) return true;
+    if (!audios || audios.length === 0) return false;
   }
-  return false;
+  return composeState.slide_order.length > 0;
 }
 
 let _slideTimeMap = [];  // [{num, start, end, audioFiles}, ...]
