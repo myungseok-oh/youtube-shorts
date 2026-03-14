@@ -1603,9 +1603,9 @@ function startElementResize(e, idx) {
   const origW = elem.width || 300, origH = elem.height || 250;
   const aspect = origW / origH;
   function onMove(e2) {
-    const dx = (e2.clientX - startX) / SCALE;
-    const dy = (e2.clientY - startY) / SCALE;
-    const delta = (dx + dy) / 2;
+    const dx = e2.clientX - startX;
+    const dy = e2.clientY - startY;
+    const delta = (dx + dy) / SCALE;
     elem.width = Math.max(50, Math.round(origW + delta));
     elem.height = Math.max(50, Math.round(elem.width / aspect));
     _dirty = true;
@@ -1650,12 +1650,13 @@ function startFreeTextResize(e, ftIdx) {
   e.stopPropagation();
   const ft = composeState.freeTexts[ftIdx];
   if (!ft) return;
-  const startY = e.clientY;
+  const startX = e.clientX, startY = e.clientY;
   const origSize = ft.size || 48;
 
   function onMove(e2) {
+    const dx = e2.clientX - startX;
     const dy = e2.clientY - startY;
-    ft.size = Math.max(12, Math.min(200, Math.round(origSize + dy / SCALE * 0.3)));
+    ft.size = Math.max(12, Math.min(200, Math.round(origSize + (dx + dy) * 0.5)));
     _dirty = true;
     renderPreview();
   }
