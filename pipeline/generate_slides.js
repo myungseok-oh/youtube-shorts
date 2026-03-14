@@ -172,11 +172,44 @@ function buildCustomContent(slide, accent, bgImg, progressPct, index, bgSource, 
   const posX = ovr.x !== undefined ? ovr.x : 540;
   const posY = ovr.y !== undefined ? ovr.y : 960;
   const maxW = ovr.maxWidth || 1000;
+  const mainColor = ovr.mainColor || '#ffffff';
+  const subColor = ovr.subColor || 'rgba(255,255,255,0.92)';
+  const fontFam = ovr.fontFamily || 'Noto Sans KR';
+  const bgOp = ovr.bgOpacity !== undefined ? ovr.bgOpacity / 100 : textBgOpacity;
+
+  // 커스텀 폰트용 Google Fonts import
+  const fontImports = [
+    'Noto+Sans+KR:wght@400;700;900',
+    'Black+Han+Sans',
+    'Jua',
+    'Do+Hyeon',
+    'Gothic+A1:wght@400;700;900',
+    'Nanum+Gothic:wght@400;700',
+    'Nanum+Myeongjo:wght@400;700',
+    'Gaegu:wght@400;700',
+  ].map(f => `@import url('https://fonts.googleapis.com/css2?family=${f}&display=swap');`).join('\n');
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
-  ${commonStyles(accent, bgImg)}
-  .top-bar { display: none; }
+  ${fontImports}
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    width: 1080px; height: 1920px;
+    font-family: '${fontFam}', 'Noto Sans KR', sans-serif;
+    color: #ffffff; overflow: hidden; position: relative;
+    word-break: keep-all; overflow-wrap: break-word;
+    ${bgImg
+      ? `background: ${bgImg} center/cover no-repeat;`
+      : `background: linear-gradient(170deg, #0b0e1a 0%, #141b2d 40%, #1a2238 100%);`
+    }
+  }
+  .bg-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: ${bgImg
+      ? 'linear-gradient(180deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.03) 40%, rgba(0,0,0,0.15) 100%)'
+      : 'transparent'};
+    z-index: 1;
+  }
   .content-wrap {
     position: absolute;
     left: ${posX}px; top: ${posY}px;
@@ -186,17 +219,18 @@ function buildCustomContent(slide, accent, bgImg, progressPct, index, bgSource, 
     max-width: ${maxW}px;
   }
   .text-bg {
-    background: rgba(5, 8, 20, ${textBgOpacity});
+    background: rgba(5, 8, 20, ${bgOp});
     border-radius: 16px;
     padding: 30px 40px;
   }
   .main-text {
     font-size: ${mainSize}px; font-weight: 900;
+    color: ${mainColor};
     text-align: center; line-height: 1.25;
     text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 40px rgba(0,0,0,0.7);
   }
   .sub-text {
-    font-size: ${subSize}px; color: rgba(255,255,255,0.92);
+    font-size: ${subSize}px; color: ${subColor};
     text-align: center; font-weight: 700;
     margin-top: 30px;
     text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
@@ -204,6 +238,21 @@ function buildCustomContent(slide, accent, bgImg, progressPct, index, bgSource, 
   .slide-num {
     position: absolute; bottom: 40px; left: 50px; z-index: 10;
     font-size: 26px; font-weight: 700; color: rgba(255,255,255,0.18);
+  }
+  .progress-bar {
+    position: absolute; bottom: 0; left: 0;
+    height: 6px; z-index: 10;
+    background: ${accent};
+    border-radius: 0 3px 0 0;
+  }
+  .source-text {
+    position: absolute; bottom: 14px; right: 30px; z-index: 10;
+    font-size: 20px; color: rgba(255,255,255,0.35);
+    font-weight: 400; letter-spacing: 1px;
+  }
+  .grain {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 2; opacity: 0.06; pointer-events: none;
   }
 </style></head>
 <body>

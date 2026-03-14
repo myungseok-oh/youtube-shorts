@@ -180,13 +180,17 @@ function renderPreview() {
 
   const overlayOpacity = isHidden ? 0.2 : 1;
   const maxW = (ovr.maxWidth || 1000) * SCALE;
+  const mainColor = ovr.mainColor || '#ffffff';
+  const subColor = ovr.subColor || '#d1d5db';
+  const fontFamily = ovr.fontFamily || 'Noto Sans KR';
+  const bgOpacity = ovr.bgOpacity !== undefined ? ovr.bgOpacity / 100 : 0.4;
 
   const overlayHtml = `
     <div id="text-overlay-drag" class="text-overlay-drag ${isHidden ? 'overlay-hidden' : ''}"
-         style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px;"
+         style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif;"
          onmousedown="startOverlayDrag(event)">
-      <div class="overlay-main" style="font-size:${mainSize}px;">${mainText}</div>
-      ${subText ? `<div class="overlay-sub" style="font-size:${subSize}px;">${subText}</div>` : ""}
+      <div class="overlay-main" style="font-size:${mainSize}px; color:${mainColor};">${mainText}</div>
+      ${subText ? `<div class="overlay-sub" style="font-size:${subSize}px; color:${subColor};">${subText}</div>` : ""}
       ${!isHidden ? `<div class="overlay-resize-handle" onmousedown="startOverlayResize(event)"></div>` : ''}
     </div>
   `;
@@ -360,6 +364,29 @@ function renderProps() {
       <div class="prop-row"><span class="prop-label">너비</span>
         <input class="prop-input" type="number" value="${ovr.maxWidth || 1000}" min="200" max="1080" step="20"
                onchange="updateOverride(${sl.num}, 'maxWidth', +this.value)">
+      </div>
+      <div class="prop-row"><span class="prop-label">제목 색</span>
+        <input type="color" value="${ovr.mainColor || '#ffffff'}" style="width:30px;height:22px;border:none;background:none;cursor:pointer;padding:0;"
+               onchange="updateOverride(${sl.num}, 'mainColor', this.value)">
+        <span class="text-[9px] text-gray-600 ml-1">${ovr.mainColor || '#ffffff'}</span>
+      </div>
+      <div class="prop-row"><span class="prop-label">부제 색</span>
+        <input type="color" value="${ovr.subColor || '#d1d5db'}" style="width:30px;height:22px;border:none;background:none;cursor:pointer;padding:0;"
+               onchange="updateOverride(${sl.num}, 'subColor', this.value)">
+        <span class="text-[9px] text-gray-600 ml-1">${ovr.subColor || '#d1d5db'}</span>
+      </div>
+      <div class="prop-row"><span class="prop-label">폰트</span>
+        <select class="prop-input" style="font-size:10px;" onchange="updateOverride(${sl.num}, 'fontFamily', this.value)">
+          ${['Noto Sans KR', 'Black Han Sans', 'Jua', 'Do Hyeon', 'Gothic A1', 'Nanum Gothic', 'Nanum Myeongjo', 'Gaegu'].map(f =>
+            `<option value="${f}" ${(ovr.fontFamily || 'Noto Sans KR') === f ? 'selected' : ''}>${f}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="prop-row"><span class="prop-label">배경 불투명</span>
+        <input class="prop-input" type="range" min="0" max="100" step="5" value="${ovr.bgOpacity !== undefined ? ovr.bgOpacity : 40}"
+               oninput="updateOverride(${sl.num}, 'bgOpacity', +this.value); this.nextElementSibling.textContent=this.value+'%';"
+               style="flex:1;">
+        <span class="text-[9px] text-gray-500 w-8 text-right">${ovr.bgOpacity !== undefined ? ovr.bgOpacity : 40}%</span>
       </div>
       <div class="prop-row"><span class="prop-label">X</span>
         <input class="prop-input" type="number" value="${ovrX}" min="0" max="1080"
