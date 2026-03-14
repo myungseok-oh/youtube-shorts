@@ -896,8 +896,37 @@ function _triggerSfx(elapsed) {
       const sfxInfo = (composerData.sfx_list || []).find(s => s.file === m.file);
       if (sfxInfo) {
         const a = new Audio(sfxInfo.path);
-        a.volume = m.volume || 0.8;
+        const vol = m.volume || 0.8;
+        const fi = m.fade_in || 0;
+        const fo = m.fade_out || 0;
+        a.volume = fi > 0 ? 0 : vol;
         a.play().catch(() => {});
+        // 페이드인
+        if (fi > 0) {
+          const steps = Math.ceil(fi * 20);
+          let step = 0;
+          const fadeTimer = setInterval(() => {
+            step++;
+            a.volume = Math.min(vol, vol * (step / steps));
+            if (step >= steps) clearInterval(fadeTimer);
+          }, fi * 1000 / steps);
+        }
+        // 페이드아웃
+        if (fo > 0 && sfxInfo.duration) {
+          const foStart = (sfxInfo.duration - fo) * 1000;
+          if (foStart > 0) {
+            setTimeout(() => {
+              const steps = Math.ceil(fo * 20);
+              let step = 0;
+              const curVol = a.volume;
+              const fadeTimer = setInterval(() => {
+                step++;
+                a.volume = Math.max(0, curVol * (1 - step / steps));
+                if (step >= steps) clearInterval(fadeTimer);
+              }, fo * 1000 / steps);
+            }, foStart);
+          }
+        }
         _sfxAudios.push(a);
       }
     }
@@ -1065,6 +1094,40 @@ function renderTabSfx() {
   if ((composerData.sfx_list || []).length === 0) {
     html += `<div style="font-size:10px;color:#4b5563;padding:12px;">data/sfx/ 폴더에 효과음을 추가하세요</div>`;
   }
+
+  // 배치된 SFX 마커 목록
+  const markers = composeState.sfx_markers || [];
+  if (markers.length > 0) {
+    html += `<div class="comp-tab-subtitle" style="margin-top:14px;">배치된 효과음 (${markers.length})</div>`;
+    markers.forEach((m, mi) => {
+      const name = m.file.replace(/\.[^.]+$/, '');
+      html += `<div style="background:#22242e;border-radius:6px;padding:6px;margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <span style="font-size:10px;color:#818cf8;font-weight:600;">${name}</span>
+          <button onclick="removeSfxMarker(${mi})" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:14px;">&times;</button>
+        </div>
+        <div class="ctrl-grid-2">
+          <div class="ctrl-row"><span class="ctrl-label">시점</span>
+            <input class="ctrl-input" type="number" value="${m.time}" min="0" step="0.1"
+                   onchange="updateSfxMarker(${mi}, 'time', +this.value)">
+          </div>
+          <div class="ctrl-row"><span class="ctrl-label">볼륨</span>
+            <input class="ctrl-input" type="number" value="${m.volume || 0.8}" min="0" max="1" step="0.05"
+                   onchange="updateSfxMarker(${mi}, 'volume', +this.value)">
+          </div>
+          <div class="ctrl-row"><span class="ctrl-label">페이드인</span>
+            <input class="ctrl-input" type="number" value="${m.fade_in || 0}" min="0" max="5" step="0.1"
+                   onchange="updateSfxMarker(${mi}, 'fade_in', +this.value)">
+          </div>
+          <div class="ctrl-row"><span class="ctrl-label">페이드아웃</span>
+            <input class="ctrl-input" type="number" value="${m.fade_out || 0}" min="0" max="5" step="0.1"
+                   onchange="updateSfxMarker(${mi}, 'fade_out', +this.value)">
+          </div>
+        </div>
+      </div>`;
+    });
+  }
+
   el.innerHTML = html;
 }
 
@@ -1416,6 +1479,23 @@ function renderTabNarration() {
 }
 
 // ─── SFX Drag & Drop ───
+
+function updateSfxMarker(idx, key, val) {
+  if (composeState.sfx_markers && composeState.sfx_markers[idx]) {
+    composeState.sfx_markers[idx][key] = val;
+    _dirty = true;
+    renderSfxMarkers();
+  }
+}
+
+function removeSfxMarker(idx) {
+  if (composeState.sfx_markers) {
+    composeState.sfx_markers.splice(idx, 1);
+    _dirty = true;
+    renderSfxMarkers();
+    renderTabSfx();
+  }
+}
 
 function onSfxDragStart(e, filename) {
   e.dataTransfer.setData("sfx_file", filename);
