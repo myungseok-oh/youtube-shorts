@@ -72,7 +72,7 @@ def generate_image(prompt: str, output_path: str, api_key: str,
     return False
 
 
-VIDEO_MODEL = "veo-3.0-fast-generate-001"
+VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 
 VIDEO_POLL_INTERVAL = 10   # 폴링 간격 (초)
 VIDEO_POLL_TIMEOUT = 300   # 최대 대기 시간 (초)
@@ -80,10 +80,10 @@ VIDEO_POLL_TIMEOUT = 300   # 최대 대기 시간 (초)
 
 def image_to_video(image_path: str, prompt: str, output_path: str,
                    api_key: str, duration: int = 6) -> bool:
-    """Gemini Veo 3.1 Fast image-to-video 변환.
+    """Veo 3.1 Fast image-to-video 변환.
 
-    기존 이미지를 첫 프레임으로 사용하여 영상 생성.
-    비용: ~$0.10/초 (오디오 없이), 6초 = ~$0.60
+    기존 이미지를 가이드로 사용하여 영상 생성.
+    비용: ~$0.15/초, 5초 = ~$0.75
 
     Args:
         image_path: 원본 이미지 경로 (.png/.jpg)
@@ -109,9 +109,10 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
               f"({duration}s, {os.path.basename(image_path)})")
         operation = client.models.generate_videos(
             model=VIDEO_MODEL,
-            prompt=prompt,
-            image=image,
+            prompt=f"Cinematic motion, {prompt}",
             config=types.GenerateVideosConfig(
+                input_image=image,
+                aspect_ratio="9:16",
                 number_of_videos=1,
                 duration_seconds=max(duration, 5),
             ),
@@ -131,7 +132,6 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
         if operation.response and operation.response.generated_videos:
             video = operation.response.generated_videos[0]
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-            client.files.download(file=video.video)
             video.video.save(output_path)
             print(f"[gemini] video saved: {os.path.basename(output_path)} "
                   f"(model={VIDEO_MODEL}, {elapsed}s)")
