@@ -294,7 +294,7 @@ function renderPreview() {
     const ftFont = ft.fontFamily || 'Noto Sans KR';
     freeTextHtml += `<div class="free-text-drag" data-ft-idx="${ftIdx}"
       style="left:${ftX}px;top:${ftY}px;font-size:${ftSize}px;color:${ft.color || '#ffffff'};font-family:'${ftFont}',sans-serif;"
-      onmousedown="startFreeTextDrag(event, ${ftIdx})">${_esc(ft.text)}</div>`;
+      onmousedown="startFreeTextDrag(event, ${ftIdx})">${_esc(ft.text)}<div class="free-text-resize" onmousedown="startFreeTextResize(event, ${ftIdx})"></div></div>`;
   });
 
   container.innerHTML = `
@@ -1414,6 +1414,29 @@ function startFreeTextDrag(e, ftIdx) {
     ft.x = Math.round(newLeft / SCALE);
     ft.y = Math.round(newTop / SCALE);
     _dirty = true;
+  }
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    if (_activeTab === 'text') renderTabText();
+  }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function startFreeTextResize(e, ftIdx) {
+  e.preventDefault();
+  e.stopPropagation();
+  const ft = composeState.freeTexts[ftIdx];
+  if (!ft) return;
+  const startY = e.clientY;
+  const origSize = ft.size || 48;
+
+  function onMove(e2) {
+    const dy = e2.clientY - startY;
+    ft.size = Math.max(12, Math.min(200, Math.round(origSize + dy / SCALE * 0.3)));
+    _dirty = true;
+    renderPreview();
   }
   function onUp() {
     document.removeEventListener("mousemove", onMove);

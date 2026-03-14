@@ -577,6 +577,19 @@
 .free-text-drag:hover {
   border-color: rgba(52,211,153,0.5);
 }
+.free-text-resize {
+  position: absolute;
+  right: -5px; bottom: -5px;
+  width: 12px; height: 12px;
+  background: #34d399;
+  border: 2px solid #059669;
+  border-radius: 50%;
+  cursor: ns-resize;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 20;
+}
+.free-text-drag:hover .free-text-resize { opacity: 1; }
 
 .overlay-resize-handle {
   position: absolute;
