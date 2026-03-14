@@ -335,6 +335,23 @@ function renderProps() {
 
 // ─── Slide Duration ───
 
+// TTS 생성 후 슬라이드 duration을 오디오 총 길이에 맞춰 자동 갱신
+function _autoUpdateDurations() {
+  if (!composerData.slide_audio) return;
+  for (const num of composeState.slide_order) {
+    const audios = composerData.slide_audio[num];
+    if (!audios || audios.length === 0) continue;
+    const totalAudioDur = audios.reduce((sum, a) => sum + (a.duration || 0), 0);
+    if (totalAudioDur > 0) {
+      // 오디오 길이 + 0.3초 여유
+      const newDur = Math.round((totalAudioDur + 0.3) * 10) / 10;
+      if (!composeState.slide_durations) composeState.slide_durations = {};
+      composeState.slide_durations[num] = newDur;
+      _dirty = true;
+    }
+  }
+}
+
 function getSlideDuration(slideNum) {
   if (composeState.slide_durations && composeState.slide_durations[slideNum]) {
     return composeState.slide_durations[slideNum];
@@ -400,6 +417,7 @@ async function generateTTS(slideNum) {
     if (data.ok) {
       if (status) status.textContent = `생성 완료 (${data.count}개 문장)`;
       await refreshData();
+      _autoUpdateDurations();
       renderTimeline();
       renderProps();
     } else {
@@ -430,6 +448,7 @@ async function generateAllTTS() {
     if (data.ok) {
       if (status) status.textContent = `전체 생성 완료 (${data.count}개 문장)`;
       await refreshData();
+      _autoUpdateDurations();
       renderTimeline();
       renderProps();
     } else {
@@ -504,12 +523,41 @@ function stopAllAudio() {
 }
 
 // 현재 슬라이드만 미리듣기
-function playSlideAudio() {
+async function playSlideAudio() {
   if (_previewing) { stopAllAudio(); return; }
   const sl = getSelectedSlide();
   if (!sl) return;
-  const slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
-  if (slideAudio.length === 0) return;
+
+  let slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
+
+  // 오디오 없으면 해당 슬라이드만 TTS 생성
+  if (slideAudio.length === 0) {
+    const statusEl = document.getElementById("audio-status");
+    if (statusEl) statusEl.textContent = `슬라이드 ${sl.num} TTS 생성 중...`;
+    try {
+      const engine = document.getElementById("tts-engine")?.value || "edge-tts";
+      const r = await fetch(`/api/jobs/${JOB_ID}/composer/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slide_num: sl.num, tts_engine: engine }),
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        if (statusEl) statusEl.textContent = `TTS 실패: ${data.error || ''}`;
+        return;
+      }
+      await refreshData();
+      if (_activeTab === 'narration') renderTabNarration();
+      slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
+      if (slideAudio.length === 0) {
+        if (statusEl) statusEl.textContent = "오디오 생성 실패";
+        return;
+      }
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `오류: ${e.message}`;
+      return;
+    }
+  }
 
   stopAllAudio();
   document.getElementById("btn-play-slide").innerHTML = "&#9646;&#9646;";
@@ -528,12 +576,49 @@ function _playAudioChain(audioList, idx, onDone) {
 
 // 전체 미리보기: 슬라이드 순서대로 배경+오버레이+나레이션 재생
 // 전체 미리보기: 시간 기반 단일 루프
-function playAllSlides() {
+async function playAllSlides() {
   if (_previewing) { stopAllAudio(); return; }
+
+  // 오디오 파일 존재 여부 확인
+  const hasAnyAudio = _checkHasAudio();
+  if (!hasAnyAudio) {
+    // TTS 미생성 → 자동 생성 후 재생
+    const statusEl = document.getElementById("audio-status");
+    if (statusEl) statusEl.textContent = "TTS 생성 중...";
+    const playBtn = document.querySelector('[onclick="playAllSlides()"]');
+    if (playBtn) { playBtn.textContent = "TTS 생성 중..."; playBtn.disabled = true; }
+
+    try {
+      const engine = document.getElementById("tts-engine")?.value || "edge-tts";
+      const r = await fetch(`/api/jobs/${JOB_ID}/composer/tts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tts_engine: engine }),
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        if (statusEl) statusEl.textContent = `TTS 실패: ${data.error || ''}`;
+        if (playBtn) { playBtn.textContent = "▶ 전체 미리듣기"; playBtn.disabled = false; }
+        return;
+      }
+      // 데이터 새로고침
+      await refreshData();
+      if (statusEl) statusEl.textContent = `TTS 생성 완료 (${data.count}문장) — 재생 시작`;
+    } catch (e) {
+      if (statusEl) statusEl.textContent = `오류: ${e.message}`;
+      if (playBtn) { playBtn.textContent = "▶ 전체 미리듣기"; playBtn.disabled = false; }
+      return;
+    }
+    if (playBtn) { playBtn.textContent = "▶ 전체 미리듣기"; playBtn.disabled = false; }
+    // 나레이션 탭 갱신
+    if (_activeTab === 'narration') renderTabNarration();
+    renderTimeline();
+  }
+
   stopAllAudio();
   _previewing = true;
   _previewStartTime = performance.now();
-  _previewSlideIdx = -1;  // 아직 시작 전
+  _previewSlideIdx = -1;
   _previewAudioPlayed = new Set();
 
   document.getElementById("btn-play-slide").innerHTML = "&#9646;&#9646;";
@@ -546,11 +631,17 @@ function playAllSlides() {
     _previewBgm.play().catch(() => {});
   }
 
-  // 슬라이드별 시작/종료 시간 맵 빌드
   _buildSlideTimeMap();
-
-  // 메인 루프 시작
   _previewTick();
+}
+
+function _checkHasAudio() {
+  if (!composerData.slide_audio) return false;
+  for (const num of composeState.slide_order) {
+    const audios = composerData.slide_audio[num];
+    if (audios && audios.length > 0) return true;
+  }
+  return false;
 }
 
 let _slideTimeMap = [];  // [{num, start, end, audioFiles}, ...]
@@ -841,7 +932,7 @@ function renderTabNarration() {
       html += `<div class="narr-sentence">
         <span class="narr-idx">${si + 1}</span>
         <span class="narr-text" title="${_esc(sen.text)}">${_esc(sen.text)}</span>
-        ${audioInfo ? `<button class="narr-play" onclick="previewAudio('${audioInfo.path}')">&#9654; ${audioInfo.duration.toFixed(1)}s</button>` : `<span style="font-size:8px;color:#4b5563;">-</span>`}
+        ${audioInfo ? `<button class="narr-play" onclick="previewAudio('${audioInfo.path}')">&#9654; ${audioInfo.duration.toFixed(1)}s</button>` : `<span style="font-size:8px;color:#f97316;">미생성</span>`}
       </div>`;
     });
   }
