@@ -139,8 +139,13 @@ let _isDraggingPlayhead = false;
 
 function updatePlayhead() {
   const ph = document.getElementById("timeline-playhead");
-  if (!ph) return;
-  ph.style.left = `${_playheadPos * 100}%`;
+  if (!ph) { console.warn("[playhead] element not found"); return; }
+  const pct = _playheadPos * 100;
+  ph.style.left = pct + "%";
+  // 디버그: 5% 단위로 로그
+  if (Math.floor(pct) % 5 === 0 && pct > 0) {
+    console.log("[playhead]", pct.toFixed(1) + "%");
+  }
 }
 
 function onTimelineMouseDown(e) {
@@ -683,6 +688,7 @@ async function playAllSlides() {
   }
 
   _buildSlideTimeMap();
+  console.log("[preview] 시작. slides:", _slideTimeMap.length, "total:", getTotalDuration(), "s");
   _previewTick();
 }
 
