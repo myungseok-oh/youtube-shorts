@@ -36,7 +36,7 @@
 
 ## 기술 스택
 - FastAPI + Uvicorn, SQLite WAL, Vanilla JS + Tailwind, gTTS/edge-tts, Puppeteer, ffmpeg
-- 배경 이미지: Gemini (자동) / Genspark (수동) / Openverse CC API (자동 폴백) / SD (ComfyUI)
+- 배경 이미지: Gemini 이미지 (자동) / Gemini Veo 영상 (자동, 6초) / Genspark (수동) / Openverse CC API (자동 폴백) / SD (ComfyUI)
 - 뉴스 수집: Google News RSS (Google/YouTube 트렌드 제거됨)
 - TTS: gTTS/edge-tts (기본), GPT-SoVITS (설치 완료, 통합 예정)
 
@@ -211,6 +211,12 @@ POST http://127.0.0.1:9880/tts
 - **코인 브리핑** (ch-0005) — 데일리 시장 브리핑 (글로벌→국내→코인 고정 3섹션)
   - `fixed_topic: true` — parse_request 스킵, 고정 주제로 대본 생성
   - `market_data_sources` — 시장 데이터 자동 크롤링 → 프롬프트 주입
+- **동물심리 60초** (ch-0006) — 반려동물 행동 심리학 교양 콘텐츠
+  - 60~90초 목표, 친근한 크리에이터 톤
+  - `slide_zone_ratio: "1.5:7:1.5"` — 이미지 중심 레이아웃
+  - `slide_text_bg: 10` — 완전 검정 텍스트 배경
+  - Gemini Veo 영상 추천 활용
+  - 시즌제: 시즌1 고양이 → 시즌2 강아지 → 시즌3 비교 심리
 
 ---
 
@@ -250,6 +256,12 @@ POST http://127.0.0.1:9880/tts
 - **슬라이드 텍스트 크기 축소**: content main 100px, sub 52px / opening main 110px, sub 56px
 - **Closing 슬라이드 오판 수정**: `bg_type`이 closing이 아닌 마지막 슬라이드는 content로 렌더링
 - **Phase B 프롬프트 덮어쓰기 수정**: Phase A에서 생성한 image_prompts를 Phase B가 보존
+- **Veo 영상 추천**: 이미지 프롬프트에 `media` 필드 추가 ("image"/"video"), AI가 30~40% 영상 추천. Gemini Veo API로 6초 영상 생성, 실패 시 이미지 폴백
+- **슬라이드 영역 비율 커스텀**: `slide_zone_ratio` (예: "1.5:7:1.5") — center/top/bottom 레이아웃의 상:중:하 비율 조정. 기본 "3:4:3"
+- **텍스트 배경 불투명도**: `slide_text_bg` (0~10) — 0=투명, 10=완전 검정. 기본 4
+- **MP3 concat 재인코딩**: `sync_engine.py` — `-c copy` 대신 libmp3lame 재인코딩으로 문장 시작 음절 씹힘 수정
+- **오디오 패딩 포맷 매칭**: `_pad_slide_audio()` — ffprobe로 원본 오디오 샘플레이트/채널 감지 → 무음 패딩 동일 포맷 생성
+- **동물심리 60초 채널** (ch-0006): 반려동물 행동 심리학 교양 채널 추가
 
 ---
 
