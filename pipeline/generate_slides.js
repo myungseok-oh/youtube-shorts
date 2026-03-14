@@ -169,9 +169,9 @@ function buildHiddenOverlay(slide, bgImg, progressPct) {
 function buildCustomContent(slide, accent, bgImg, progressPct, index, bgSource, ovr) {
   const mainSize = ovr.mainSize || 100;
   const subSize = ovr.subSize || 52;
-  // x, y: 0~1 비율 (중앙 기준), 1080x1920 캔버스
   const posX = ovr.x !== undefined ? ovr.x : 540;
   const posY = ovr.y !== undefined ? ovr.y : 960;
+  const maxW = ovr.maxWidth || 1000;
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
@@ -183,7 +183,7 @@ function buildCustomContent(slide, accent, bgImg, progressPct, index, bgSource, 
     transform: translate(-50%, -50%);
     z-index: 5;
     display: flex; flex-direction: column; align-items: center;
-    max-width: 1000px;
+    max-width: ${maxW}px;
   }
   .text-bg {
     background: rgba(5, 8, 20, ${textBgOpacity});

@@ -179,12 +179,15 @@ function renderPreview() {
   const posY = (ovr.y !== undefined ? ovr.y : REAL_H / 2) * SCALE;
 
   const overlayOpacity = isHidden ? 0.2 : 1;
+  const maxW = (ovr.maxWidth || 1000) * SCALE;
+
   const overlayHtml = `
     <div id="text-overlay-drag" class="text-overlay-drag ${isHidden ? 'overlay-hidden' : ''}"
-         style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity};"
+         style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px;"
          onmousedown="startOverlayDrag(event)">
       <div class="overlay-main" style="font-size:${mainSize}px;">${mainText}</div>
       ${subText ? `<div class="overlay-sub" style="font-size:${subSize}px;">${subText}</div>` : ""}
+      ${!isHidden ? `<div class="overlay-resize-handle" onmousedown="startOverlayResize(event)"></div>` : ''}
     </div>
   `;
 
@@ -231,6 +234,55 @@ function startOverlayDrag(e) {
   function onUp() {
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
+  }
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function startOverlayResize(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const sl = getSelectedSlide();
+  if (!sl) return;
+
+  const ovr = getOverride(sl.num);
+  const overlay = document.getElementById("text-overlay-drag");
+  if (!overlay) return;
+
+  const startX = e.clientX, startY = e.clientY;
+  const origW = parseFloat(overlay.style.width) || 300;
+  const origMainSize = ovr.mainSize || 100;
+  const origSubSize = ovr.subSize || 52;
+
+  function onMove(e2) {
+    const dx = e2.clientX - startX;
+    const dy = e2.clientY - startY;
+
+    // 너비 조절
+    const newW = Math.max(100 * SCALE, origW + dx);
+    overlay.style.width = `${newW}px`;
+    setOverride(sl.num, "maxWidth", Math.round(newW / SCALE));
+
+    // 높이 방향 → 글자 크기 비례 조절
+    if (Math.abs(dy) > 2) {
+      const sizeScale = 1 + dy / 300;
+      const newMain = Math.round(Math.max(24, Math.min(200, origMainSize * sizeScale)));
+      const newSub = Math.round(Math.max(16, Math.min(120, origSubSize * sizeScale)));
+      setOverride(sl.num, "mainSize", newMain);
+      setOverride(sl.num, "subSize", newSub);
+
+      const mainEl = overlay.querySelector(".overlay-main");
+      const subEl = overlay.querySelector(".overlay-sub");
+      if (mainEl) mainEl.style.fontSize = `${newMain * SCALE}px`;
+      if (subEl) subEl.style.fontSize = `${newSub * SCALE}px`;
+    }
+  }
+
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    renderProps();
   }
 
   document.addEventListener("mousemove", onMove);
@@ -304,6 +356,10 @@ function renderProps() {
       <div class="prop-row"><span class="prop-label">부제 크기</span>
         <input class="prop-input" type="number" value="${ovrSubSize}" min="16" max="120" step="4"
                onchange="updateOverride(${sl.num}, 'subSize', +this.value)">
+      </div>
+      <div class="prop-row"><span class="prop-label">너비</span>
+        <input class="prop-input" type="number" value="${ovr.maxWidth || 1000}" min="200" max="1080" step="20"
+               onchange="updateOverride(${sl.num}, 'maxWidth', +this.value)">
       </div>
       <div class="prop-row"><span class="prop-label">X</span>
         <input class="prop-input" type="number" value="${ovrX}" min="0" max="1080"

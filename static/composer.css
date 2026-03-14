@@ -250,6 +250,21 @@
   word-break: keep-all;
 }
 
+/* Resize handle */
+.overlay-resize-handle {
+  position: absolute;
+  right: -6px; bottom: -6px;
+  width: 14px; height: 14px;
+  background: #a78bfa;
+  border: 2px solid #7c3aed;
+  border-radius: 50%;
+  cursor: se-resize;
+  z-index: 20;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.text-overlay-drag:hover .overlay-resize-handle { opacity: 1; }
+
 /* ─── Properties Panel ─── */
 .prop-section {
   padding: 8px 0;
