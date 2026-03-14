@@ -114,7 +114,7 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
             config=types.GenerateVideosConfig(
                 aspect_ratio="9:16",
                 number_of_videos=1,
-                duration_seconds=max(duration, 5),
+                duration_seconds=min(max(duration, 4), 8),
             ),
         )
 
@@ -132,21 +132,21 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
         if operation.response and operation.response.generated_videos:
             video = operation.response.generated_videos[0]
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-            # 리모트 영상 → 파일 다운로드
-            try:
-                video.video.save(output_path)
-            except Exception:
-                # save 미지원 시 uri에서 직접 다운로드
-                uri = video.video.uri
-                if uri:
-                    import urllib.request
-                    urllib.request.urlretrieve(uri, output_path)
-                elif hasattr(video.video, 'video_bytes') and video.video.video_bytes:
+            # 리모트 영상 다운로드
+            uri = video.video.uri
+            if uri:
+                import httpx
+                headers = {"x-goog-api-key": api_key}
+                resp = httpx.get(uri, headers=headers, follow_redirects=True, timeout=60)
+                if resp.status_code == 200:
                     with open(output_path, "wb") as f:
-                        f.write(video.video.video_bytes)
+                        f.write(resp.content)
                 else:
-                    print(f"[gemini] cannot save video: no uri or bytes")
+                    print(f"[gemini] video download failed: HTTP {resp.status_code}")
                     return False
+            else:
+                print(f"[gemini] no video uri")
+                return False
             print(f"[gemini] video saved: {os.path.basename(output_path)} "
                   f"(model={VIDEO_MODEL}, {elapsed}s)")
             return True
