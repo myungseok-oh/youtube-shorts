@@ -103,7 +103,7 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
 
     try:
         # 이미지 로드
-        image = types.Image.from_file(image_path)
+        image = types.Image.from_file(location=image_path)
 
         print(f"[gemini] image-to-video start: {VIDEO_MODEL} "
               f"({duration}s, {os.path.basename(image_path)})")
