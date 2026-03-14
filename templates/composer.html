@@ -12,7 +12,7 @@
 <body class="bg-gray-950 text-white min-h-screen flex flex-col">
 
   <!-- Header -->
-  <header class="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-800">
+  <header class="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-800 flex-shrink-0">
     <div class="flex items-center gap-3">
       <a href="/" class="text-gray-400 hover:text-white text-sm">&larr; 대시보드</a>
       <span class="text-sm text-gray-500">|</span>
@@ -31,17 +31,16 @@
     </div>
   </header>
 
-  <!-- Main Area -->
+  <!-- Main: Preview (left) + Properties (right) -->
   <div class="flex-1 flex overflow-hidden">
 
-    <!-- Left: Resources -->
-    <aside id="res-panel" class="w-56 bg-gray-900 border-r border-gray-800 flex flex-col overflow-y-auto">
+    <!-- Left: SFX/BGM sidebar (collapsible) -->
+    <aside id="res-panel" class="w-48 bg-gray-900 border-r border-gray-800 flex flex-col overflow-y-auto flex-shrink-0">
       <div class="p-2 border-b border-gray-800">
         <input type="text" id="sidebar-search" placeholder="검색..."
                oninput="filterSidebar(this.value)"
                class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 outline-none focus:border-orange-500">
       </div>
-      <!-- SFX -->
       <div class="sidebar-section" data-section="sfx">
         <div class="sidebar-section-header" onclick="toggleSection('sfx')">
           <span class="sidebar-arrow">&#9654;</span>
@@ -51,7 +50,6 @@
           <div id="sfx-list" class="space-y-1"></div>
         </div>
       </div>
-      <!-- BGM -->
       <div class="sidebar-section" data-section="bgm">
         <div class="sidebar-section-header" onclick="toggleSection('bgm')">
           <span class="sidebar-arrow">&#9654;</span>
@@ -63,47 +61,42 @@
       </div>
     </aside>
 
-    <!-- Center: Preview -->
-    <main class="flex-1 flex flex-col">
-      <div id="preview-area" class="flex-1 flex items-center justify-center bg-black relative">
-        <div id="canvas-container" class="relative" style="width:360px;height:640px;">
-          <!-- 슬라이드 미리보기 -->
+    <!-- Center: Preview + Audio controls -->
+    <div class="flex flex-col flex-shrink-0" style="width:280px;">
+      <div class="flex-1 flex items-center justify-center bg-black relative">
+        <div id="canvas-container" class="relative" style="width:225px;height:400px;">
           <div id="slide-preview" class="w-full h-full bg-gray-900 flex items-center justify-center">
-            <span class="text-gray-600 text-sm">슬라이드를 선택하세요</span>
+            <span class="text-gray-600 text-xs">슬라이드를 선택하세요</span>
           </div>
         </div>
       </div>
-
-      <!-- Playback (slide audio preview) -->
-      <div class="flex items-center gap-3 px-4 py-2 bg-gray-900 border-t border-gray-800">
-        <button id="btn-play-slide" onclick="playSlideAudio()" class="text-lg" title="현재 슬라이드 나레이션 재생">&#9654;</button>
-        <span id="audio-status" class="text-xs text-gray-400 font-mono flex-1">00:00</span>
-        <button onclick="playAllSlides()" class="text-xs text-gray-400 hover:text-white px-2 py-1 bg-gray-800 rounded" title="전체 미리듣기">&#9654; 전체</button>
+      <div class="flex items-center gap-2 px-3 py-1.5 bg-gray-900 border-t border-gray-800">
+        <button id="btn-play-slide" onclick="playSlideAudio()" class="text-sm" title="현재 슬라이드 나레이션 재생">&#9654;</button>
+        <span id="audio-status" class="text-[10px] text-gray-400 font-mono flex-1">00:00</span>
+        <button onclick="playAllSlides()" class="text-[10px] text-gray-400 hover:text-white px-2 py-0.5 bg-gray-800 rounded">&#9654; 전체</button>
       </div>
-    </main>
+    </div>
 
-    <!-- Right: Properties -->
-    <aside id="props-panel" class="w-72 bg-gray-900 border-l border-gray-800 overflow-y-auto">
+    <!-- Right: Properties (compact grid) -->
+    <div class="flex-1 bg-gray-900 border-l border-gray-800 overflow-y-auto">
       <div class="p-3" id="props-content">
         <div class="text-xs text-gray-500">슬라이드를 선택하세요</div>
       </div>
-    </aside>
+    </div>
   </div>
 
   <!-- Timeline (Bottom) -->
-  <div id="timeline" class="bg-gray-900 border-t border-gray-800 flex flex-col" style="height:220px;">
+  <div id="timeline" class="bg-gray-900 border-t border-gray-800 flex flex-col flex-shrink-0" style="height:180px;">
     <div id="timeline-body" class="relative flex-1 mx-2 mt-1">
-      <!-- 슬라이드 블록 -->
       <div id="slide-track" class="flex gap-1 h-full overflow-x-auto pb-1" style="align-items:stretch;"></div>
     </div>
-    <!-- SFX/BGM tracks -->
     <div class="mx-2 mb-1">
-      <div id="timeline-sfx" class="relative" style="height:36px; background:#0d1117; border:1px dashed #374151; border-radius:4px;">
-        <div class="absolute left-2 top-1 text-[9px] text-gray-600 pointer-events-none select-none">SFX</div>
+      <div id="timeline-sfx" class="relative" style="height:28px; background:#0d1117; border:1px dashed #374151; border-radius:4px;">
+        <div class="absolute left-2 top-0.5 text-[8px] text-gray-600 pointer-events-none select-none">SFX</div>
         <div id="sfx-markers" class="absolute inset-0"></div>
       </div>
-      <div id="timeline-bgm" class="relative" style="height:28px; background:#0d1117; border:1px dashed #374151; border-radius:0 0 4px 4px; margin-top:2px;">
-        <div class="absolute left-2 top-1 text-[9px] text-gray-600 pointer-events-none select-none">BGM</div>
+      <div id="timeline-bgm" class="relative" style="height:22px; background:#0d1117; border:1px dashed #374151; border-radius:0 0 4px 4px; margin-top:1px;">
+        <div class="absolute left-2 top-0.5 text-[8px] text-gray-600 pointer-events-none select-none">BGM</div>
         <div id="bgm-bar-container" class="absolute inset-0"></div>
       </div>
     </div>

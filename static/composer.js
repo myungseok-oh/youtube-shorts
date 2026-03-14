@@ -133,9 +133,9 @@ function selectSlide(idx) {
 
 // ─── Preview (Visual Overlay Editor) ───
 
-const CANVAS_W = 360, CANVAS_H = 640;
+const CANVAS_W = 225, CANVAS_H = 400;
 const REAL_W = 1080, REAL_H = 1920;
-const SCALE = CANVAS_W / REAL_W;  // 0.333...
+const SCALE = CANVAS_W / REAL_W;  // ~0.208
 
 function getOverride(slideNum) {
   return composeState.slide_overrides[slideNum] || {};
@@ -306,192 +306,172 @@ function renderProps() {
 
   const dur = getSlideDuration(sl.num);
   const slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
-  const hasAnyAudio = slideAudio.length > 0;
-
-  // TTS 설정
   const chCfg = composerData.channel_config || {};
   const curEngine = chCfg.tts_engine || "edge-tts";
-  const curVoice = chCfg.tts_voice || "ko-KR-SunHiNeural";
-
-  let html = "";
-
   const ovr = getOverride(sl.num);
   const isHidden = ovr.hidden === true;
-
-  // ── 슬라이드 정보 ──
-  html += `<div class="prop-section prop-section-active">
-    <div class="prop-section-title" style="color:#f97316;">슬라이드 ${sl.num}</div>
-    <div class="prop-row"><span class="prop-label">타입</span><span class="text-[10px] text-gray-400">${sl.bg_type}</span></div>
-    <div class="prop-row"><span class="prop-label">길이</span>
-      <input class="prop-input" type="number" value="${dur.toFixed(1)}" min="1" max="30" step="0.5"
-             onchange="updateSlideDuration(${sl.num}, +this.value)">
-      <span class="text-[9px] text-gray-600 ml-1">초</span>
-    </div>
-  </div>`;
-
-  // ── 오버레이 편집 ──
   const ovrMain = ovr.main !== undefined ? ovr.main : (sl.main || "").replace(/<[^>]*>/g, "");
   const ovrSub = ovr.sub !== undefined ? ovr.sub : (sl.sub || "").replace(/<[^>]*>/g, "");
   const ovrMainSize = ovr.mainSize || 100;
   const ovrSubSize = ovr.subSize || 52;
   const ovrX = ovr.x !== undefined ? ovr.x : 540;
   const ovrY = ovr.y !== undefined ? ovr.y : 960;
+  const sentences = sl.sentences || [];
+  const bgm = composeState.bgm;
 
-  html += `<div class="prop-section prop-section-active">
-    <div class="flex items-center justify-between mb-1">
-      <div class="prop-section-title" style="color:#a78bfa; margin-bottom:0;">오버레이</div>
+  let html = `<div class="props-grid">`;
+
+  // ═══ 좌측 칼럼: 오버레이 + 배경 ═══
+  html += `<div class="props-col">`;
+
+  // ── 슬라이드 기본 + 오버레이 (합침) ──
+  html += `
+    <div class="flex items-center justify-between mb-2">
+      <span class="prop-section-title" style="color:#a78bfa; margin:0;">슬라이드 ${sl.num} <span class="text-gray-600 font-normal">${sl.bg_type}</span></span>
       <label class="flex items-center gap-1 cursor-pointer">
         <input type="checkbox" ${isHidden ? '' : 'checked'} onchange="toggleOverlay(${sl.num}, !this.checked)"
-               class="accent-purple-500" style="width:14px;height:14px;">
-        <span class="text-[10px] text-gray-400">표시</span>
+               class="accent-purple-500" style="width:13px;height:13px;">
+        <span class="text-[9px] text-gray-400">오버레이</span>
       </label>
     </div>
-    <div style="${isHidden ? 'opacity:0.3;pointer-events:none;' : ''}">
-      <div class="prop-row"><span class="prop-label">제목</span>
-        <input class="prop-input" value="${_esc(ovrMain)}" onchange="updateOverride(${sl.num}, 'main', this.value)">
-      </div>
-      <div class="prop-row"><span class="prop-label">부제</span>
-        <input class="prop-input" value="${_esc(ovrSub)}" onchange="updateOverride(${sl.num}, 'sub', this.value)">
-      </div>
-      <div class="prop-row"><span class="prop-label">제목 크기</span>
+    <div class="prop-row"><span class="prop-label">길이</span>
+      <input class="prop-input" type="number" value="${dur.toFixed(1)}" min="1" max="30" step="0.5"
+             onchange="updateSlideDuration(${sl.num}, +this.value)">
+      <span class="text-[9px] text-gray-600 ml-1">초</span>
+    </div>`;
+
+  // 오버레이 편집
+  html += `<div style="${isHidden ? 'opacity:0.3;pointer-events:none;' : ''}">
+    <div class="prop-row"><span class="prop-label">제목</span>
+      <input class="prop-input" value="${_esc(ovrMain)}" onchange="updateOverride(${sl.num}, 'main', this.value)">
+    </div>
+    <div class="prop-row"><span class="prop-label">부제</span>
+      <input class="prop-input" value="${_esc(ovrSub)}" onchange="updateOverride(${sl.num}, 'sub', this.value)">
+    </div>
+    <div class="prop-grid-2col">
+      <div class="prop-row"><span class="prop-label-s">제목</span>
         <input class="prop-input" type="number" value="${ovrMainSize}" min="20" max="200" step="4"
-               onchange="updateOverride(${sl.num}, 'mainSize', +this.value)">
+               onchange="updateOverride(${sl.num}, 'mainSize', +this.value)" title="제목 크기">
       </div>
-      <div class="prop-row"><span class="prop-label">부제 크기</span>
+      <div class="prop-row"><span class="prop-label-s">부제</span>
         <input class="prop-input" type="number" value="${ovrSubSize}" min="16" max="120" step="4"
-               onchange="updateOverride(${sl.num}, 'subSize', +this.value)">
+               onchange="updateOverride(${sl.num}, 'subSize', +this.value)" title="부제 크기">
       </div>
-      <div class="prop-row"><span class="prop-label">너비</span>
+      <div class="prop-row"><span class="prop-label-s">너비</span>
         <input class="prop-input" type="number" value="${ovr.maxWidth || 1000}" min="200" max="1080" step="20"
                onchange="updateOverride(${sl.num}, 'maxWidth', +this.value)">
       </div>
-      <div class="prop-row"><span class="prop-label">제목 색</span>
-        <input type="color" value="${ovr.mainColor || '#ffffff'}" style="width:30px;height:22px;border:none;background:none;cursor:pointer;padding:0;"
-               onchange="updateOverride(${sl.num}, 'mainColor', this.value)">
-        <span class="text-[9px] text-gray-600 ml-1">${ovr.mainColor || '#ffffff'}</span>
-      </div>
-      <div class="prop-row"><span class="prop-label">부제 색</span>
-        <input type="color" value="${ovr.subColor || '#d1d5db'}" style="width:30px;height:22px;border:none;background:none;cursor:pointer;padding:0;"
-               onchange="updateOverride(${sl.num}, 'subColor', this.value)">
-        <span class="text-[9px] text-gray-600 ml-1">${ovr.subColor || '#d1d5db'}</span>
-      </div>
-      <div class="prop-row"><span class="prop-label">폰트</span>
-        <select class="prop-input" style="font-size:10px;" onchange="updateOverride(${sl.num}, 'fontFamily', this.value)">
-          ${['Noto Sans KR', 'Black Han Sans', 'Jua', 'Do Hyeon', 'Gothic A1', 'Nanum Gothic', 'Nanum Myeongjo', 'Gaegu'].map(f =>
-            `<option value="${f}" ${(ovr.fontFamily || 'Noto Sans KR') === f ? 'selected' : ''}>${f}</option>`
-          ).join('')}
-        </select>
-      </div>
-      <div class="prop-row"><span class="prop-label">배경 불투명</span>
+      <div class="prop-row">
+        <span class="prop-label-s">배경</span>
         <input class="prop-input" type="range" min="0" max="100" step="5" value="${ovr.bgOpacity !== undefined ? ovr.bgOpacity : 40}"
                oninput="updateOverride(${sl.num}, 'bgOpacity', +this.value); this.nextElementSibling.textContent=this.value+'%';"
                style="flex:1;">
-        <span class="text-[9px] text-gray-500 w-8 text-right">${ovr.bgOpacity !== undefined ? ovr.bgOpacity : 40}%</span>
+        <span class="text-[8px] text-gray-500 w-6">${ovr.bgOpacity !== undefined ? ovr.bgOpacity : 40}%</span>
       </div>
-      <div class="prop-row"><span class="prop-label">X</span>
+      <div class="prop-row"><span class="prop-label-s">X</span>
         <input class="prop-input" type="number" value="${ovrX}" min="0" max="1080"
                onchange="updateOverride(${sl.num}, 'x', +this.value)">
       </div>
-      <div class="prop-row"><span class="prop-label">Y</span>
+      <div class="prop-row"><span class="prop-label-s">Y</span>
         <input class="prop-input" type="number" value="${ovrY}" min="0" max="1920"
                onchange="updateOverride(${sl.num}, 'y', +this.value)">
       </div>
-      <button onclick="resetOverride(${sl.num})" class="w-full px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded text-[10px] mt-1">초기화</button>
     </div>
+    <div class="prop-grid-2col mt-1">
+      <div class="prop-row">
+        <input type="color" value="${ovr.mainColor || '#ffffff'}" style="width:22px;height:18px;border:none;background:none;cursor:pointer;padding:0;"
+               onchange="updateOverride(${sl.num}, 'mainColor', this.value)" title="제목 색">
+        <span class="text-[8px] text-gray-500">제목</span>
+      </div>
+      <div class="prop-row">
+        <input type="color" value="${ovr.subColor || '#d1d5db'}" style="width:22px;height:18px;border:none;background:none;cursor:pointer;padding:0;"
+               onchange="updateOverride(${sl.num}, 'subColor', this.value)" title="부제 색">
+        <span class="text-[8px] text-gray-500">부제</span>
+      </div>
+    </div>
+    <div class="prop-row mt-1"><span class="prop-label-s">폰트</span>
+      <select class="prop-input" style="font-size:9px;" onchange="updateOverride(${sl.num}, 'fontFamily', this.value)">
+        ${['Noto Sans KR', 'Black Han Sans', 'Jua', 'Do Hyeon', 'Gothic A1', 'Nanum Gothic', 'Nanum Myeongjo', 'Gaegu'].map(f =>
+          `<option value="${f}" ${(ovr.fontFamily || 'Noto Sans KR') === f ? 'selected' : ''}>${f}</option>`
+        ).join('')}
+      </select>
+    </div>
+    <button onclick="resetOverride(${sl.num})" class="w-full px-2 py-0.5 bg-gray-800 hover:bg-gray-700 rounded text-[9px] mt-1">초기화</button>
   </div>`;
 
   // ── 배경 이미지 ──
-  html += `<div class="prop-section prop-section-active">
-    <div class="prop-section-title" style="color:#3b82f6;">배경 이미지</div>`;
-  if (sl.bg_url) {
-    if (sl.bg_url.includes(".mp4") || sl.bg_url.includes(".gif")) {
-      html += `<video src="${sl.bg_url}" muted autoplay loop playsinline
-                class="rounded mb-2" style="width:100%;max-height:120px;object-fit:cover;"></video>`;
-    } else {
-      html += `<img src="${sl.bg_url}" class="rounded mb-2" style="width:100%;max-height:120px;object-fit:cover;">`;
-    }
-  }
-  html += `
+  html += `<div class="mt-3 pt-2 border-t border-gray-800">
+    <span class="prop-section-title" style="color:#3b82f6;">배경</span>
     <input type="file" accept="image/*,video/mp4" id="bg-upload-input" class="hidden"
            onchange="uploadSlideBg(${sl.num}, this)">
     <button onclick="document.getElementById('bg-upload-input').click()"
-      class="w-full px-2 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs transition mb-1">
+      class="w-full px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded text-[10px] transition">
       ${sl.bg_url ? '이미지 교체' : '이미지 업로드'}
     </button>
   </div>`;
 
-  // ── 나레이션 ──
-  html += `<div class="prop-section prop-section-active">
-    <div class="prop-section-title" style="color:#10b981;">나레이션</div>`;
+  html += `</div>`; // props-col end
 
-  // 문장별 오디오 상태
-  const sentences = sl.sentences || [];
+  // ═══ 우측 칼럼: 나레이션 + BGM ═══
+  html += `<div class="props-col">`;
+
+  // ── 나레이션 ──
+  html += `<span class="prop-section-title" style="color:#10b981;">나레이션</span>`;
   if (sentences.length > 0) {
-    html += `<div class="mb-2">`;
+    html += `<div class="mb-1" style="max-height:140px;overflow-y:auto;">`;
     sentences.forEach((sen, si) => {
       const audioInfo = slideAudio.find(a => a.sentence_idx === si);
       const hasA = !!audioInfo;
-      html += `<div class="flex items-center gap-1 py-1 border-b border-gray-800">
-        <span class="text-[9px] text-gray-600 w-4">${si + 1}</span>
-        <span class="flex-1 text-[10px] text-gray-300 truncate" title="${_esc(sen.text)}">${_esc(_truncate(sen.text, 30))}</span>
-        ${hasA ? `<button onclick="previewAudio('${audioInfo.path}')" class="text-[10px] text-green-400 hover:text-green-300 flex-shrink-0" title="미리듣기">&#9654; ${audioInfo.duration.toFixed(1)}s</button>` : `<span class="text-[9px] text-gray-600">없음</span>`}
+      html += `<div class="flex items-center gap-1 py-0.5 border-b border-gray-800">
+        <span class="text-[8px] text-gray-600">${si + 1}</span>
+        <span class="flex-1 text-[9px] text-gray-300 truncate" title="${_esc(sen.text)}">${_esc(_truncate(sen.text, 35))}</span>
+        ${hasA ? `<button onclick="previewAudio('${audioInfo.path}')" class="text-[9px] text-green-400 hover:text-green-300 flex-shrink-0">&#9654;${audioInfo.duration.toFixed(1)}s</button>` : `<span class="text-[8px] text-gray-600">-</span>`}
       </div>`;
     });
     html += `</div>`;
   }
 
-  // TTS 생성 UI
   html += `
-    <div class="mb-2">
-      <label class="text-[10px] text-gray-500 block mb-1">TTS 엔진</label>
-      <select id="tts-engine" class="prop-input" style="font-size:10px;">
-        <option value="edge-tts" ${curEngine === 'edge-tts' ? 'selected' : ''}>Edge TTS</option>
-        <option value="google-cloud" ${curEngine === 'google-cloud' ? 'selected' : ''}>Google Cloud TTS</option>
-        <option value="gpt-sovits" ${curEngine === 'gpt-sovits' ? 'selected' : ''}>GPT-SoVITS</option>
+    <div class="prop-row mt-1"><span class="prop-label-s">TTS</span>
+      <select id="tts-engine" class="prop-input" style="font-size:9px;">
+        <option value="edge-tts" ${curEngine === 'edge-tts' ? 'selected' : ''}>Edge</option>
+        <option value="google-cloud" ${curEngine === 'google-cloud' ? 'selected' : ''}>Google</option>
+        <option value="gpt-sovits" ${curEngine === 'gpt-sovits' ? 'selected' : ''}>SoVITS</option>
       </select>
     </div>
-    <div class="flex gap-1">
+    <div class="flex gap-1 mt-1">
       <button onclick="generateTTS(${sl.num})" id="btn-gen-tts"
-        class="flex-1 px-2 py-1.5 bg-emerald-800 hover:bg-emerald-700 rounded text-xs font-medium transition">
+        class="flex-1 px-2 py-1 bg-emerald-800 hover:bg-emerald-700 rounded text-[10px] font-medium transition">
         TTS 생성
       </button>
       <button onclick="generateAllTTS()" id="btn-gen-all-tts"
-        class="px-2 py-1.5 bg-emerald-900 hover:bg-emerald-800 rounded text-[10px] transition" title="전체 슬라이드 TTS 생성">
-        전체
-      </button>
+        class="px-2 py-1 bg-emerald-900 hover:bg-emerald-800 rounded text-[9px] transition">전체</button>
     </div>
     <div class="mt-1">
-      <label class="text-[10px] text-gray-500 block mb-1">또는 음성 파일 업로드</label>
       <input type="file" accept="audio/*" id="audio-upload-input" class="hidden"
              onchange="uploadSlideAudio(${sl.num}, this)">
       <button onclick="document.getElementById('audio-upload-input').click()"
-        class="w-full px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded text-[10px] transition">
-        음성 파일 업로드
-      </button>
+        class="w-full px-2 py-1 bg-gray-800 hover:bg-gray-700 rounded text-[9px] transition">음성 업로드</button>
     </div>
-    <div id="tts-status" class="text-[10px] text-gray-500 mt-1"></div>
-  </div>`;
-
-  // ── SFX 섹션 ──
-  const slideSfx = composeState.sfx_markers.filter(m => m.slide === sl.num);
-  html += `<div class="prop-section">
-    <div class="prop-section-title" style="color:#f97316;">SFX (${slideSfx.length})</div>
-    <div class="text-[10px] text-gray-600">좌측 패널에서 SFX를 타임라인에 드래그하세요</div>
-  </div>`;
+    <div id="tts-status" class="text-[9px] text-gray-500 mt-0.5"></div>`;
 
   // ── BGM ──
-  const bgm = composeState.bgm;
-  html += `<div class="prop-section">
-    <div class="prop-section-title" style="color:#10b981;">BGM</div>`;
+  html += `<div class="mt-3 pt-2 border-t border-gray-800">
+    <span class="prop-section-title" style="color:#10b981;">BGM</span>`;
   if (bgm) {
     html += `
-      <div class="prop-row"><span class="prop-label">파일</span><span class="text-[10px] text-emerald-400 truncate">${_esc(bgm.file)}</span></div>
-      <div class="prop-row"><span class="prop-label">볼륨</span><input class="prop-input" type="number" value="${bgm.volume}" min="0" max="1" step="0.01" onchange="updateBgmProp('volume', +this.value)"></div>
-      <button onclick="removeBgm()" class="w-full px-2 py-1 bg-red-800 hover:bg-red-700 rounded text-xs mt-1">제거</button>`;
+      <div class="text-[9px] text-emerald-400 truncate mb-1">${_esc(bgm.file)}</div>
+      <div class="prop-row"><span class="prop-label-s">볼륨</span>
+        <input class="prop-input" type="number" value="${bgm.volume}" min="0" max="1" step="0.01" onchange="updateBgmProp('volume', +this.value)">
+      </div>
+      <button onclick="removeBgm()" class="w-full px-2 py-0.5 bg-red-800 hover:bg-red-700 rounded text-[9px] mt-1">제거</button>`;
   } else {
-    html += `<div class="text-[10px] text-gray-600">좌측 패널에서 BGM을 선택하세요</div>`;
+    html += `<div class="text-[9px] text-gray-600">좌측에서 BGM 선택</div>`;
   }
   html += `</div>`;
+
+  html += `</div>`; // props-col end
+  html += `</div>`; // props-grid end
 
   container.innerHTML = html;
 }

@@ -265,31 +265,42 @@
 }
 .text-overlay-drag:hover .overlay-resize-handle { opacity: 1; }
 
-/* ─── Properties Panel ─── */
-.prop-section {
-  padding: 8px 0;
-  border-bottom: 1px solid #1f2937;
-  opacity: 0.6;
-  transition: opacity 0.15s;
+/* ─── Properties Panel (2-column grid) ─── */
+.props-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
 }
-.prop-section:last-child { border-bottom: none; }
-.prop-section.prop-section-active { opacity: 1; }
-.prop-section:hover { opacity: 0.9; }
+.props-col {
+  min-width: 0;
+}
+.prop-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
+}
 .prop-section-title {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   letter-spacing: 0.5px;
+  display: block;
 }
 .prop-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
+  gap: 4px;
+  margin-bottom: 4px;
 }
 .prop-label {
-  width: 40px;
-  font-size: 10px;
+  width: 32px;
+  font-size: 9px;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+.prop-label-s {
+  width: 24px;
+  font-size: 8px;
   color: #9ca3af;
   flex-shrink: 0;
 }
@@ -297,10 +308,11 @@
   flex: 1;
   background: #1f2937;
   border: 1px solid #374151;
-  border-radius: 4px;
-  padding: 3px 6px;
-  font-size: 11px;
+  border-radius: 3px;
+  padding: 2px 5px;
+  font-size: 10px;
   color: #e5e7eb;
   outline: none;
+  min-width: 0;
 }
 .prop-input:focus { border-color: #f97316; }
