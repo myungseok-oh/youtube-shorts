@@ -140,11 +140,7 @@ let _isDraggingPlayhead = false;
 function updatePlayhead() {
   const ph = document.getElementById("timeline-playhead");
   if (!ph) return;
-  const trackArea = document.getElementById("timeline-tracks");
-  if (!trackArea) return;
-  const w = trackArea.clientWidth;
-  const px = _playheadPos * w;
-  ph.style.transform = `translateX(${px}px)`;
+  ph.style.left = `${_playheadPos * 100}%`;
 }
 
 function onTimelineMouseDown(e) {
@@ -717,63 +713,69 @@ function _buildSlideTimeMap() {
 function _previewTick() {
   if (!_previewing) return;
 
-  const now = performance.now();
-  const elapsed = (now - _previewStartTime) / 1000;
-  const total = getTotalDuration() || 1;
+  try {
+    const now = performance.now();
+    const elapsed = (now - _previewStartTime) / 1000;
+    const total = getTotalDuration() || 1;
 
-  // 종료
-  if (elapsed >= total) {
-    stopAllAudio();
-    document.getElementById("audio-status").textContent = "미리보기 완료";
-    _playheadPos = 1;
-    updatePlayhead();
-    return;
-  }
-
-  // 현재 슬라이드 결정
-  let curSlideIdx = 0;
-  for (let i = 0; i < _slideTimeMap.length; i++) {
-    if (elapsed >= _slideTimeMap[i].start && elapsed < _slideTimeMap[i].end) {
-      curSlideIdx = i;
-      break;
-    }
-    if (i === _slideTimeMap.length - 1) curSlideIdx = i;
-  }
-
-  // 슬라이드 전환 시 미리보기 갱신 + 오디오 재생
-  if (curSlideIdx !== _previewSlideIdx) {
-    _previewSlideIdx = curSlideIdx;
-    const slideOrderIdx = composeState.slide_order.indexOf(_slideTimeMap[curSlideIdx].num);
-    if (slideOrderIdx >= 0) {
-      // 재생 중에는 가벼운 갱신만 (DOM 재생성 최소화)
-      selectedSlide = slideOrderIdx;
-      document.querySelectorAll(".slide-block").forEach((el, i) => el.classList.toggle("active", i === slideOrderIdx));
-      renderPreview();
+    // 종료
+    if (elapsed >= total) {
+      stopAllAudio();
+      const s = document.getElementById("audio-status");
+      if (s) s.textContent = "미리보기 완료";
+      _playheadPos = 1;
+      updatePlayhead();
+      return;
     }
 
-    // 해당 슬라이드의 나레이션 재생
-    const slideKey = `slide_${curSlideIdx}`;
-    if (!_previewAudioPlayed.has(slideKey)) {
-      _previewAudioPlayed.add(slideKey);
-      const audioFiles = _slideTimeMap[curSlideIdx].audioFiles;
-      if (audioFiles.length > 0) {
-        if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
-        _playAudioChain(audioFiles, 0, () => {});
+    // 현재 슬라이드 결정
+    let curSlideIdx = 0;
+    for (let i = 0; i < _slideTimeMap.length; i++) {
+      if (elapsed >= _slideTimeMap[i].start && elapsed < _slideTimeMap[i].end) {
+        curSlideIdx = i;
+        break;
+      }
+      if (i === _slideTimeMap.length - 1) curSlideIdx = i;
+    }
+
+    // 슬라이드 전환 시 미리보기 갱신 + 오디오 재생
+    if (curSlideIdx !== _previewSlideIdx) {
+      _previewSlideIdx = curSlideIdx;
+      const map = _slideTimeMap[curSlideIdx];
+      if (map) {
+        const slideOrderIdx = composeState.slide_order.indexOf(map.num);
+        if (slideOrderIdx >= 0) {
+          selectedSlide = slideOrderIdx;
+          document.querySelectorAll(".slide-block").forEach((el, i) => el.classList.toggle("active", i === slideOrderIdx));
+          renderPreview();
+        }
+
+        // 나레이션 재생
+        const slideKey = `slide_${curSlideIdx}`;
+        if (!_previewAudioPlayed.has(slideKey)) {
+          _previewAudioPlayed.add(slideKey);
+          if (map.audioFiles && map.audioFiles.length > 0) {
+            if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
+            _playAudioChain(map.audioFiles, 0, () => {});
+          }
+        }
       }
     }
+
+    // 플레이헤드 위치 (퍼센트)
+    _playheadPos = elapsed / total;
+    updatePlayhead();
+
+    // 상태 표시
+    const statusEl = document.getElementById("audio-status");
+    if (statusEl) {
+      statusEl.textContent = `${_fmtDur(elapsed)} / ${_fmtDur(total)} — 슬라이드 ${curSlideIdx + 1}/${_slideTimeMap.length}`;
+    }
+  } catch (err) {
+    console.error("[composer] previewTick error:", err);
   }
 
-  // 플레이헤드 위치
-  const pos = elapsed / total;
-  _playheadPos = pos;
-  updatePlayhead();
-
-  // 상태 표시
-  const statusEl = document.getElementById("audio-status");
-  if (statusEl) {
-    statusEl.textContent = `${_fmtDur(elapsed)} / ${_fmtDur(total)} — 슬라이드 ${curSlideIdx + 1}/${_slideTimeMap.length}`;
-  }
-
+  // 에러가 나도 루프 유지
   _previewTimer = requestAnimationFrame(_previewTick);
 }
 

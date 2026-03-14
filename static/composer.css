@@ -315,8 +315,7 @@
   background: #f97316;
   z-index: 30;
   pointer-events: none;
-  left: 0;
-  will-change: transform;
+  left: 0%;
 }
 .comp-playhead::before {
   content: "";
