@@ -112,7 +112,6 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
             prompt=prompt,
             image=image,
             config=types.GenerateVideosConfig(
-                person_generation="dont_allow",
                 number_of_videos=1,
                 duration_seconds=max(duration, 5),
             ),
