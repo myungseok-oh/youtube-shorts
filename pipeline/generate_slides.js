@@ -36,6 +36,7 @@ const brand = data.brand || '이슈60초';
 const layout = data.layout || 'full';
 const bgDisplayMode = data.bgDisplayMode || 'zone';
 const skipOverlay = data.skipOverlay || false;
+const slideOverrides = data.slideOverrides || {};  // {1: {main, sub, x, y, mainSize, subSize, hidden}, ...}
 const total = slides.length;
 
 // 상:중:하 비율 (center/top/bottom 레이아웃 전용)
@@ -101,33 +102,123 @@ function badgeHTML(category, style = '') {
 }
 
 function buildHTML(slide, index) {
+  const slideNum = index + 1;
+  const ovr = slideOverrides[slideNum] || {};
+
+  // 오버라이드가 있으면 slide 복사 후 적용
+  const s = { ...slide };
+  if (ovr.main !== undefined) s.main = ovr.main;
+  if (ovr.sub !== undefined) s.sub = ovr.sub;
+
   const accent = '#ff6b35';
   const bgData = bgInfo(index);
-  const progressPct = total > 1 ? ((index + 1) / total * 100).toFixed(1) : 100;
+  const progressPct = total > 1 ? ((slideNum) / total * 100).toFixed(1) : 100;
+
+  // hidden 오버라이드: 텍스트 없이 배경만 렌더 (오버레이 제거)
+  if (ovr.hidden) {
+    return buildHiddenOverlay(s, bgData.css, progressPct);
+  }
 
   // Closing slide: only if explicitly marked as closing (bg_type empty/closing)
   // Content slides with bg_type (photo, graph, broll, etc.) are rendered normally
-  const isClosing = index === total - 1 && (!slide.bg_type || slide.bg_type === 'closing');
-  if (isClosing) return buildClosing(slide, accent, bgData.css, progressPct);
+  const isClosing = index === total - 1 && (!s.bg_type || s.bg_type === 'closing');
+  if (isClosing) return buildClosing(s, accent, bgData.css, progressPct);
 
   // Overview slide (roundup headline): always full-bg with dark overlay + headline list
-  if (slide.bg_type === 'overview') return buildOverview(slide, accent, bgData.css, progressPct, bgData.source);
+  if (s.bg_type === 'overview') return buildOverview(s, accent, bgData.css, progressPct, bgData.source);
+
+  // 위치/크기 오버라이드가 있으면 커스텀 렌더링
+  if (ovr.x !== undefined || ovr.y !== undefined || ovr.mainSize || ovr.subSize) {
+    return buildCustomContent(s, accent, bgData.css, progressPct, index, bgData.source, ovr);
+  }
 
   // For full layout, use original builders
   if (layout === 'full') {
-    if (index === 0) return buildOpening(slide, accent, bgData.css, progressPct, bgData.source);
-    return buildContent(slide, accent, bgData.css, progressPct, index, bgData.source);
+    if (index === 0) return buildOpening(s, accent, bgData.css, progressPct, bgData.source);
+    return buildContent(s, accent, bgData.css, progressPct, index, bgData.source);
   }
 
   // Fullscreen mode: full-bg image with semi-transparent text zones
   if (bgDisplayMode === 'fullscreen') {
-    if (index === 0) return buildFullscreenOpening(slide, accent, bgData, progressPct);
-    return buildFullscreenContent(slide, accent, bgData, progressPct, index);
+    if (index === 0) return buildFullscreenOpening(s, accent, bgData, progressPct);
+    return buildFullscreenContent(s, accent, bgData, progressPct, index);
   }
 
   // Zone mode (default): image in designated zone
-  if (index === 0) return buildZonedOpening(slide, accent, bgData, progressPct);
-  return buildZonedContent(slide, accent, bgData, progressPct, index);
+  if (index === 0) return buildZonedOpening(s, accent, bgData, progressPct);
+  return buildZonedContent(s, accent, bgData, progressPct, index);
+}
+
+// ──── Hidden overlay (배경만, 텍스트 없음) ────
+function buildHiddenOverlay(slide, bgImg, progressPct) {
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    width: 1080px; height: 1920px;
+    font-family: 'Noto Sans KR', sans-serif;
+    overflow: hidden; position: relative;
+    ${bgImg ? `background: ${bgImg} center/cover no-repeat;` : `background: #0b0e1a;`}
+  }
+</style></head>
+<body></body></html>`;
+}
+
+// ──── Custom position/size content (오버라이드 적용) ────
+function buildCustomContent(slide, accent, bgImg, progressPct, index, bgSource, ovr) {
+  const mainSize = ovr.mainSize || 100;
+  const subSize = ovr.subSize || 52;
+  // x, y: 0~1 비율 (중앙 기준), 1080x1920 캔버스
+  const posX = ovr.x !== undefined ? ovr.x : 540;
+  const posY = ovr.y !== undefined ? ovr.y : 960;
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  ${commonStyles(accent, bgImg)}
+  .top-bar { display: none; }
+  .content-wrap {
+    position: absolute;
+    left: ${posX}px; top: ${posY}px;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    display: flex; flex-direction: column; align-items: center;
+    max-width: 1000px;
+  }
+  .text-bg {
+    background: rgba(5, 8, 20, ${textBgOpacity});
+    border-radius: 16px;
+    padding: 30px 40px;
+  }
+  .main-text {
+    font-size: ${mainSize}px; font-weight: 900;
+    text-align: center; line-height: 1.25;
+    text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 40px rgba(0,0,0,0.7);
+  }
+  .sub-text {
+    font-size: ${subSize}px; color: rgba(255,255,255,0.92);
+    text-align: center; font-weight: 700;
+    margin-top: 30px;
+    text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
+  }
+  .slide-num {
+    position: absolute; bottom: 40px; left: 50px; z-index: 10;
+    font-size: 26px; font-weight: 700; color: rgba(255,255,255,0.18);
+  }
+</style></head>
+<body>
+  <div class="bg-overlay"></div>
+  ${grainSVG()}
+  <div class="content-wrap">
+    <div class="text-bg">
+      <div class="main-text">${slide.main}</div>
+      ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
+    </div>
+  </div>
+  <div class="slide-num">${String(index).padStart(2, '0')}</div>
+  ${sourceLabel(bgSource)}
+  ${progressBar(progressPct)}
+</body></html>`;
 }
 
 // ──── Common styles for FULL layout ────

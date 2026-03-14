@@ -672,42 +672,42 @@ function renderWizardStep1(jobId, scriptData, stepsData) {
         ${isClosing ? `<span class="text-xs text-gray-600">(클로징)</span>` : ""}
       </div>`;
   });
-  slideView += `<div class="mt-3 flex gap-2">
-    <button onclick="saveSlideScript('${jobId}')" id="btn-save-slides"
-            class="px-4 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xs font-medium transition">저장</button>
-    <span id="slide-save-msg" class="text-xs text-green-400 self-center hidden">저장 완료</span>
-  </div>`;
   slideView += `</div><div class="slide-edit-right">
+    <div class="flex items-center gap-2 mb-3">
+      <button onclick="saveSlideScript('${jobId}')" id="btn-save-slides"
+              class="px-4 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xs font-medium transition">저장</button>
+      <span id="slide-save-msg" class="text-xs text-green-400 hidden">저장 완료</span>
+    </div>
     <div class="fmt-toolbar-title">텍스트 서식</div>
     <div class="fmt-group">
       <div class="fmt-label">스타일</div>
       <div class="fmt-row">
-        <button onclick="slideFormatHL()" class="fmt-btn" title="강조 (노란색)">HL</button>
-        <button onclick="slideFormatBold()" class="fmt-btn" title="굵게"><b>B</b></button>
-        <button onclick="slideFormatItalic()" class="fmt-btn" title="기울임"><i>I</i></button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatHL()" class="fmt-btn" title="강조 (노란색)">HL</button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatBold()" class="fmt-btn" title="굵게"><b>B</b></button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatItalic()" class="fmt-btn" title="기울임"><i>I</i></button>
       </div>
     </div>
     <div class="fmt-group">
       <div class="fmt-label">크기</div>
       <div class="fmt-row">
-        <button onclick="slideFormatSize('130%')" class="fmt-btn" title="크게">A+</button>
-        <button onclick="slideFormatSize('80%')" class="fmt-btn" title="작게">A-</button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatSize('130%')" class="fmt-btn" title="크게">A+</button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatSize('80%')" class="fmt-btn" title="작게">A-</button>
       </div>
     </div>
     <div class="fmt-group">
       <div class="fmt-label">색상</div>
       <div class="fmt-row">
-        <button onclick="slideFormatColor('#ffd700')" class="fmt-btn fmt-color" title="노란색" style="background:#ffd700"></button>
-        <button onclick="slideFormatColor('#ff4444')" class="fmt-btn fmt-color" title="빨간색" style="background:#ff4444"></button>
-        <button onclick="slideFormatColor('#4fc3f7')" class="fmt-btn fmt-color" title="파란색" style="background:#4fc3f7"></button>
-        <button onclick="slideFormatColor('#66bb6a')" class="fmt-btn fmt-color" title="초록색" style="background:#66bb6a"></button>
-        <button onclick="slideFormatColor('#ffffff')" class="fmt-btn fmt-color" title="흰색" style="background:#ffffff"></button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatColor('#ffd700')" class="fmt-btn fmt-color" title="노란색" style="background:#ffd700"></button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatColor('#ff4444')" class="fmt-btn fmt-color" title="빨간색" style="background:#ff4444"></button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatColor('#4fc3f7')" class="fmt-btn fmt-color" title="파란색" style="background:#4fc3f7"></button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatColor('#66bb6a')" class="fmt-btn fmt-color" title="초록색" style="background:#66bb6a"></button>
+        <button onmousedown="event.preventDefault()" onclick="slideFormatColor('#ffffff')" class="fmt-btn fmt-color" title="흰색" style="background:#ffffff"></button>
       </div>
     </div>
     <div class="fmt-group">
       <div class="fmt-label">삽입</div>
       <div class="fmt-row">
-        <button onclick="slideInsertBR()" class="fmt-btn" title="줄바꿈">↵ 줄바꿈</button>
+        <button onmousedown="event.preventDefault()" onclick="slideInsertBR()" class="fmt-btn" title="줄바꿈">↵ 줄바꿈</button>
       </div>
     </div>
     <div class="fmt-hint">텍스트 선택 후 버튼 클릭</div>
@@ -784,9 +784,9 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
             <br><span class="text-gray-500">${esc(en)}</span>
             ${motion ? `<br><span class="text-blue-400">🎬 ${esc(motion)}</span>` : ""}
           </div>
-          <div class="flex gap-1 flex-shrink-0">
-            <button onclick="event.stopPropagation(); bgToVideo('${jobId}', ${i+1}, this)" class="text-purple-400 hover:text-purple-200 flex-shrink-0" title="영상화 (Veo)" style="font-size:11px;padding:1px 3px;">🎬</button>
-            <button onclick="event.stopPropagation(); copyOnePrompt(this, \`${esc(copyText)}\`)" class="copy-icon-btn text-gray-600 hover:text-white flex-shrink-0" title="복사" style="font-size:11px;padding:1px 3px;">&#x1F4CB;</button>
+          <div class="flex gap-1 flex-shrink-0 items-start">
+            <button onclick="event.stopPropagation(); bgToVideo('${jobId}', ${i+1}, this)" class="rounded bg-purple-800 hover:bg-purple-600 text-purple-200 flex-shrink-0 font-bold" title="영상화 (Veo)" style="font-size:10px;padding:2px 5px;line-height:1;">VEO</button>
+            <button onclick="event.stopPropagation(); copyOnePrompt(this, \`${esc(copyText)}\`)" class="copy-icon-btn text-gray-600 hover:text-white flex-shrink-0" style="font-size:11px;padding:1px 3px;">&#x1F4CB;</button>
           </div>
         </div>
       </div>`;
@@ -1212,11 +1212,17 @@ function renderWizardFooter(step, jobId, scriptData, stepsData) {
   } else if (step === 2) {
     centerHtml = `<span class="text-xs text-gray-500">${uploadedCount}/${bgCount}장 준비됨</span>`;
     const isRunning = status === "running";
-    rightBtn = `<button id="btn-resume-job" onclick="resumeJob('${jobId}')"
-      class="px-4 py-2 ${isRunning ? 'bg-gray-600 opacity-50 cursor-not-allowed' : uploadedCount >= bgCount ? 'bg-orange-600 hover:bg-orange-500' : 'bg-gray-700 hover:bg-gray-600'} rounded-lg text-sm font-medium transition"
-      ${isRunning ? 'disabled' : ''}>
-      ${isRunning ? '영상 제작 중...' : '영상 제작 →'}
-    </button>`;
+    rightBtn = `<div class="flex gap-2">
+      <a href="/composer/${jobId}" target="_blank"
+        class="px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm font-medium transition inline-block">
+        영상 편집
+      </a>
+      <button id="btn-resume-job" onclick="resumeJob('${jobId}')"
+        class="px-4 py-2 ${isRunning ? 'bg-gray-600 opacity-50 cursor-not-allowed' : uploadedCount >= bgCount ? 'bg-orange-600 hover:bg-orange-500' : 'bg-gray-700 hover:bg-gray-600'} rounded-lg text-sm font-medium transition"
+        ${isRunning ? 'disabled' : ''}>
+        ${isRunning ? '영상 제작 중...' : '영상 제작 →'}
+      </button>
+    </div>`;
   } else if (step === 3) {
     const renderDone = stepStatus["render"] === "completed" || status === "completed";
     if (renderDone) {

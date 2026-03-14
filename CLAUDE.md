@@ -33,6 +33,10 @@
 - `templates/dashboard.html` — Jinja2 + Tailwind 대시보드
 - `static/app.js` — 폴링 기반 프론트엔드 (큐 상태, 완료/활성 분리, OAuth 토큰 발급)
 - `static/style.css` — 대시보드 스타일
+- `templates/composer.html` — 프리프로덕션 편집기 페이지
+- `static/composer.js` — 편집기 프론트엔드 (타임라인, 오버레이, TTS, SFX/BGM)
+- `static/composer.css` — 편집기 스타일
+- `pipeline/composer.py` — 편집기 백엔드 (데이터 수집/저장)
 
 ## 기술 스택
 - FastAPI + Uvicorn, SQLite WAL, Vanilla JS + Tailwind, gTTS/edge-tts, Puppeteer, ffmpeg
@@ -262,6 +266,21 @@ POST http://127.0.0.1:9880/tts
 - **MP3 concat 재인코딩**: `sync_engine.py` — `-c copy` 대신 libmp3lame 재인코딩으로 문장 시작 음절 씹힘 수정
 - **오디오 패딩 포맷 매칭**: `_pad_slide_audio()` — ffprobe로 원본 오디오 샘플레이트/채널 감지 → 무음 패딩 동일 포맷 생성
 - **동물심리 60초 채널** (ch-0006): 반려동물 행동 심리학 교양 채널 추가
+- **프리프로덕션 편집기(Composer)**: `/composer/{job_id}` — 영상 제작 전 슬라이드+나레이션+SFX/BGM 조립
+  - 슬라이드 타임라인: 배경 이미지 순서 변경(드래그), 이미지 추가/교체
+  - 나레이션: 슬라이드별 TTS 생성 / 음성 파일 업로드 / 미리듣기
+  - 오버레이 편집: 텍스트 내용/위치/크기 수정, 오버레이 숨김(제거)
+  - SFX/BGM: 드래그 앤 드롭 배치
+  - 저장 후 렌더링 시작 → Phase B 실행
+  - 파일: `templates/composer.html`, `static/composer.js`, `static/composer.css`, `pipeline/composer.py`
+  - API: `GET /api/jobs/{id}/composer`, `POST /api/jobs/{id}/composer/save`, `POST /api/jobs/{id}/composer/tts`, `POST /api/jobs/{id}/composer/audio/{n}`, `GET /api/jobs/{id}/audio/{filename}`
+  - 오버레이 설정: `compose_data.json`의 `slide_overrides` → `generate_slides.js`에 전달
+- **슬라이드 오버레이 오버라이드**: `generate_slides.js`에 `slideOverrides` 입력 지원
+  - `buildCustomContent()`: 커스텀 위치/크기로 텍스트 렌더링
+  - `buildHiddenOverlay()`: 텍스트 없이 배경만 렌더링 (오버레이 제거)
+  - `slide_generator.py` → `generate_slides()` 함수에 `slide_overrides` 파라미터 추가
+  - `runner.py`: Phase B에서 `compose_data.json`의 `slide_overrides` 자동 로드
+- **YouTube 썸네일 2MB 제한 대응**: `slide_generator.py`에서 썸네일 생성 직후 2MB 초과 시 JPEG 변환+압축
 
 ---
 

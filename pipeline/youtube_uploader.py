@@ -78,7 +78,8 @@ def upload_video(
     # 썸네일 업로드 (thumbnail_path가 있으면)
     if thumbnail_path and os.path.isfile(thumbnail_path):
         try:
-            thumb_media = MediaFileUpload(thumbnail_path, mimetype="image/png")
+            mime = "image/jpeg" if thumbnail_path.lower().endswith((".jpg", ".jpeg")) else "image/png"
+            thumb_media = MediaFileUpload(thumbnail_path, mimetype=mime)
             youtube.thumbnails().set(
                 videoId=video_id,
                 media_body=thumb_media,
@@ -90,3 +91,5 @@ def upload_video(
         "video_id": video_id,
         "url": f"https://youtube.com/shorts/{video_id}",
     }
+
+

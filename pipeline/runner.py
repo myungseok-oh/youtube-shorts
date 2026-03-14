@@ -585,13 +585,23 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 bg_results = _load_uploaded_backgrounds(dirs["bg"], len(slides_data),
                                                         source=auto_bg_source)
 
+            # compose_data에서 슬라이드 오버라이드 로드
+            _compose_ovr = {}
+            try:
+                from pipeline.composer import load_compose_data
+                _cd = load_compose_data(job_id)
+                _compose_ovr = _cd.get("slide_overrides", {})
+            except Exception:
+                pass
+
             slide_paths = generate_slides(slides_data, dirs["image"],
                                           date=date_str, brand=brand,
                                           backgrounds=bg_results,
                                           layout=slide_layout,
                                           bg_display_mode=bg_display_mode,
                                           zone_ratio=ch_config_pb.get("slide_zone_ratio", ""),
-                                          text_bg=ch_config_pb.get("slide_text_bg", 4))
+                                          text_bg=ch_config_pb.get("slide_text_bg", 4),
+                                          slide_overrides=_compose_ovr)
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,
@@ -1583,7 +1593,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                           layout=slide_layout,
                                           bg_display_mode=bg_display_mode,
                                           zone_ratio=ch_config_fp.get("slide_zone_ratio", ""),
-                                          text_bg=ch_config_fp.get("slide_text_bg", 4))
+                                          text_bg=ch_config_fp.get("slide_text_bg", 4),
+                                          slide_overrides={})
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,

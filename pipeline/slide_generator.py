@@ -8,6 +8,26 @@ import tempfile
 from pipeline import config
 
 
+def _compress_to_jpeg(png_path: str, max_bytes: int = 2 * 1024 * 1024):
+    """PNG를 JPEG로 변환하여 max_bytes 이하로 압축. 원본 PNG를 교체."""
+    if not os.path.exists(png_path):
+        return
+    if os.path.getsize(png_path) <= max_bytes:
+        return  # 이미 작으면 그대로
+
+    from PIL import Image
+    img = Image.open(png_path).convert("RGB")
+    jpg_path = png_path  # 같은 경로에 덮어쓰기 (확장자 유지)
+
+    quality = 92
+    while quality >= 40:
+        img.save(jpg_path, "JPEG", quality=quality, optimize=True)
+        if os.path.getsize(jpg_path) <= max_bytes:
+            break
+        quality -= 8
+    print(f"[thumbnail] 압축: {os.path.getsize(jpg_path) // 1024}KB (q={quality})")
+
+
 def generate_slides(slides_data: list[dict], output_dir: str,
                     date: str = "", brand: str = "이슈60초",
                     backgrounds: list[dict] | None = None,
@@ -15,7 +35,8 @@ def generate_slides(slides_data: list[dict], output_dir: str,
                     bg_display_mode: str = "zone",
                     skip_overlay: bool = False,
                     zone_ratio: str = "",
-                    text_bg: int = 4) -> list[str]:
+                    text_bg: int = 4,
+                    slide_overrides: dict | None = None) -> list[str]:
     """슬라이드 데이터를 받아 PNG 이미지 생성.
 
     Args:
@@ -48,6 +69,7 @@ def generate_slides(slides_data: list[dict], output_dir: str,
         "skipOverlay": skip_overlay,
         "zoneRatio": zone_ratio,
         "textBg": text_bg,
+        "slideOverrides": slide_overrides or {},
     }
 
     # 임시 JSON 파일에 입력 데이터 저장
@@ -128,6 +150,9 @@ def generate_thumbnail(title: str, output_path: str,
 
         if result.returncode != 0:
             raise RuntimeError(f"Thumbnail generation failed: {result.stderr}")
+
+        # PNG → JPEG 변환 (YouTube 2MB 제한 대응)
+        _compress_to_jpeg(output_path, max_bytes=2 * 1024 * 1024)
 
         return output_path
     finally:

@@ -1,0 +1,291 @@
+/* ─── Composer Styles ─── */
+
+/* ─── Slide Blocks (Timeline) ─── */
+.slide-block {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background: #1f2937;
+  overflow: hidden;
+  transition: border-color 0.15s, transform 0.15s;
+  flex-shrink: 0;
+}
+.slide-block:hover { border-color: #4b5563; }
+.slide-block.active { border-color: #f97316; box-shadow: 0 0 8px rgba(249,115,22,0.3); }
+.slide-block.dragging { opacity: 0.5; transform: scale(0.95); }
+.slide-block.drag-over { border-color: #3b82f6; border-style: dashed; }
+
+.slide-thumb {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 80px;
+}
+.slide-thumb-media {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.slide-thumb-empty {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  color: #6b7280;
+}
+
+.slide-info {
+  padding: 4px 6px;
+  background: rgba(0,0,0,0.6);
+}
+.slide-info-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.slide-num {
+  font-size: 10px;
+  font-weight: 700;
+  color: #e5e7eb;
+}
+.slide-dur {
+  font-size: 9px;
+  color: #9ca3af;
+  font-family: monospace;
+}
+.slide-info-bottom {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 2px;
+}
+.slide-main {
+  font-size: 9px;
+  color: #9ca3af;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── SFX Markers ─── */
+.sfx-marker {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  min-width: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  font-size: 12px;
+  z-index: 15;
+  background: rgba(249, 115, 22, 0.2);
+  border: 1px solid rgba(249, 115, 22, 0.5);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.sfx-marker-icon { flex-shrink: 0; font-size: 10px; }
+.sfx-marker-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: #fb923c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sfx-marker:hover { background: rgba(249, 115, 22, 0.35); }
+
+#timeline-sfx.sfx-drag-hover {
+  border-color: #f97316 !important;
+  border-style: solid !important;
+  background: rgba(249, 115, 22, 0.1) !important;
+}
+
+/* ─── BGM Track ─── */
+.bgm-bar {
+  position: absolute; top: 3px; bottom: 3px;
+  background: rgba(16, 185, 129, 0.25);
+  border: 1px solid rgba(16, 185, 129, 0.6);
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex; align-items: center; padding: 0 6px;
+  overflow: hidden;
+}
+.bgm-bar-label {
+  font-size: 9px;
+  color: #10b981;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.bgm-bar:hover { background: rgba(16, 185, 129, 0.35); }
+
+/* ─── Sidebar ─── */
+.sidebar-section { border-bottom: 1px solid #1f2937; }
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.sidebar-section-header:hover { background: #1f2937; }
+.sidebar-arrow {
+  font-size: 8px;
+  color: #6b7280;
+  transition: transform 0.2s;
+  display: inline-block;
+  width: 12px;
+}
+.sidebar-section.open .sidebar-arrow { transform: rotate(90deg); }
+.sidebar-section-body { padding: 0 12px 8px; }
+.sidebar-section-body.hidden { display: none; }
+
+.sfx-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: grab;
+  font-size: 11px;
+  color: #d1d5db;
+  transition: background 0.15s;
+}
+.sfx-item:hover { background: #374151; }
+.sfx-item .sfx-preview {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #4b5563;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.sfx-item .sfx-preview:hover { background: #f97316; }
+.bgm-active { background: #064e3b !important; border-left: 3px solid #10b981; }
+
+/* ─── Preview Canvas ─── */
+.preview-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+}
+.preview-bg {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  position: absolute; inset: 0;
+}
+.preview-bg-fallback {
+  width: 100%; height: 100%;
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  position: absolute; inset: 0;
+}
+.preview-dim {
+  position: absolute; inset: 0;
+  background: rgba(5, 8, 20, 0.4);
+}
+.preview-slide-num {
+  position: absolute; bottom: 8px; left: 12px;
+  font-size: 10px; color: #9ca3af;
+}
+.preview-hidden-badge {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(139, 92, 246, 0.3);
+  border: 1px dashed #8b5cf6;
+  padding: 6px 16px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #c4b5fd;
+  pointer-events: none;
+}
+
+/* Text Overlay (draggable) */
+.text-overlay-drag {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  cursor: move;
+  user-select: none;
+  z-index: 10;
+  text-align: center;
+  max-width: 320px;
+  padding: 8px 12px;
+  border: 2px dashed transparent;
+  border-radius: 8px;
+  transition: border-color 0.15s;
+}
+.text-overlay-drag:hover {
+  border-color: rgba(167, 139, 250, 0.5);
+}
+.text-overlay-drag.overlay-hidden {
+  cursor: default;
+  border-style: dotted;
+  border-color: rgba(139, 92, 246, 0.3);
+}
+.overlay-main {
+  font-weight: 900;
+  color: white;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+  line-height: 1.3;
+  word-break: keep-all;
+}
+.overlay-sub {
+  color: #d1d5db;
+  margin-top: 4px;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+  word-break: keep-all;
+}
+
+/* ─── Properties Panel ─── */
+.prop-section {
+  padding: 8px 0;
+  border-bottom: 1px solid #1f2937;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.prop-section:last-child { border-bottom: none; }
+.prop-section.prop-section-active { opacity: 1; }
+.prop-section:hover { opacity: 0.9; }
+.prop-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+}
+.prop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.prop-label {
+  width: 40px;
+  font-size: 10px;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+.prop-input {
+  flex: 1;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: #e5e7eb;
+  outline: none;
+}
+.prop-input:focus { border-color: #f97316; }

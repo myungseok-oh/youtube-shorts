@@ -2525,6 +2525,9 @@ async def api_import_channels(file: UploadFile = File(...)):
 from pipeline.editor import (
     get_editor_data, load_edit_data, save_edit_data, apply_edits,
 )
+from pipeline.composer import (
+    get_composer_data, get_slide_audio_files, load_compose_data, save_compose_data,
+)
 
 
 @app.get("/editor/{job_id}", response_class=HTMLResponse)
@@ -2646,6 +2649,209 @@ async def api_serve_audio(subdir: str, filename: str):
     if not os.path.exists(path):
         raise HTTPException(404, "Audio not found")
     return FileResponse(path, media_type="audio/mpeg")
+
+
+# ─── Composer (프리프로덕션 편집기) ───
+
+@app.get("/composer/{job_id}", response_class=HTMLResponse)
+async def composer_page(request: Request, job_id: str):
+    """프리프로덕션 편집 페이지."""
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return templates.TemplateResponse("composer.html", {
+        "request": request, "job_id": job_id, "job": job,
+    })
+
+
+@app.get("/api/jobs/{job_id}/composer")
+async def api_composer_data(job_id: str):
+    """편집기에 필요한 슬라이드/배경/오디오/SFX/BGM 데이터."""
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    script = json.loads(job["script_json"]) if job.get("script_json") else {}
+
+    # 채널 config
+    ch_id = job.get("channel_id", "")
+    ch_cfg = {}
+    if ch_id:
+        ch = get_channel(db_ch, ch_id)
+        if ch and ch.get("config"):
+            ch_cfg = json.loads(ch["config"]) if isinstance(ch["config"], str) else ch["config"]
+
+    data = get_composer_data(job_id, script, ch_cfg)
+
+    # 슬라이드별 오디오 매핑 추가
+    data["slide_audio"] = get_slide_audio_files(job_id, script)
+
+    return data
+
+
+@app.post("/api/jobs/{job_id}/composer/save")
+async def api_composer_save(job_id: str, request: Request):
+    """편집 상태 저장."""
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    body = await request.json()
+    save_compose_data(job_id, body)
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/composer/tts")
+async def api_composer_tts(job_id: str, request: Request):
+    """슬라이드별 또는 전체 TTS 생성."""
+    from pipeline.tts_generator import generate_audio
+
+    job = get_job(db, job_id)
+    if not job or not job.get("script_json"):
+        raise HTTPException(404, "Job or script not found")
+
+    script = json.loads(job["script_json"])
+    sentences = script.get("sentences", [])
+    body = await request.json()
+    slide_num = body.get("slide_num")  # None이면 전체
+    tts_engine = body.get("tts_engine", "edge-tts")
+
+    # 대상 문장 필터링
+    if slide_num:
+        target_sents = [s for s in sentences if s.get("slide") == slide_num]
+    else:
+        target_sents = sentences
+
+    if not target_sents:
+        return {"ok": False, "error": "대상 문장 없음", "count": 0}
+
+    audio_dir = os.path.join(config.output_dir(), job_id, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+
+    # 채널 config에서 음성 설정 가져오기
+    ch_id = job.get("channel_id", "")
+    voice = ""
+    rate = None
+    sovits_cfg = None
+
+    if ch_id:
+        ch = get_channel(db_ch, ch_id)
+        if ch and ch.get("config"):
+            ch_cfg = json.loads(ch["config"]) if isinstance(ch["config"], str) else ch["config"]
+            if tts_engine == "google-cloud":
+                voice = ch_cfg.get("google_voice", "ko-KR-Wavenet-A")
+            else:
+                voice = ch_cfg.get("tts_voice", "ko-KR-SunHiNeural")
+            rate = ch_cfg.get("tts_rate")
+
+    # 특정 슬라이드만 생성 시: 해당 문장의 인덱스에 맞는 오디오만 생성
+    if slide_num:
+        # 해당 슬라이드 문장들의 전체 인덱스 찾기
+        for i, sen in enumerate(sentences):
+            if sen.get("slide") == slide_num:
+                # 기존 오디오 삭제
+                for ext in ("mp3", "wav"):
+                    old = os.path.join(audio_dir, f"audio_{i+1}.{ext}")
+                    if os.path.exists(old):
+                        os.remove(old)
+
+    try:
+        import tempfile
+
+        if slide_num:
+            # 특정 슬라이드: 임시 디렉토리에 생성 후 올바른 인덱스로 이동
+            target_indices = [i for i, s in enumerate(sentences)
+                              if s.get("slide") == slide_num]
+            target_sents_list = [sentences[i] for i in target_indices]
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                result = await asyncio.to_thread(
+                    generate_audio,
+                    target_sents_list,
+                    tmp_dir,
+                    voice=voice,
+                    rate=rate,
+                    sovits_cfg=sovits_cfg,
+                )
+                # 생성된 파일을 올바른 인덱스로 이동
+                for j, src in enumerate(result):
+                    if j < len(target_indices):
+                        real_idx = target_indices[j]
+                        ext = os.path.splitext(src)[1]
+                        dst = os.path.join(audio_dir, f"audio_{real_idx + 1}{ext}")
+                        shutil.copy2(src, dst)
+            count = len(target_indices)
+        else:
+            # 전체 생성: 기존 오디오 삭제 후 재생성
+            for f in os.listdir(audio_dir):
+                if f.startswith("audio_"):
+                    os.remove(os.path.join(audio_dir, f))
+            result = await asyncio.to_thread(
+                generate_audio,
+                sentences,
+                audio_dir,
+                voice=voice,
+                rate=rate,
+                sovits_cfg=sovits_cfg,
+            )
+            count = len(result)
+
+        return {"ok": True, "count": count}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "count": 0}
+
+
+@app.post("/api/jobs/{job_id}/composer/audio/{slide_num}")
+async def api_composer_upload_audio(job_id: str, slide_num: int,
+                                     file: UploadFile = File(...)):
+    """슬라이드별 음성 파일 업로드 (나레이션)."""
+    job = get_job(db, job_id)
+    if not job or not job.get("script_json"):
+        raise HTTPException(404, "Job not found")
+
+    script = json.loads(job["script_json"])
+    sentences = script.get("sentences", [])
+
+    audio_dir = os.path.join(config.output_dir(), job_id, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+
+    content = await file.read()
+    original = file.filename or "audio.mp3"
+    ext = original.rsplit(".", 1)[-1] if "." in original else "mp3"
+
+    # 해당 슬라이드의 첫 번째 문장 인덱스 찾기
+    first_idx = None
+    for i, sen in enumerate(sentences):
+        if sen.get("slide") == slide_num:
+            if first_idx is None:
+                first_idx = i
+
+    if first_idx is None:
+        raise HTTPException(400, f"슬라이드 {slide_num}에 해당하는 문장이 없습니다")
+
+    # 해당 슬라이드의 기존 오디오 삭제
+    for i, sen in enumerate(sentences):
+        if sen.get("slide") == slide_num:
+            for e in ("mp3", "wav", "m4a"):
+                old = os.path.join(audio_dir, f"audio_{i+1}.{e}")
+                if os.path.exists(old):
+                    os.remove(old)
+
+    # 첫 번째 문장 인덱스로 저장
+    out_path = os.path.join(audio_dir, f"audio_{first_idx + 1}.{ext}")
+    with open(out_path, "wb") as f:
+        f.write(content)
+
+    return {"ok": True, "file": f"audio_{first_idx + 1}.{ext}"}
+
+
+@app.get("/api/jobs/{job_id}/audio/{filename}")
+async def api_serve_job_audio(job_id: str, filename: str):
+    """Job 오디오 파일 서빙."""
+    path = os.path.join(config.output_dir(), job_id, "audio", filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Audio not found")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "mp3"
+    media_types = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4", "ogg": "audio/ogg"}
+    return FileResponse(path, media_type=media_types.get(ext, "audio/mpeg"))
 
 
 if __name__ == "__main__":
