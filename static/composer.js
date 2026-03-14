@@ -25,7 +25,8 @@ async function initComposer() {
 
   renderTimeline();
   renderTabMedia();
-  renderTabAudio();
+  renderTabSfx();
+  renderTabBgm();
   if (composeState.slide_order.length > 0) {
     selectSlide(0);
   }
@@ -522,9 +523,11 @@ function switchTab(tab) {
   _activeTab = tab;
   document.querySelectorAll('.comp-icon-tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
   document.querySelectorAll('.comp-tab-content').forEach(el => el.classList.toggle('active', el.id === `tab-${tab}`));
-  // 탭 전환 시 컨텐츠 갱신
   if (tab === 'text') renderTabText();
   if (tab === 'narration') renderTabNarration();
+  if (tab === 'bgm') renderTabBgm();
+  if (tab === 'sfx') renderTabSfx();
+  if (tab === 'media') renderTabMedia();
 }
 
 // ─── Tab: Media ───
@@ -561,11 +564,11 @@ function uploadCurrentSlideBg(input) {
   if (sl) uploadSlideBg(sl.num, input);
 }
 
-// ─── Tab: Audio ───
+// ─── Tab: SFX (효과음) ───
 
-function renderTabAudio() {
-  const el = document.getElementById("tab-audio");
-  let html = `<div class="comp-tab-title">효과음 (SFX)</div>`;
+function renderTabSfx() {
+  const el = document.getElementById("tab-sfx");
+  let html = `<div class="comp-tab-title">효과음</div>`;
   html += `<div class="comp-tab-subtitle">타임라인에 드래그하세요</div>`;
   (composerData.sfx_list || []).forEach(s => {
     html += `<div class="audio-item" draggable="true" ondragstart="onSfxDragStart(event, '${s.file}')">
@@ -574,22 +577,40 @@ function renderTabAudio() {
       <span style="font-size:9px;color:#6b7280;">${s.duration.toFixed(1)}s</span>
     </div>`;
   });
-  html += `<div class="comp-tab-title" style="margin-top:16px;">배경 음악 (BGM)</div>`;
+  if ((composerData.sfx_list || []).length === 0) {
+    html += `<div style="font-size:10px;color:#4b5563;padding:12px;">data/sfx/ 폴더에 효과음을 추가하세요</div>`;
+  }
+  el.innerHTML = html;
+}
+
+// ─── Tab: BGM (배경음) ───
+
+function renderTabBgm() {
+  const el = document.getElementById("tab-bgm");
+  let html = `<div class="comp-tab-title">배경 음악</div>`;
   (composerData.bgm_list || []).forEach(s => {
     const isActive = composeState.bgm && composeState.bgm.file === s.file;
     html += `<div class="audio-item ${isActive ? 'bgm-active' : ''}">
       <button class="audio-play-btn" onclick="previewAudio('${s.path}')">&#9654;</button>
       <span class="flex-1 truncate">${s.file.replace(/\.[^.]+$/, '')}</span>
+      <span style="font-size:9px;color:#6b7280;">${s.duration ? (s.duration > 60 ? Math.floor(s.duration/60)+'m' : s.duration.toFixed(0)+'s') : ''}</span>
       <button class="audio-apply-btn ${isActive ? 'applied' : ''}" onclick="applyBgm('${_esc(s.file)}', '${_esc(s.path)}', ${s.duration || 0})">${isActive ? '적용됨' : '적용'}</button>
     </div>`;
   });
   if (composeState.bgm) {
-    html += `<div style="margin-top:8px;">
+    html += `<div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d38;">
+      <div style="font-size:10px;color:#34d399;margin-bottom:6px;">적용됨: ${_esc(composeState.bgm.file)}</div>
       <div class="ctrl-row"><span class="ctrl-label">볼륨</span>
-        <input class="ctrl-input" type="number" value="${composeState.bgm.volume}" min="0" max="1" step="0.01" onchange="updateBgmProp('volume', +this.value)">
+        <input class="ctrl-input" type="range" min="0" max="0.5" step="0.01" value="${composeState.bgm.volume}"
+               oninput="updateBgmProp('volume', +this.value); this.nextElementSibling.textContent=Math.round(this.value*100)+'%';"
+               style="flex:1;accent-color:#34d399;">
+        <span style="font-size:9px;color:#6b7280;width:28px;text-align:right;">${Math.round(composeState.bgm.volume * 100)}%</span>
       </div>
-      <button onclick="removeBgm()" style="width:100%;padding:4px;background:#3b1c1c;color:#f87171;border:none;border-radius:4px;font-size:10px;cursor:pointer;margin-top:4px;">BGM 제거</button>
+      <button onclick="removeBgm()" style="width:100%;padding:5px;background:#3b1c1c;color:#f87171;border:none;border-radius:5px;font-size:10px;cursor:pointer;margin-top:6px;">제거</button>
     </div>`;
+  }
+  if ((composerData.bgm_list || []).length === 0) {
+    html += `<div style="font-size:10px;color:#4b5563;padding:12px;">data/bgm/ 폴더에 배경음을 추가하세요</div>`;
   }
   el.innerHTML = html;
 }
@@ -815,7 +836,7 @@ function applyBgm(file, path, duration) {
   };
   _dirty = true;
   renderBgmTrack();
-  renderSidebar();
+  renderTabBgm();
   renderProps();
 }
 
@@ -823,7 +844,7 @@ function removeBgm() {
   composeState.bgm = null;
   _dirty = true;
   renderBgmTrack();
-  renderSidebar();
+  renderTabBgm();
   renderProps();
 }
 
