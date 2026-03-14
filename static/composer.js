@@ -1599,14 +1599,17 @@ function startElementResize(e, idx) {
   e.stopPropagation();
   const elem = composeState.elements[idx];
   if (!elem) return;
-  const startX = e.clientX, startY = e.clientY;
+  const box = e.target.parentElement;
+  const rect = box.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const startDist = Math.hypot(e.clientX - cx, e.clientY - cy);
   const origW = elem.width || 300, origH = elem.height || 250;
   const aspect = origW / origH;
   function onMove(e2) {
-    const dx = e2.clientX - startX;
-    const dy = e2.clientY - startY;
-    const delta = (dx + dy) / SCALE;
-    elem.width = Math.max(50, Math.round(origW + delta));
+    const dist = Math.hypot(e2.clientX - cx, e2.clientY - cy);
+    const scale = dist / (startDist || 1);
+    elem.width = Math.max(50, Math.round(origW * scale));
     elem.height = Math.max(50, Math.round(elem.width / aspect));
     _dirty = true;
     renderPreview();
@@ -1650,13 +1653,17 @@ function startFreeTextResize(e, ftIdx) {
   e.stopPropagation();
   const ft = composeState.freeTexts[ftIdx];
   if (!ft) return;
-  const startX = e.clientX, startY = e.clientY;
+  const box = e.target.parentElement;
+  const rect = box.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  const startDist = Math.hypot(e.clientX - cx, e.clientY - cy);
   const origSize = ft.size || 48;
 
   function onMove(e2) {
-    const dx = e2.clientX - startX;
-    const dy = e2.clientY - startY;
-    ft.size = Math.max(12, Math.min(200, Math.round(origSize + (dx + dy) * 0.5)));
+    const dist = Math.hypot(e2.clientX - cx, e2.clientY - cy);
+    const scale = dist / (startDist || 1);
+    ft.size = Math.max(12, Math.min(200, Math.round(origSize * scale)));
     _dirty = true;
     renderPreview();
   }
