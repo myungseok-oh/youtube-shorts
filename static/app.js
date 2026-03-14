@@ -784,7 +784,10 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
             <br><span class="text-gray-500">${esc(en)}</span>
             ${motion ? `<br><span class="text-blue-400">🎬 ${esc(motion)}</span>` : ""}
           </div>
-          <button onclick="event.stopPropagation(); copyOnePrompt(this, \`${esc(copyText)}\`)" class="copy-icon-btn text-gray-600 hover:text-white flex-shrink-0" title="복사" style="font-size:11px;padding:1px 3px;">&#x1F4CB;</button>
+          <div class="flex gap-1 flex-shrink-0">
+            <button onclick="event.stopPropagation(); bgToVideo('${jobId}', ${i+1}, this)" class="text-purple-400 hover:text-purple-200 flex-shrink-0" title="영상화 (Veo)" style="font-size:11px;padding:1px 3px;">🎬</button>
+            <button onclick="event.stopPropagation(); copyOnePrompt(this, \`${esc(copyText)}\`)" class="copy-icon-btn text-gray-600 hover:text-white flex-shrink-0" title="복사" style="font-size:11px;padding:1px 3px;">&#x1F4CB;</button>
+          </div>
         </div>
       </div>`;
     }).join("");
@@ -1387,6 +1390,28 @@ function copyPrompt(btn) {
     btn.innerHTML = "&#x2705;";
     setTimeout(() => { btn.innerHTML = "&#x1F4CB;"; }, 1500);
   });
+}
+
+async function bgToVideo(jobId, bgIdx, btn) {
+  if (!confirm(`bg_${bgIdx}을 Veo 3.1 Fast로 영상화합니다.\n비용: ~$0.60 (6초)\n진행할까요?`)) return;
+  const origText = btn.innerHTML;
+  btn.innerHTML = "⏳";
+  btn.disabled = true;
+  try {
+    const resp = await fetch(`/api/jobs/${jobId}/bg/${bgIdx}/to-video`, { method: "POST" });
+    const data = await resp.json();
+    if (resp.ok) {
+      btn.innerHTML = "✅";
+      setTimeout(() => { btn.innerHTML = "🎬"; }, 3000);
+    } else {
+      alert(`영상화 실패: ${data.detail || "unknown error"}`);
+      btn.innerHTML = origText;
+    }
+  } catch (e) {
+    alert(`영상화 요청 실패: ${e.message}`);
+    btn.innerHTML = origText;
+  }
+  btn.disabled = false;
 }
 
 function copyOnePrompt(btn, text) {

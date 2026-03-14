@@ -790,6 +790,8 @@ def generate_image_prompts(topic: str, slides: list[dict],
     if bg_media_type == "auto":
         if auto_bg_source in ("sd_video",):
             _effective_type = "timed"  # 영상 → 시간 기준 교체
+        elif auto_bg_source == "gemini":
+            _effective_type = "mixed"  # Gemini: 이미지+영상 혼합 (슬라이드당 2~3개)
         else:
             _effective_type = "per-sentence"  # 이미지 → 문장별 교체
 
@@ -804,6 +806,13 @@ def generate_image_prompts(topic: str, slides: list[dict],
             return 1
         if _effective_type == "single":
             return 1
+        elif _effective_type == "mixed":
+            # Gemini 혼합 모드: 슬라이드당 2~3개 (이미지+영상 조합)
+            dur = slide_durations.get(slide_idx, 8.0)
+            if dur >= 8.0:
+                return 3  # 이미지2 + 영상1 또는 이미지3
+            else:
+                return 2  # 이미지1 + 영상1 또는 이미지2
         elif _effective_type == "per-sentence":
             n = slide_sentence_counts.get(slide_idx, 1)
             return max(1, n)
@@ -850,22 +859,45 @@ Slides:
 ## 출력 형식
 각 슬라이드에 대해 ko, en, motion, media 4개 필드를 생성.
 **[xN prompts]로 표시된 슬라이드는 서로 다른 장면의 프롬프트를 N개 연속 출력하라.**
-(같은 주제를 다른 앵글/장소/스케일로. 예: wide shot -> close-up, 외부 -> 내부, 전경 -> 디테일)
 
 - ko: 촬영 현장을 구체적으로 (예: "울산 정유소 증류탑 야경, 가스 플레어 불빛")
 - en: 영어 이미지 프롬프트, 30-60 words, 5요소 필수 (Subject, Setting, Lighting, Camera, Style)
 - motion: 이 장면을 영상으로 만들 때의 카메라 움직임 (예: "slow zoom in", "gentle pan left", "slow zoom out")
-- media: "image" 또는 "video" — 이 장면을 정적 이미지와 4초 영상 중 어떤 것으로 제작할지 추천
-  ★ media 판단 기준:
-  - "video" 추천: 움직임이 자연스러운 장면 (동물의 행동/움직임, 물결, 바람에 흔들리는 나뭇잎, 도시 야경, 자연 풍경, 불꽃, 연기 등)
-  - "image" 추천: 정보 전달, 데이터, 인포그래픽, 정적 사물, 건물 외관, 로고
-  - graph/overview 타입은 항상 "image"
-  - 전체 프롬프트 중 30~40%만 "video"로 추천할 것 (과하면 산만해짐)
-  - "video" 프롬프트의 en 필드에는 움직임 묘사 키워드 추가 (gentle movement, swaying, flowing 등)
+- media: "image" 또는 "video" — 이 배경을 정적 이미지로 쓸지, 6초 영상으로 변환할지 지정
+
+## ★★★ media 배치 핵심 규칙 (반드시 따를 것) ★★★
+한 슬라이드에 프롬프트가 2~3개일 때, **나레이션 흐름에 맞춰 image/video 순서를 결정**하라.
+영상은 이미지에서 변환(image-to-video)되므로, 모든 프롬프트는 먼저 이미지로 생성된다.
+
+### 나레이션 → 배경 순서 매핑
+- 설명/도입부 → image (정적 장면으로 집중)
+- 행동/움직임/변화 묘사 → video (동적 장면)
+- 결론/정리 → image (안정감)
+
+### 배치 예시 (3개 프롬프트 슬라이드)
+| 나레이션 흐름 | 순서 |
+|---|---|
+| 설명 → 행동 → 결과 | image → video → image |
+| 갑작스러운 행동 → 설명 → 마무리 | video → image → image |
+| 도입 → 전개 → 클라이맥스 | image → image → video |
+
+### 배치 예시 (2개 프롬프트 슬라이드)
+| 나레이션 흐름 | 순서 |
+|---|---|
+| 설명 → 행동 | image → video |
+| 행동 → 설명 | video → image |
+| 정보 → 정보 | image → image |
+
+### 비율 규칙
+- 전체 프롬프트 중 **25~35%만 "video"** (과하면 비용 ↑, 산만해짐)
+- graph/overview 타입은 항상 "image"
+- "video" 프롬프트의 en 필드에 움직임 키워드 추가 (gentle movement, swaying, flowing 등)
+- 같은 슬라이드 안에서 video는 **최대 1개**
 - closing 타입 → {{"ko":"", "en":"", "motion":"", "media":"image"}}
-- ★ 모든 프롬프트는 반드시 서로 다른 장소/피사체/앵글을 사용하라. 같은 건물, 같은 장면, 같은 구도 반복 금지.
-  - 예: 슬라이드1 "증권거래소 외관" → 슬라이드2 "공장 내부" → 슬라이드3 "항구 컨테이너" (모두 다른 장소)
-  - 나쁜 예: 슬라이드1 "trading floor monitors" → 슬라이드2 "stock exchange screens" (같은 장면)
+
+## 기타 규칙
+- ★ 모든 프롬프트는 반드시 서로 다른 장소/피사체/앵글. 같은 장면 반복 금지.
+- 같은 슬라이드 내에서도 앵글/스케일을 변경 (wide → close-up, 외부 → 내부)
 - 이미지 사이즈에 맞는 composition 키워드 포함
 
 Output ONLY a JSON array with exactly {prompt_count} items, no other text:

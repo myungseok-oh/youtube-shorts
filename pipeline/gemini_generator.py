@@ -72,73 +72,117 @@ def generate_image(prompt: str, output_path: str, api_key: str,
     return False
 
 
-VIDEO_MODELS = [
-    "veo-2.0-generate-001",
-]
+VIDEO_MODEL = "veo-3.1-generate-001"
 
 VIDEO_POLL_INTERVAL = 10   # 폴링 간격 (초)
 VIDEO_POLL_TIMEOUT = 300   # 최대 대기 시간 (초)
 
 
-def generate_video(prompt: str, output_path: str, api_key: str,
-                   aspect_ratio: str = "9:16", duration: int = 4) -> bool:
-    """Gemini Veo 영상 생성 (기본 4초).
+def image_to_video(image_path: str, prompt: str, output_path: str,
+                   api_key: str, duration: int = 6) -> bool:
+    """Gemini Veo 3.1 Fast image-to-video 변환.
+
+    기존 이미지를 첫 프레임으로 사용하여 영상 생성.
+    비용: ~$0.10/초 (오디오 없이), 6초 = ~$0.60
 
     Args:
-        prompt: 영어 영상 프롬프트
+        image_path: 원본 이미지 경로 (.png/.jpg)
+        prompt: 영어 모션 프롬프트 (카메라 움직임 등)
         output_path: 저장 경로 (.mp4)
         api_key: Google AI Studio API key
-        aspect_ratio: 비율 (9:16, 16:9, 1:1)
-        duration: 영상 길이 (초, 4~8)
+        duration: 영상 길이 (초, 5~8)
 
     Returns:
         성공 여부
     """
+    if not os.path.exists(image_path):
+        print(f"[gemini] image not found: {image_path}")
+        return False
+
     client = genai.Client(api_key=api_key)
 
-    for model_name in VIDEO_MODELS:
-        try:
-            print(f"[gemini] video generation start: {model_name} ({duration}s, {aspect_ratio})")
-            operation = client.models.generate_videos(
-                model=model_name,
-                prompt=prompt,
-                config=types.GenerateVideosConfig(
-                    personGeneration="dont_allow",
-                    aspectRatio=aspect_ratio,
-                    numberOfVideos=1,
-                    durationSeconds=max(duration, 5),
-                ),
-            )
+    try:
+        # 이미지 로드
+        image = types.Image.from_file(image_path)
 
-            # 비동기 폴링 — 영상 생성은 수십 초 소요
-            elapsed = 0
-            while not operation.done:
-                if elapsed >= VIDEO_POLL_TIMEOUT:
-                    print(f"[gemini] video generation timeout ({VIDEO_POLL_TIMEOUT}s)")
-                    return False
-                time.sleep(VIDEO_POLL_INTERVAL)
-                elapsed += VIDEO_POLL_INTERVAL
-                print(f"[gemini] video polling... {elapsed}s")
-                operation = client.operations.get(operation)
+        print(f"[gemini] image-to-video start: {VIDEO_MODEL} "
+              f"({duration}s, {os.path.basename(image_path)})")
+        operation = client.models.generate_videos(
+            model=VIDEO_MODEL,
+            prompt=prompt,
+            image=image,
+            config=types.GenerateVideosConfig(
+                personGeneration="dont_allow",
+                numberOfVideos=1,
+                durationSeconds=max(duration, 5),
+                generateAudio=False,
+            ),
+        )
 
-            if operation.response and operation.response.generated_videos:
-                video = operation.response.generated_videos[0]
-                os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-                client.files.download(file=video.video)
-                video.video.save(output_path)
-                print(f"[gemini] video saved: {os.path.basename(output_path)} "
-                      f"(model={model_name}, {elapsed}s)")
-                return True
-
-            print(f"[gemini] no video data from {model_name}")
-
-        except Exception as e:
-            err_msg = str(e)
-            print(f"[gemini] video {model_name} failed: {err_msg[:300]}")
-            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg.upper():
-                print(f"[gemini] video quota exhausted — 이미지로 폴백")
+        # 비동기 폴링
+        elapsed = 0
+        while not operation.done:
+            if elapsed >= VIDEO_POLL_TIMEOUT:
+                print(f"[gemini] video generation timeout ({VIDEO_POLL_TIMEOUT}s)")
                 return False
+            time.sleep(VIDEO_POLL_INTERVAL)
+            elapsed += VIDEO_POLL_INTERVAL
+            print(f"[gemini] video polling... {elapsed}s")
+            operation = client.operations.get(operation)
 
+        if operation.response and operation.response.generated_videos:
+            video = operation.response.generated_videos[0]
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            client.files.download(file=video.video)
+            video.video.save(output_path)
+            print(f"[gemini] video saved: {os.path.basename(output_path)} "
+                  f"(model={VIDEO_MODEL}, {elapsed}s)")
+            return True
+
+        print(f"[gemini] no video data from {VIDEO_MODEL}")
+
+    except Exception as e:
+        err_msg = str(e)
+        print(f"[gemini] video {VIDEO_MODEL} failed: {err_msg[:300]}")
+
+    return False
+
+
+# 하위 호환: 텍스트 → 영상 (폴백용)
+def generate_video(prompt: str, output_path: str, api_key: str,
+                   aspect_ratio: str = "9:16", duration: int = 6) -> bool:
+    """텍스트 → 영상 직접 생성 (이미지 없이). 폴백용."""
+    client = genai.Client(api_key=api_key)
+    try:
+        print(f"[gemini] text-to-video start: {VIDEO_MODEL} ({duration}s, {aspect_ratio})")
+        operation = client.models.generate_videos(
+            model=VIDEO_MODEL,
+            prompt=prompt,
+            config=types.GenerateVideosConfig(
+                personGeneration="dont_allow",
+                aspectRatio=aspect_ratio,
+                numberOfVideos=1,
+                durationSeconds=max(duration, 5),
+                generateAudio=False,
+            ),
+        )
+        elapsed = 0
+        while not operation.done:
+            if elapsed >= VIDEO_POLL_TIMEOUT:
+                return False
+            time.sleep(VIDEO_POLL_INTERVAL)
+            elapsed += VIDEO_POLL_INTERVAL
+            operation = client.operations.get(operation)
+
+        if operation.response and operation.response.generated_videos:
+            video = operation.response.generated_videos[0]
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            client.files.download(file=video.video)
+            video.video.save(output_path)
+            print(f"[gemini] video saved: {os.path.basename(output_path)} ({elapsed}s)")
+            return True
+    except Exception as e:
+        print(f"[gemini] text-to-video failed: {str(e)[:300]}")
     return False
 
 

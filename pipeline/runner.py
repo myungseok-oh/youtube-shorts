@@ -35,7 +35,7 @@ from pipeline.youtube_uploader import upload_video
 from pipeline.image_generator import generate_backgrounds
 from pipeline.sd_generator import agent_generate_image, generate_video as sd_generate_video, check_available as sd_check_available
 from pipeline.gemini_generator import generate_image as gemini_generate_image
-from pipeline.gemini_generator import generate_video as gemini_generate_video
+from pipeline.gemini_generator import image_to_video as gemini_image_to_video
 # from pipeline.qa_agent import run_qa  # QA 비활성화
 
 
@@ -492,6 +492,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                     if auto_bg_source == "gemini":
                         gemini_key = ch_config_b.get("gemini_api_key", "")
                         if gemini_key:
+                            # ── Step 1: 전체 이미지 생성 ──
                             for idx, prompt in enumerate(image_prompts):
                                 slide_num = prompt.get("slide", idx + 1) if isinstance(prompt, dict) else idx + 1
                                 slide = slides_data[slide_num - 1] if slide_num <= len(slides_data) else {}
@@ -501,43 +502,46 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 en_prompt = _prompt_en(prompt)
                                 if not en_prompt:
                                     continue
-                                # media 추천: "video"이면 Veo 영상 생성 시도
-                                media_rec = prompt.get("media", "image") if isinstance(prompt, dict) else "image"
-                                # graph/overview는 항상 이미지
-                                if bg_type in ("graph", "overview"):
-                                    media_rec = "image"
+                                out = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
                                 try:
                                     if idx > 0:
-                                        time.sleep(5)  # Gemini 분당 요청 제한 대응
-                                    # fullscreen / overview → 9:16, zone + 가로분할 → 1:1
+                                        time.sleep(5)
                                     if bg_type == "overview" or bg_display_mode == "fullscreen":
                                         _ar = "9:16"
                                     else:
                                         _ar = "1:1" if slide_layout_b in ("center", "top", "bottom") else "9:16"
-
-                                    if media_rec == "video":
-                                        out = os.path.join(dirs["bg"], f"bg_{idx + 1}.mp4")
-                                        # Veo는 9:16 또는 16:9만 지원 (1:1 불가)
-                                        # center/top/bottom 레이아웃 → 16:9, full → 9:16
-                                        _var = "16:9" if slide_layout_b in ("center", "top", "bottom") else "9:16"
-                                        ok = gemini_generate_video(en_prompt, out, gemini_key,
-                                                                   aspect_ratio=_var, duration=6)
-                                        if ok:
-                                            print(f"[runner] bg_{idx+1}.mp4 Gemini 영상 생성 완료 (slide {slide_num})")
-                                        else:
-                                            # 영상 실패 시 이미지로 폴백
-                                            print(f"[runner] bg_{idx+1} 영상 실패 -> 이미지 폴백")
-                                            out = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
-                                            gemini_generate_image(en_prompt, out, gemini_key,
-                                                                  aspect_ratio=_ar)
-                                            print(f"[runner] bg_{idx+1}.png Gemini 이미지 폴백 완료 (slide {slide_num})")
-                                    else:
-                                        out = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
-                                        gemini_generate_image(en_prompt, out, gemini_key,
-                                                              aspect_ratio=_ar)
-                                        print(f"[runner] bg_{idx+1}.png Gemini 생성 완료 (slide {slide_num})")
+                                    gemini_generate_image(en_prompt, out, gemini_key,
+                                                          aspect_ratio=_ar)
+                                    print(f"[runner] bg_{idx+1}.png Gemini 이미지 생성 완료 (slide {slide_num})")
                                 except Exception as e:
-                                    print(f"[runner] bg_{idx+1} Gemini 생성 실패: {e}")
+                                    print(f"[runner] bg_{idx+1} Gemini 이미지 생성 실패: {e}")
+
+                            # ── Step 2: video 추천 이미지 → Veo 3.1 Fast 영상화 ──
+                            for idx, prompt in enumerate(image_prompts):
+                                media_rec = prompt.get("media", "image") if isinstance(prompt, dict) else "image"
+                                if media_rec != "video":
+                                    continue
+                                slide_num = prompt.get("slide", idx + 1) if isinstance(prompt, dict) else idx + 1
+                                slide = slides_data[slide_num - 1] if slide_num <= len(slides_data) else {}
+                                bg_type = slide.get("bg_type", "photo")
+                                if bg_type in ("graph", "overview", "closing"):
+                                    continue
+                                img_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                                if not os.path.exists(img_path):
+                                    continue
+                                mp4_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.mp4")
+                                motion = prompt.get("motion", "") if isinstance(prompt, dict) else ""
+                                en_prompt = _prompt_en(prompt)
+                                vid_prompt = f"{en_prompt}, {motion}" if motion else en_prompt
+                                try:
+                                    ok = gemini_image_to_video(img_path, vid_prompt, mp4_path,
+                                                              gemini_key, duration=6)
+                                    if ok:
+                                        print(f"[runner] bg_{idx+1}.mp4 Veo 영상화 완료 (slide {slide_num})")
+                                    else:
+                                        print(f"[runner] bg_{idx+1} 영상화 실패 — 이미지 유지")
+                                except Exception as e:
+                                    print(f"[runner] bg_{idx+1} Veo 영상화 실패: {e}")
                         else:
                             print("[runner] Gemini API key 없음 — 배경 생성 스킵")
 
@@ -1479,6 +1483,7 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
             elif auto_bg_source == "gemini":
                 gemini_key = ch_config_s3.get("gemini_api_key", "")
                 if gemini_key and image_prompts:
+                    # ── Step 1: 전체 이미지 생성 ──
                     for idx, prompt in enumerate(image_prompts):
                         slide = slides_data[idx] if idx < len(slides_data) else {}
                         bg_type = slide.get("bg_type", "photo")
@@ -1487,39 +1492,45 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                         en_prompt = _prompt_en(prompt)
                         if not en_prompt:
                             continue
-                        media_rec = prompt.get("media", "image") if isinstance(prompt, dict) else "image"
-                        if bg_type in ("graph", "overview"):
-                            media_rec = "image"
+                        output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
                         try:
                             if idx > 0:
-                                time.sleep(5)  # Gemini 분당 요청 제한 대응
+                                time.sleep(5)
                             if bg_display_mode == "fullscreen":
                                 _ar = "9:16"
                             else:
                                 _ar = "1:1" if slide_layout_s3 in ("center", "top", "bottom") else "9:16"
-
-                            if media_rec == "video":
-                                output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.mp4")
-                                # Veo는 9:16 또는 16:9만 지원 (1:1 불가)
-                                # center/top/bottom 레이아웃 → 16:9, full → 9:16
-                                _var = "16:9" if slide_layout_s3 in ("center", "top", "bottom") else "9:16"
-                                ok = gemini_generate_video(en_prompt, output_path, gemini_key,
-                                                           aspect_ratio=_var, duration=6)
-                                if ok:
-                                    print(f"[runner] bg_{idx+1}.mp4 Gemini 영상 생성 완료")
-                                else:
-                                    print(f"[runner] bg_{idx+1} 영상 실패 -> 이미지 폴백")
-                                    output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
-                                    gemini_generate_image(en_prompt, output_path, gemini_key,
-                                                          aspect_ratio=_ar)
-                                    print(f"[runner] bg_{idx+1}.png Gemini 이미지 폴백 완료")
-                            else:
-                                output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
-                                gemini_generate_image(en_prompt, output_path, gemini_key,
-                                                      aspect_ratio=_ar)
-                                print(f"[runner] bg_{idx+1}.png Gemini 생성 완료")
+                            gemini_generate_image(en_prompt, output_path, gemini_key,
+                                                  aspect_ratio=_ar)
+                            print(f"[runner] bg_{idx+1}.png Gemini 이미지 생성 완료")
                         except Exception as e:
-                            print(f"[runner] bg_{idx+1} Gemini 생성 실패: {e}")
+                            print(f"[runner] bg_{idx+1} Gemini 이미지 생성 실패: {e}")
+
+                    # ── Step 2: video 추천 이미지 → Veo 3.1 Fast 영상화 ──
+                    for idx, prompt in enumerate(image_prompts):
+                        media_rec = prompt.get("media", "image") if isinstance(prompt, dict) else "image"
+                        if media_rec != "video":
+                            continue
+                        slide = slides_data[idx] if idx < len(slides_data) else {}
+                        bg_type = slide.get("bg_type", "photo")
+                        if bg_type in ("graph", "overview", "closing"):
+                            continue
+                        img_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                        if not os.path.exists(img_path):
+                            continue
+                        mp4_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.mp4")
+                        motion = prompt.get("motion", "") if isinstance(prompt, dict) else ""
+                        en_prompt = _prompt_en(prompt)
+                        vid_prompt = f"{en_prompt}, {motion}" if motion else en_prompt
+                        try:
+                            ok = gemini_image_to_video(img_path, vid_prompt, mp4_path,
+                                                      gemini_key, duration=6)
+                            if ok:
+                                print(f"[runner] bg_{idx+1}.mp4 Veo 영상화 완료")
+                            else:
+                                print(f"[runner] bg_{idx+1} 영상화 실패 — 이미지 유지")
+                        except Exception as e:
+                            print(f"[runner] bg_{idx+1} Veo 영상화 실패: {e}")
                 else:
                     print("[runner] Gemini API key 없음 — 배경 생성 스킵")
             elif auto_bg_source in ("sd_video", "sd_image"):

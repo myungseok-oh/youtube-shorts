@@ -33,6 +33,7 @@ from pipeline.sd_generator import (
 )
 from pipeline.slide_generator import generate_slides, generate_chart, generate_infographic
 from pipeline.gemini_generator import generate_image as gemini_gen_image
+from pipeline.gemini_generator import image_to_video as gemini_image_to_video
 
 db = Database(config.db_path())
 db_ch = Database(config.channels_db_path())
@@ -1908,6 +1909,54 @@ async def api_rerender_slides(job_id: str):
     )
 
     return {"ok": True, "layout": slide_layout, "slides": len(slide_paths)}
+
+
+@app.post("/api/jobs/{job_id}/bg/{bg_idx}/to-video")
+async def api_bg_to_video(job_id: str, bg_idx: int, request: Request):
+    """개별 배경 이미지를 Veo 3.1 Fast로 영상화 (수동 모드)."""
+    job = db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [job["channel_id"]])
+    ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
+    gemini_key = ch_cfg.get("gemini_api_key", "")
+    if not gemini_key:
+        raise HTTPException(400, "Gemini API key not configured")
+
+    job_dir = os.path.join(config.output_dir(), job_id)
+    bg_dir = os.path.join(job_dir, "backgrounds")
+    img_path = os.path.join(bg_dir, f"bg_{bg_idx}.png")
+    # jpg도 지원
+    if not os.path.exists(img_path):
+        img_path = os.path.join(bg_dir, f"bg_{bg_idx}.jpg")
+    if not os.path.exists(img_path):
+        raise HTTPException(404, f"bg_{bg_idx} image not found")
+
+    # 프롬프트에서 motion 힌트 가져오기
+    meta = json.loads(job.get("meta_json", "{}") or "{}")
+    prompts = meta.get("image_prompts", [])
+    prompt_text = ""
+    if bg_idx - 1 < len(prompts):
+        p = prompts[bg_idx - 1]
+        en = p.get("en", "") if isinstance(p, dict) else str(p)
+        motion = p.get("motion", "") if isinstance(p, dict) else ""
+        prompt_text = f"{en}, {motion}" if motion else en
+
+    if not prompt_text:
+        prompt_text = "gentle camera movement, cinematic"
+
+    mp4_path = os.path.join(bg_dir, f"bg_{bg_idx}.mp4")
+
+    ok = await asyncio.to_thread(
+        gemini_image_to_video, img_path, prompt_text, mp4_path,
+        gemini_key, duration=6
+    )
+
+    if ok:
+        return {"ok": True, "path": f"bg_{bg_idx}.mp4"}
+    else:
+        raise HTTPException(500, "Veo video generation failed")
 
 
 @app.post("/api/jobs/{job_id}/retry")
