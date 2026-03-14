@@ -1037,6 +1037,26 @@ function renderTabBgm() {
                style="flex:1;accent-color:#34d399;">
         <span style="font-size:9px;color:#6b7280;width:28px;text-align:right;">${Math.round(composeState.bgm.volume * 100)}%</span>
       </div>
+      <div class="ctrl-row"><span class="ctrl-label">시작</span>
+        <input class="ctrl-input" type="number" value="${composeState.bgm.start_time}" min="0" step="0.5"
+               onchange="updateBgmProp('start_time', +this.value)">
+        <span style="font-size:8px;color:#6b7280;">초</span>
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">종료</span>
+        <input class="ctrl-input" type="number" value="${composeState.bgm.end_time}" min="0" step="0.5"
+               onchange="updateBgmProp('end_time', +this.value)">
+        <span style="font-size:8px;color:#6b7280;">초</span>
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">페이드인</span>
+        <input class="ctrl-input" type="number" value="${composeState.bgm.fade_in || 0}" min="0" max="10" step="0.5"
+               onchange="updateBgmProp('fade_in', +this.value)">
+        <span style="font-size:8px;color:#6b7280;">초</span>
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">페이드아웃</span>
+        <input class="ctrl-input" type="number" value="${composeState.bgm.fade_out || 0}" min="0" max="10" step="0.5"
+               onchange="updateBgmProp('fade_out', +this.value)">
+        <span style="font-size:8px;color:#6b7280;">초</span>
+      </div>
       <button onclick="removeBgm()" style="width:100%;padding:5px;background:#3b1c1c;color:#f87171;border:none;border-radius:5px;font-size:10px;cursor:pointer;margin-top:6px;">제거</button>
     </div>`;
   }
@@ -1405,6 +1425,24 @@ function renderSfxMarkers() {
     el.title = `${m.file} @ ${m.time.toFixed(1)}s`;
     el.innerHTML = `<span class="sfx-marker-icon">&#128264;</span><span class="sfx-marker-label">${name}</span>`;
 
+    // 드래그 이동
+    el.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const trackArea = document.getElementById("timeline-tracks");
+      const rect = trackArea.getBoundingClientRect();
+      function onMove(e2) {
+        const pctNew = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
+        m.time = Math.round(pctNew * total * 10) / 10;
+        el.style.left = `${(m.time / total) * 100}%`;
+        _dirty = true;
+      }
+      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+
+    // 더블클릭 삭제
     el.addEventListener("dblclick", (e) => {
       e.stopPropagation();
       composeState.sfx_markers = composeState.sfx_markers.filter(x => x.id !== m.id);
@@ -1425,6 +1463,8 @@ function applyBgm(file, path, duration) {
     start_time: 0,
     end_time: Math.min(duration, total),
     volume: 0.1,
+    fade_in: 1.0,
+    fade_out: 2.0,
   };
   _dirty = true;
   renderBgmTrack();
@@ -1459,17 +1499,75 @@ function renderBgmTrack() {
   const leftPct = (bgm.start_time / total) * 100;
   const widthPct = ((bgm.end_time - bgm.start_time) / total) * 100;
   const name = bgm.file.replace(/\.[^.]+$/, '');
+  const fadeInPct = ((bgm.fade_in || 0) / (bgm.end_time - bgm.start_time || 1)) * 100;
+  const fadeOutPct = ((bgm.fade_out || 0) / (bgm.end_time - bgm.start_time || 1)) * 100;
 
   const bar = document.createElement("div");
   bar.className = "bgm-bar";
   bar.style.left = `${leftPct}%`;
   bar.style.width = `${Math.max(widthPct, 1)}%`;
-  bar.innerHTML = `<span class="bgm-bar-label">${name}</span>`;
+  bar.innerHTML = `
+    <div class="bgm-fade bgm-fade-in" style="width:${Math.min(fadeInPct, 50)}%"></div>
+    <div class="bgm-fade bgm-fade-out" style="width:${Math.min(fadeOutPct, 50)}%"></div>
+    <div class="bgm-handle bgm-handle-l"></div>
+    <span class="bgm-bar-label">${name}</span>
+    <div class="bgm-handle bgm-handle-r"></div>
+  `;
 
-  bar.addEventListener("dblclick", (e) => {
-    e.stopPropagation();
-    removeBgm();
+  const trackArea = document.getElementById("timeline-tracks");
+
+  // 바 전체 드래그 이동
+  bar.addEventListener("mousedown", (e) => {
+    if (e.target.classList.contains("bgm-handle")) return;
+    e.preventDefault(); e.stopPropagation();
+    const rect = trackArea.getBoundingClientRect();
+    const dur = bgm.end_time - bgm.start_time;
+    const startPct = (e.clientX - rect.left) / rect.width;
+    const origStart = bgm.start_time;
+    function onMove(e2) {
+      const pctNow = (e2.clientX - rect.left) / rect.width;
+      const delta = (pctNow - startPct) * total;
+      let ns = Math.max(0, Math.min(total - dur, origStart + delta));
+      bgm.start_time = Math.round(ns * 10) / 10;
+      bgm.end_time = Math.round((ns + dur) * 10) / 10;
+      _dirty = true;
+      renderBgmTrack();
+    }
+    function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabBgm(); }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
   });
+
+  // 좌측 핸들 → start_time
+  bar.querySelector(".bgm-handle-l").addEventListener("mousedown", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const rect = trackArea.getBoundingClientRect();
+    function onMove(e2) {
+      const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
+      const t = pct * total;
+      if (t < bgm.end_time - 0.5) { bgm.start_time = Math.round(t * 10) / 10; _dirty = true; renderBgmTrack(); }
+    }
+    function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabBgm(); }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+
+  // 우측 핸들 → end_time
+  bar.querySelector(".bgm-handle-r").addEventListener("mousedown", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const rect = trackArea.getBoundingClientRect();
+    function onMove(e2) {
+      const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
+      const t = pct * total;
+      if (t > bgm.start_time + 0.5) { bgm.end_time = Math.round(t * 10) / 10; _dirty = true; renderBgmTrack(); }
+    }
+    function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabBgm(); }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+
+  // 더블클릭 삭제
+  bar.addEventListener("dblclick", (e) => { e.stopPropagation(); removeBgm(); });
 
   container.appendChild(bar);
 }

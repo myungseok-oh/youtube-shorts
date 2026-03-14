@@ -453,7 +453,7 @@
   position: absolute;
   top: 2px; bottom: 2px;
   min-width: 16px;
-  cursor: pointer;
+  cursor: grab;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -492,6 +492,30 @@
   pointer-events: none;
 }
 .bgm-bar:hover { background: rgba(52,211,153,0.3); }
+.bgm-handle {
+  position: absolute; top: 0; bottom: 0; width: 6px;
+  cursor: ew-resize;
+  background: rgba(52,211,153,0.6);
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 5;
+}
+.bgm-bar:hover .bgm-handle { opacity: 1; }
+.bgm-handle-l { left: -1px; }
+.bgm-handle-r { right: -1px; }
+.bgm-fade {
+  position: absolute; top: 0; bottom: 0;
+  pointer-events: none;
+}
+.bgm-fade-in {
+  left: 0;
+  background: linear-gradient(90deg, rgba(26,28,36,0.8) 0%, transparent 100%);
+}
+.bgm-fade-out {
+  right: 0;
+  background: linear-gradient(-90deg, rgba(26,28,36,0.8) 0%, transparent 100%);
+}
 
 /* ─── Preview Canvas Overlays ─── */
 .preview-canvas {
