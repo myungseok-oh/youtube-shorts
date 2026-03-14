@@ -1006,43 +1006,21 @@
 }
 
 /* ─── Scrollbar ─── */
+/* 전역 스크롤바 스타일 */
 /* Firefox */
-.modal-content,
-.cs-tab-content,
-.script-panel,
-.prompt-box,
-.wizard-col,
-.wizard-body,
-.wizard-step-content {
+* {
   scrollbar-width: thin;
   scrollbar-color: #374151 transparent;
 }
 /* Chrome / Edge */
-.modal-content::-webkit-scrollbar,
-.cs-tab-content::-webkit-scrollbar,
-.script-panel::-webkit-scrollbar,
-.prompt-box::-webkit-scrollbar,
-.wizard-col::-webkit-scrollbar,
-.wizard-body::-webkit-scrollbar,
-.wizard-step-content::-webkit-scrollbar {
+*::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
-.modal-content::-webkit-scrollbar-thumb,
-.cs-tab-content::-webkit-scrollbar-thumb,
-.script-panel::-webkit-scrollbar-thumb,
-.prompt-box::-webkit-scrollbar-thumb,
-.wizard-col::-webkit-scrollbar-thumb,
-.wizard-body::-webkit-scrollbar-thumb,
-.wizard-step-content::-webkit-scrollbar-thumb {
+*::-webkit-scrollbar-thumb {
   background: #374151;
   border-radius: 3px;
 }
-.modal-content::-webkit-scrollbar-track,
-.cs-tab-content::-webkit-scrollbar-track,
-.script-panel::-webkit-scrollbar-track,
-.prompt-box::-webkit-scrollbar-track,
-.wizard-col::-webkit-scrollbar-track,
-.wizard-body::-webkit-scrollbar-track,
-.wizard-step-content::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track {
   background: transparent;
 }
