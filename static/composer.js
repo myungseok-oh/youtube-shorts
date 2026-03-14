@@ -254,9 +254,11 @@ function renderPreview() {
     }
   }
 
-  // 텍스트 오버레이 (드래그 가능)
-  const mainText = _esc((ovr.main !== undefined ? ovr.main : sl.main || "").replace(/<[^>]*>/g, ""));
-  const subText = _esc((ovr.sub !== undefined ? ovr.sub : sl.sub || "").replace(/<[^>]*>/g, ""));
+  // 텍스트 오버레이 (드래그 가능) — 강조 적용
+  const rawMain = (ovr.main !== undefined ? ovr.main : sl.main || "").replace(/<[^>]*>/g, "");
+  const rawSub = (ovr.sub !== undefined ? ovr.sub : sl.sub || "").replace(/<[^>]*>/g, "");
+  const mainText = _applyHighlights(rawMain, ovr.highlights);
+  const subText = _applyHighlights(rawSub, ovr.highlights);
   const mainSize = (ovr.mainSize || 100) * SCALE;
   const subSize = (ovr.subSize || 52) * SCALE;
 
@@ -281,10 +283,25 @@ function renderPreview() {
     </div>
   `;
 
+  // 자유 텍스트
+  const freeTexts = (composeState.freeTexts || []).filter(ft => ft.slideNum === sl.num);
+  let freeTextHtml = "";
+  freeTexts.forEach((ft, fi) => {
+    const ftIdx = (composeState.freeTexts || []).indexOf(ft);
+    const ftX = (ft.x || 540) * SCALE;
+    const ftY = (ft.y || 960) * SCALE;
+    const ftSize = (ft.size || 48) * SCALE;
+    const ftFont = ft.fontFamily || 'Noto Sans KR';
+    freeTextHtml += `<div class="free-text-drag" data-ft-idx="${ftIdx}"
+      style="left:${ftX}px;top:${ftY}px;font-size:${ftSize}px;color:${ft.color || '#ffffff'};font-family:'${ftFont}',sans-serif;"
+      onmousedown="startFreeTextDrag(event, ${ftIdx})">${_esc(ft.text)}</div>`;
+  });
+
   container.innerHTML = `
     <div class="preview-canvas">
       ${bgHtml || '<div class="preview-bg-fallback"></div>'}
       ${overlayHtml}
+      ${freeTextHtml}
       <div class="preview-slide-num">${sl.num}/${composerData.slides.length}</div>
       ${isHidden ? '<div class="preview-hidden-badge">오버레이 숨김</div>' : ''}
     </div>
@@ -1002,6 +1019,57 @@ function renderTabText() {
   html += `<button onclick="resetOverride(${sl.num})" style="width:100%;padding:5px;background:#2a2d38;color:#9ca3af;border:none;border-radius:5px;font-size:10px;cursor:pointer;">초기화</button>`;
   html += `</div>`;
 
+  // ── 텍스트 강조 (부분 컬러) ──
+  const highlights = ovr.highlights || [];
+  html += `<div class="ctrl-section" style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d38;">
+    <div class="comp-tab-subtitle">텍스트 강조</div>
+    <div style="font-size:9px;color:#6b7280;margin-bottom:6px;">특정 단어에 색상을 적용합니다</div>`;
+  highlights.forEach((h, hi) => {
+    html += `<div class="ctrl-row" style="margin-bottom:6px;">
+      <input class="ctrl-input" value="${_esc(h.text)}" placeholder="강조할 텍스트"
+             onchange="updateHighlight(${sl.num}, ${hi}, 'text', this.value)" style="flex:2;">
+      <input type="color" value="${h.color || '#ff6b35'}" style="width:24px;height:20px;border:none;background:none;cursor:pointer;padding:0;"
+             onchange="updateHighlight(${sl.num}, ${hi}, 'color', this.value)">
+      <button onclick="removeHighlight(${sl.num}, ${hi})" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:14px;">&times;</button>
+    </div>`;
+  });
+  html += `<button onclick="addHighlight(${sl.num})" style="width:100%;padding:4px;background:#2a2d38;color:#818cf8;border:1px dashed #3a3d48;border-radius:4px;font-size:10px;cursor:pointer;">+ 강조 추가</button>
+  </div>`;
+
+  // ── 자유 텍스트 ──
+  const freeTexts = (composeState.freeTexts || []).filter(ft => ft.slideNum === sl.num);
+  html += `<div class="ctrl-section" style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d38;">
+    <div class="comp-tab-subtitle">자유 텍스트</div>`;
+  freeTexts.forEach((ft, fi) => {
+    const ftIdx = (composeState.freeTexts || []).indexOf(ft);
+    html += `<div style="background:#22242e;border-radius:6px;padding:6px;margin-bottom:6px;">
+      <div class="ctrl-row"><span class="ctrl-label">텍스트</span>
+        <input class="ctrl-input" value="${_esc(ft.text)}" onchange="updateFreeText(${ftIdx}, 'text', this.value)">
+      </div>
+      <div class="ctrl-grid-2">
+        <div class="ctrl-row"><span class="ctrl-label">크기</span>
+          <input class="ctrl-input" type="number" value="${ft.size || 48}" min="12" max="200" step="4"
+                 onchange="updateFreeText(${ftIdx}, 'size', +this.value)">
+        </div>
+        <div class="ctrl-row"><span class="ctrl-label">색상</span>
+          <input type="color" value="${ft.color || '#ffffff'}" style="width:24px;height:20px;border:none;background:none;cursor:pointer;padding:0;"
+                 onchange="updateFreeText(${ftIdx}, 'color', this.value)">
+        </div>
+        <div class="ctrl-row"><span class="ctrl-label">X</span>
+          <input class="ctrl-input" type="number" value="${ft.x || 540}" min="0" max="1080"
+                 onchange="updateFreeText(${ftIdx}, 'x', +this.value)">
+        </div>
+        <div class="ctrl-row"><span class="ctrl-label">Y</span>
+          <input class="ctrl-input" type="number" value="${ft.y || 960}" min="0" max="1920"
+                 onchange="updateFreeText(${ftIdx}, 'y', +this.value)">
+        </div>
+      </div>
+      <button onclick="removeFreeText(${ftIdx})" style="width:100%;padding:3px;background:#3b1c1c;color:#f87171;border:none;border-radius:4px;font-size:9px;cursor:pointer;margin-top:4px;">삭제</button>
+    </div>`;
+  });
+  html += `<button onclick="addFreeText(${sl.num})" style="width:100%;padding:5px;background:#2a2d38;color:#34d399;border:1px dashed #3a3d48;border-radius:4px;font-size:10px;cursor:pointer;">+ 텍스트 추가</button>
+  </div>`;
+
   el.innerHTML = html;
 }
 
@@ -1248,6 +1316,112 @@ async function startRender() {
     btn.textContent = "오류";
     setTimeout(() => { btn.textContent = "렌더링 시작"; btn.disabled = false; }, 2000);
   }
+}
+
+// ─── Highlight (부분 텍스트 컬러) ───
+
+function addHighlight(slideNum) {
+  const ovr = getOverride(slideNum);
+  if (!ovr.highlights) setOverride(slideNum, 'highlights', []);
+  composeState.slide_overrides[slideNum].highlights.push({ text: "", color: "#ff6b35" });
+  _dirty = true;
+  renderTabText();
+}
+
+function updateHighlight(slideNum, idx, key, val) {
+  const ovr = getOverride(slideNum);
+  if (ovr.highlights && ovr.highlights[idx]) {
+    ovr.highlights[idx][key] = val;
+    _dirty = true;
+    renderPreview();
+    renderTabText();
+  }
+}
+
+function removeHighlight(slideNum, idx) {
+  const ovr = getOverride(slideNum);
+  if (ovr.highlights) {
+    ovr.highlights.splice(idx, 1);
+    _dirty = true;
+    renderPreview();
+    renderTabText();
+  }
+}
+
+function _applyHighlights(text, highlights) {
+  if (!highlights || highlights.length === 0) return _esc(text);
+  let result = _esc(text);
+  highlights.forEach(h => {
+    if (!h.text) return;
+    const escaped = _esc(h.text);
+    const re = new RegExp(escaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+    result = result.replace(re, `<span style="color:${h.color}">${escaped}</span>`);
+  });
+  return result;
+}
+
+// ─── Free Text (자유 텍스트) ───
+
+function addFreeText(slideNum) {
+  if (!composeState.freeTexts) composeState.freeTexts = [];
+  composeState.freeTexts.push({
+    id: `ft_${Date.now()}`,
+    slideNum,
+    text: "텍스트",
+    x: 540, y: 1400,
+    size: 48,
+    color: "#ffffff",
+    fontFamily: "Noto Sans KR",
+  });
+  _dirty = true;
+  renderPreview();
+  renderTabText();
+}
+
+function updateFreeText(idx, key, val) {
+  if (composeState.freeTexts && composeState.freeTexts[idx]) {
+    composeState.freeTexts[idx][key] = val;
+    _dirty = true;
+    renderPreview();
+  }
+}
+
+function removeFreeText(idx) {
+  if (composeState.freeTexts) {
+    composeState.freeTexts.splice(idx, 1);
+    _dirty = true;
+    renderPreview();
+    renderTabText();
+  }
+}
+
+// ─── Free Text Drag ───
+
+function startFreeTextDrag(e, ftIdx) {
+  e.preventDefault();
+  e.stopPropagation();
+  const ft = composeState.freeTexts[ftIdx];
+  if (!ft) return;
+  const el = e.currentTarget;
+  const startX = e.clientX, startY = e.clientY;
+  const origLeft = parseFloat(el.style.left), origTop = parseFloat(el.style.top);
+
+  function onMove(e2) {
+    const newLeft = origLeft + (e2.clientX - startX);
+    const newTop = origTop + (e2.clientY - startY);
+    el.style.left = `${newLeft}px`;
+    el.style.top = `${newTop}px`;
+    ft.x = Math.round(newLeft / SCALE);
+    ft.y = Math.round(newTop / SCALE);
+    _dirty = true;
+  }
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    if (_activeTab === 'text') renderTabText();
+  }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
 }
 
 // ─── Overlay Controls ───
