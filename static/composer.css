@@ -474,6 +474,18 @@
   text-overflow: ellipsis;
 }
 .sfx-marker:hover { background: rgba(99,102,241,0.35); }
+.sfx-handle {
+  position: absolute; top: 0; bottom: 0; width: 5px;
+  cursor: ew-resize;
+  background: rgba(99,102,241,0.6);
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 5;
+}
+.sfx-marker:hover .sfx-handle { opacity: 1; }
+.sfx-handle-l { left: -1px; }
+.sfx-handle-r { right: -1px; }
 
 .bgm-bar {
   position: absolute; top: 2px; bottom: 2px;

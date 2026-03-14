@@ -1115,6 +1115,10 @@ function renderTabSfx() {
             <input class="ctrl-input" type="number" value="${m.volume || 0.8}" min="0" max="1" step="0.05"
                    onchange="updateSfxMarker(${mi}, 'volume', +this.value)">
           </div>
+          <div class="ctrl-row"><span class="ctrl-label">길이</span>
+            <input class="ctrl-input" type="number" value="${m.duration || ''}" min="0.1" step="0.1" placeholder="원본"
+                   onchange="updateSfxMarker(${mi}, 'duration', +this.value || undefined)">
+          </div>
           <div class="ctrl-row"><span class="ctrl-label">페이드인</span>
             <input class="ctrl-input" type="number" value="${m.fade_in || 0}" min="0" max="5" step="0.1"
                    onchange="updateSfxMarker(${mi}, 'fade_in', +this.value)">
@@ -1546,9 +1550,11 @@ function renderSfxMarkers() {
   container.innerHTML = "";
 
   composeState.sfx_markers.forEach(m => {
-    const pct = (m.time / total) * 100;
     const sfxInfo = (composerData.sfx_list || []).find(s => s.file === m.file);
-    const sfxDur = sfxInfo ? sfxInfo.duration : 1;
+    const sfxFullDur = sfxInfo ? sfxInfo.duration : 1;
+    // 커스텀 duration 지원 (기본: 원본 길이)
+    const sfxDur = m.duration !== undefined ? m.duration : sfxFullDur;
+    const pct = (m.time / total) * 100;
     const widthPct = (sfxDur / total) * 100;
     const name = m.file.replace(/\.[^.]+$/, '');
 
@@ -1556,14 +1562,60 @@ function renderSfxMarkers() {
     el.className = "sfx-marker";
     el.style.left = `${pct}%`;
     el.style.width = `${Math.max(widthPct, 2)}%`;
-    el.title = `${m.file} @ ${m.time.toFixed(1)}s`;
-    el.innerHTML = `<span class="sfx-marker-icon">&#128264;</span><span class="sfx-marker-label">${name}</span>`;
+    el.title = `${m.file} @ ${m.time.toFixed(1)}s (${sfxDur.toFixed(1)}s)`;
+    el.innerHTML = `
+      <div class="sfx-handle sfx-handle-l"></div>
+      <span class="sfx-marker-icon">&#128264;</span>
+      <span class="sfx-marker-label">${name}</span>
+      <div class="sfx-handle sfx-handle-r"></div>
+    `;
 
-    // 드래그 이동
+    const trackArea = document.getElementById("timeline-tracks");
+
+    // 좌측 핸들 → 시작 시점 조절
+    el.querySelector(".sfx-handle-l").addEventListener("mousedown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const rect = trackArea.getBoundingClientRect();
+      const origTime = m.time;
+      const origDur = sfxDur;
+      function onMove(e2) {
+        const newPct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
+        const newTime = newPct * total;
+        if (newTime < origTime + origDur - 0.2) {
+          const delta = newTime - origTime;
+          m.time = Math.round(newTime * 10) / 10;
+          m.duration = Math.round(Math.max(0.2, origDur - delta) * 10) / 10;
+          _dirty = true;
+          renderSfxMarkers();
+        }
+      }
+      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabSfx(); }
+      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
+    });
+
+    // 우측 핸들 → 길이 조절
+    el.querySelector(".sfx-handle-r").addEventListener("mousedown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const rect = trackArea.getBoundingClientRect();
+      function onMove(e2) {
+        const endPct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
+        const endTime = endPct * total;
+        const newDur = endTime - m.time;
+        if (newDur >= 0.2) {
+          m.duration = Math.round(newDur * 10) / 10;
+          _dirty = true;
+          renderSfxMarkers();
+        }
+      }
+      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabSfx(); }
+      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
+    });
+
+    // 중앙 드래그 이동
     el.addEventListener("mousedown", (e) => {
+      if (e.target.classList.contains("sfx-handle")) return;
       e.preventDefault();
       e.stopPropagation();
-      const trackArea = document.getElementById("timeline-tracks");
       const rect = trackArea.getBoundingClientRect();
       function onMove(e2) {
         const pctNew = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
