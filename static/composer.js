@@ -527,12 +527,14 @@ function _playAudioChain(audioList, idx, onDone) {
 }
 
 // 전체 미리보기: 슬라이드 순서대로 배경+오버레이+나레이션 재생
+// 전체 미리보기: 시간 기반 단일 루프
 function playAllSlides() {
   if (_previewing) { stopAllAudio(); return; }
   stopAllAudio();
   _previewing = true;
-  _previewSlideIdx = 0;
   _previewStartTime = performance.now();
+  _previewSlideIdx = -1;  // 아직 시작 전
+  _previewAudioPlayed = new Set();
 
   document.getElementById("btn-play-slide").innerHTML = "&#9646;&#9646;";
 
@@ -544,14 +546,37 @@ function playAllSlides() {
     _previewBgm.play().catch(() => {});
   }
 
-  _previewNextSlide();
+  // 슬라이드별 시작/종료 시간 맵 빌드
+  _buildSlideTimeMap();
+
+  // 메인 루프 시작
+  _previewTick();
 }
 
-function _previewNextSlide() {
-  if (!_previewing) return;
+let _slideTimeMap = [];  // [{num, start, end, audioFiles}, ...]
+let _previewAudioPlayed = new Set();
+
+function _buildSlideTimeMap() {
+  _slideTimeMap = [];
   const slides = getOrderedSlides();
-  if (_previewSlideIdx >= slides.length) {
-    // 끝
+  let t = 0;
+  slides.forEach(sl => {
+    const dur = getSlideDuration(sl.num);
+    const audioFiles = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
+    _slideTimeMap.push({ num: sl.num, start: t, end: t + dur, audioFiles });
+    t += dur;
+  });
+}
+
+function _previewTick() {
+  if (!_previewing) return;
+
+  const now = performance.now();
+  const elapsed = (now - _previewStartTime) / 1000;
+  const total = getTotalDuration() || 1;
+
+  // 종료
+  if (elapsed >= total) {
     stopAllAudio();
     document.getElementById("audio-status").textContent = "미리보기 완료";
     _playheadPos = 1;
@@ -559,54 +584,38 @@ function _previewNextSlide() {
     return;
   }
 
-  const sl = slides[_previewSlideIdx];
-  const slideIdx = composeState.slide_order.indexOf(sl.num);
-  selectSlide(slideIdx);
-
-  const dur = getSlideDuration(sl.num);
-  const slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
-
-  document.getElementById("audio-status").textContent =
-    `미리보기: ${_previewSlideIdx + 1}/${slides.length} (${dur.toFixed(1)}s)`;
-
-  // 플레이헤드 애니메이션 시작
-  _animatePlayheadForSlide();
-
-  if (slideAudio.length > 0) {
-    // 오디오 있으면 오디오 재생, 오디오 끝나면 다음 (단, 최소 duration만큼 대기)
-    const audioStartTime = performance.now();
-    _playAudioChain(slideAudio, 0, () => {
-      const elapsed = (performance.now() - audioStartTime) / 1000;
-      const remaining = Math.max(0, dur - elapsed);
-      setTimeout(() => {
-        _previewSlideIdx++;
-        _previewNextSlide();
-      }, remaining * 1000);
-    });
-  } else {
-    // 오디오 없으면 duration만큼 대기
-    setTimeout(() => {
-      _previewSlideIdx++;
-      _previewNextSlide();
-    }, dur * 1000);
+  // 현재 슬라이드 결정
+  let curSlideIdx = 0;
+  for (let i = 0; i < _slideTimeMap.length; i++) {
+    if (elapsed >= _slideTimeMap[i].start && elapsed < _slideTimeMap[i].end) {
+      curSlideIdx = i;
+      break;
+    }
+    if (i === _slideTimeMap.length - 1) curSlideIdx = i;
   }
-}
 
-function _animatePlayheadForSlide() {
-  if (!_previewing) return;
-  const slides = getOrderedSlides();
-  const total = getTotalDuration() || 1;
-  // 현재까지 경과한 시간 계산
-  let elapsed = 0;
-  for (let i = 0; i < _previewSlideIdx; i++) {
-    elapsed += getSlideDuration(slides[i].num);
+  // 슬라이드 전환 시 미리보기 갱신 + 오디오 재생
+  if (curSlideIdx !== _previewSlideIdx) {
+    _previewSlideIdx = curSlideIdx;
+    const slideOrderIdx = composeState.slide_order.indexOf(_slideTimeMap[curSlideIdx].num);
+    if (slideOrderIdx >= 0) selectSlide(slideOrderIdx);
+
+    // 해당 슬라이드의 나레이션 재생
+    const slideKey = `slide_${curSlideIdx}`;
+    if (!_previewAudioPlayed.has(slideKey)) {
+      _previewAudioPlayed.add(slideKey);
+      const audioFiles = _slideTimeMap[curSlideIdx].audioFiles;
+      if (audioFiles.length > 0) {
+        // 이전 나레이션 정지
+        if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
+        _playAudioChain(audioFiles, 0, () => {});
+      }
+    }
   }
-  // 현재 슬라이드 내 진행률은 audio currentTime으로 추정
-  const curSlideDur = getSlideDuration(slides[_previewSlideIdx]?.num || 0) || 1;
-  const curElapsed = _playingAudio ? _playingAudio.currentTime : 0;
-  const pos = (elapsed + Math.min(curElapsed, curSlideDur)) / total;
 
-  _playheadPos = Math.min(1, pos);
+  // 플레이헤드 위치
+  const pos = elapsed / total;
+  _playheadPos = pos;
   updatePlayhead();
 
   // 타임라인 자동 스크롤
@@ -616,13 +625,13 @@ function _animatePlayheadForSlide() {
     slideTrack.scrollLeft = Math.max(0, scrollTarget);
   }
 
+  // 상태 표시
   const statusEl = document.getElementById("audio-status");
-  const totalElapsed = elapsed + curElapsed;
   if (statusEl) {
-    statusEl.textContent = `${_fmtDur(totalElapsed)} / ${_fmtDur(total)} — 슬라이드 ${_previewSlideIdx + 1}/${slides.length}`;
+    statusEl.textContent = `${_fmtDur(elapsed)} / ${_fmtDur(total)} — 슬라이드 ${curSlideIdx + 1}/${_slideTimeMap.length}`;
   }
 
-  _previewTimer = requestAnimationFrame(_animatePlayheadForSlide);
+  _previewTimer = requestAnimationFrame(_previewTick);
 }
 
 function _fmtDur(sec) {
