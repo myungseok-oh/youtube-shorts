@@ -72,7 +72,7 @@ def generate_image(prompt: str, output_path: str, api_key: str,
     return False
 
 
-VIDEO_MODEL = "veo-3.1-generate-001"
+VIDEO_MODEL = "veo-3.0-fast-generate-001"
 
 VIDEO_POLL_INTERVAL = 10   # 폴링 간격 (초)
 VIDEO_POLL_TIMEOUT = 300   # 최대 대기 시간 (초)
