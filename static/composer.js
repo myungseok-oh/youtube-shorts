@@ -675,8 +675,9 @@ async function playAllSlides() {
         if (playBtn) { playBtn.textContent = "▶ 전체 미리듣기"; playBtn.disabled = false; }
         return;
       }
-      // 데이터 새로고침
+      // 데이터 새로고침 + 슬라이드 duration 오디오 길이에 맞춤
       await refreshData();
+      _autoUpdateDurations();
       if (statusEl) statusEl.textContent = `TTS 생성 완료 (${data.count}문장) — 재생 시작`;
     } catch (e) {
       if (statusEl) statusEl.textContent = `오류: ${e.message}`;
