@@ -713,11 +713,17 @@ async function playAllSlides() {
 
 function _checkAllHaveAudio() {
   if (!composerData.slide_audio) return false;
+  // 문장이 있는 슬라이드만 오디오 필요
+  let needCount = 0;
+  let haveCount = 0;
   for (const num of composeState.slide_order) {
+    const sl = composerData.slides.find(s => s.num === num);
+    if (!sl || !sl.sentences || sl.sentences.length === 0) continue;
+    needCount++;
     const audios = composerData.slide_audio[num];
-    if (!audios || audios.length === 0) return false;
+    if (audios && audios.length > 0) haveCount++;
   }
-  return composeState.slide_order.length > 0;
+  return needCount > 0 && haveCount >= needCount;
 }
 
 let _slideTimeMap = [];  // [{num, start, end, audioFiles}, ...]
