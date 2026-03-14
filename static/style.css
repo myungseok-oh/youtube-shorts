@@ -130,8 +130,9 @@
   border-bottom: 1px solid #1f2937;
 }
 .wizard-top-bar > .wizard-col {
-  overflow-y: visible;
+  overflow-y: hidden;
   min-height: auto;
+  max-height: none;
 }
 .wizard-top-bar > .wizard-col > .wizard-col-header {
   margin-bottom: 6px;
@@ -146,6 +147,7 @@
 }
 .wizard-col {
   min-height: 0;
+  overflow: visible;
 }
 .wizard-col-header {
   font-size: 12px;
@@ -427,6 +429,102 @@
   background: rgba(249,115,22,0.05);
 }
 
+/* ─── Slide Edit Textarea ─── */
+.slide-edit-main, .slide-edit-sub {
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #e5e7eb;
+  font-size: 0.875rem;
+  padding: 4px 8px;
+  resize: vertical;
+  font-family: 'Noto Sans KR', sans-serif;
+  transition: border-color 0.15s, background 0.15s;
+}
+.slide-edit-main {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.slide-edit-sub {
+  color: #9ca3af;
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+.slide-edit-main:hover, .slide-edit-sub:hover {
+  border-color: #4b5563;
+}
+.slide-edit-main:focus, .slide-edit-sub:focus {
+  outline: none;
+  border-color: #f97316;
+  background: rgba(249,115,22,0.05);
+}
+/* 슬라이드 편집 좌우 레이아웃 */
+.slide-edit-layout {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  overflow: hidden;
+}
+.slide-edit-left {
+  flex: 7;
+  min-width: 0;
+  overflow-y: auto;
+  max-height: 480px;
+  padding-right: 8px;
+}
+.slide-edit-right {
+  flex: 3;
+  border-left: 1px solid #374151;
+  padding-left: 12px;
+  overflow-y: auto;
+  max-height: 480px;
+}
+.fmt-toolbar-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #9ca3af;
+  margin-bottom: 10px;
+  letter-spacing: 1px;
+}
+.fmt-group {
+  margin-bottom: 12px;
+}
+.fmt-label {
+  font-size: 11px;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+.fmt-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.fmt-btn {
+  background: #374151;
+  border: 1px solid #4b5563;
+  border-radius: 4px;
+  color: #d1d5db;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.fmt-btn:hover { background: #4b5563; }
+.fmt-btn.fmt-color {
+  width: 24px; height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid #6b7280;
+}
+.fmt-btn.fmt-color:hover { border-color: #ffffff; }
+.fmt-hint {
+  font-size: 10px;
+  color: #4b5563;
+  margin-top: 8px;
+}
+
 /* ─── Copy Icon Button ─── */
 .copy-icon-btn {
   background: none;
@@ -528,10 +626,21 @@
 .schedule-day-chip:hover { border-color: #f97316; color: #fff; }
 
 /* ─── Upload Slots ─── */
+/* 프롬프트 스크롤 영역 */
+.prompt-scroll-area {
+  max-height: 25vh;
+  overflow-y: auto;
+}
+/* 업로드 스크롤 영역 */
+.upload-scroll-area {
+  max-height: 25vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
 .upload-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
 }
 
 .upload-slot {

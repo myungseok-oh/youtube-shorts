@@ -904,6 +904,36 @@ async def api_update_script(job_id: str, request: Request):
     return {"ok": True, "audio_cleared": changed}
 
 
+@app.put("/api/jobs/{job_id}/slides")
+async def api_update_slides(job_id: str, request: Request):
+    """슬라이드 텍스트(main/sub) 수정."""
+    job = db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
+    if not job or not job.get("script_json"):
+        raise HTTPException(404, "Job or script not found")
+
+    body = await request.json()
+    updated_slides = body.get("slides")  # [{main, sub, ...}, ...]
+    if not isinstance(updated_slides, list):
+        raise HTTPException(400, "slides must be a list")
+
+    script = json.loads(job["script_json"])
+    old_slides = script.get("slides", [])
+
+    # main/sub만 업데이트, 나머지 필드(bg_type, category 등)는 기존 유지
+    for i, new_s in enumerate(updated_slides):
+        if i < len(old_slides):
+            if "main" in new_s:
+                old_slides[i]["main"] = new_s["main"]
+            if "sub" in new_s:
+                old_slides[i]["sub"] = new_s["sub"]
+
+    script["slides"] = old_slides
+    db.execute("UPDATE jobs SET script_json = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+               [json.dumps(script, ensure_ascii=False), job_id])
+
+    return {"ok": True}
+
+
 @app.post("/api/jobs/{job_id}/backgrounds")
 async def api_upload_backgrounds(job_id: str, files: list[UploadFile] = File(...)):
     """슬라이드별 배경 이미지 업로드.
@@ -961,6 +991,13 @@ async def api_swap_backgrounds(job_id: str, request: Request):
                 return p, ext
         return None, None
 
+    def find_thumb(idx):
+        for ext in ["jpg", "jpeg", "png"]:
+            p = os.path.join(bg_dir, f"bg_{idx}_thumb.{ext}")
+            if os.path.exists(p):
+                return p, ext
+        return None, None
+
     path_a, ext_a = find_bg(a)
     path_b, ext_b = find_bg(b)
 
@@ -969,25 +1006,37 @@ async def api_swap_backgrounds(job_id: str, request: Request):
 
     # swap via temp
     import time as _time
-    if path_a and path_b:
-        tmp = os.path.join(bg_dir, f"bg_swap_tmp.{ext_a}")
-        os.rename(path_a, tmp)
-        new_a = os.path.join(bg_dir, f"bg_{a}.{ext_b}")
-        new_b = os.path.join(bg_dir, f"bg_{b}.{ext_a}")
-        os.rename(path_b, new_a)
-        os.rename(tmp, new_b)
-        # mtime 갱신 → 브라우저 캐시 무효화
-        now = _time.time()
-        os.utime(new_a, (now, now))
-        os.utime(new_b, (now, now))
-    elif path_a:
-        new_b = os.path.join(bg_dir, f"bg_{b}.{ext_a}")
-        os.rename(path_a, new_b)
-        os.utime(new_b, (_time.time(), _time.time()))
-    elif path_b:
-        new_a = os.path.join(bg_dir, f"bg_{a}.{ext_b}")
-        os.rename(path_b, new_a)
-        os.utime(new_a, (_time.time(), _time.time()))
+    now = _time.time()
+
+    def _swap_pair(pa, ea, pb, eb, prefix_a, prefix_b):
+        """두 파일을 swap (thumb 포함)."""
+        if pa and pb:
+            tmp = os.path.join(bg_dir, f"bg_swap_tmp.{ea}")
+            os.rename(pa, tmp)
+            na = os.path.join(bg_dir, f"{prefix_a}.{eb}")
+            nb = os.path.join(bg_dir, f"{prefix_b}.{ea}")
+            os.rename(pb, na)
+            os.rename(tmp, nb)
+            os.utime(na, (now, now))
+            os.utime(nb, (now, now))
+        elif pa:
+            nb = os.path.join(bg_dir, f"{prefix_b}.{ea}")
+            os.rename(pa, nb)
+            os.utime(nb, (now, now))
+        elif pb:
+            na = os.path.join(bg_dir, f"{prefix_a}.{eb}")
+            os.rename(pb, na)
+            os.utime(na, (now, now))
+
+    # 메인 배경 파일 swap
+    _swap_pair(path_a, ext_a, path_b, ext_b, f"bg_{a}", f"bg_{b}")
+
+    # 썸네일도 swap
+    thumb_a, text_a = find_thumb(a)
+    thumb_b, text_b = find_thumb(b)
+    if thumb_a or thumb_b:
+        _swap_pair(thumb_a, text_a, thumb_b, text_b,
+                   f"bg_{a}_thumb", f"bg_{b}_thumb")
 
     return {"ok": True}
 
@@ -1844,11 +1893,12 @@ async def api_rerender_slides(job_id: str):
     # 기존 배경 로드
     bg_results = _load_uploaded_backgrounds(bg_dir, len(slides_data))
 
-    # 슬라이드 재렌더링
+    # 슬라이드 재렌더링 (오버레이는 영상 제작 시 생성 → 여기서 스킵)
     slide_paths = await asyncio.to_thread(
         generate_slides, slides_data, img_dir,
         date=date_str, brand=brand,
-        backgrounds=bg_results, layout=slide_layout
+        backgrounds=bg_results, layout=slide_layout,
+        skip_overlay=True
     )
 
     return {"ok": True, "layout": slide_layout, "slides": len(slide_paths)}
@@ -2495,6 +2545,41 @@ async def api_apply_edits(job_id: str):
         return {"ok": True, "path": result}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@app.get("/api/text-images")
+async def api_text_images():
+    """텍스트 이미지(스티커) 카테고리별 목록 반환."""
+    base = os.path.join(config.root_dir(), "data", "text_images")
+    categories = []
+    if os.path.isdir(base):
+        for cat_name in sorted(os.listdir(base)):
+            cat_dir = os.path.join(base, cat_name)
+            if not os.path.isdir(cat_dir):
+                continue
+            images = []
+            for f in sorted(os.listdir(cat_dir)):
+                if f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
+                    images.append({
+                        "file": f,
+                        "path": f"/api/text-images/{cat_name}/{f}",
+                    })
+            if images:
+                categories.append({"name": cat_name, "images": images})
+    return {"categories": categories}
+
+
+@app.get("/api/text-images/{category}/{filename}")
+async def api_serve_text_image(category: str, filename: str):
+    """텍스트 이미지 파일 서빙."""
+    path = os.path.join(config.root_dir(), "data", "text_images", category, filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Text image not found")
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    media_types = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                   "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml"}
+    mt = media_types.get(ext, "application/octet-stream")
+    return FileResponse(path, media_type=mt)
 
 
 @app.get("/api/audio/{subdir}/{filename}")

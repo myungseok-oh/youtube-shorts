@@ -1,5 +1,5 @@
 /**
- * Puppeteer 기반 YouTube 썸네일 생성기
+ * Puppeteer 기반 YouTube Shorts 썸네일 생성기 (9:16 세로형)
  * 사용법: node generate_thumbnail.js <input.json> <output.png>
  *
  * input.json:
@@ -46,15 +46,15 @@ if (bgPath && fs.existsSync(bgPath)) {
 function buildHTML() {
   const bgCss = bgDataUrl
     ? `background: url('${bgDataUrl}') center/cover no-repeat;`
-    : `background: linear-gradient(135deg, #0b0e1a 0%, #1a1a3e 50%, #2d1b4e 100%);`;
+    : `background: linear-gradient(170deg, #0b0e1a 0%, #1a1a3e 50%, #2d1b4e 100%);`;
 
   // 제목 텍스트 크기 자동 조절
   const titleLen = title.length;
-  let titleSize = '72px';
+  let titleSize = '88px';
   let titleLineHeight = '1.25';
-  if (titleLen > 30) { titleSize = '62px'; titleLineHeight = '1.2'; }
-  if (titleLen > 45) { titleSize = '52px'; titleLineHeight = '1.2'; }
-  if (titleLen > 60) { titleSize = '44px'; titleLineHeight = '1.15'; }
+  if (titleLen > 20) { titleSize = '78px'; titleLineHeight = '1.2'; }
+  if (titleLen > 35) { titleSize = '68px'; titleLineHeight = '1.2'; }
+  if (titleLen > 50) { titleSize = '58px'; titleLineHeight = '1.15'; }
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -62,31 +62,31 @@ function buildHTML() {
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
-  width: 1280px; height: 720px;
+  width: 1080px; height: 1920px;
   font-family: 'Noto Sans KR', sans-serif;
   color: #fff; overflow: hidden; position: relative;
   ${bgCss}
 }
 .overlay {
   position: absolute; top:0; left:0; width:100%; height:100%;
-  background: linear-gradient(135deg, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.45) 50%, rgba(0,0,0,0.65) 100%);
+  background: linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.10) 40%, rgba(0,0,0,0.65) 100%);
   z-index: 1;
 }
 .content {
   position: relative; z-index: 2;
   width: 100%; height: 100%;
   display: flex; flex-direction: column;
-  justify-content: center; align-items: flex-start;
-  padding: 60px 80px;
+  justify-content: flex-end; align-items: flex-start;
+  padding: 0 70px 160px;
 }
 .category {
   display: inline-block;
-  padding: 8px 24px;
+  padding: 12px 32px;
   background: ${accent};
-  border-radius: 6px;
-  font-size: 28px; font-weight: 700;
+  border-radius: 8px;
+  font-size: 34px; font-weight: 700;
   letter-spacing: 2px;
-  margin-bottom: 24px;
+  margin-bottom: 30px;
   text-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 .title {
@@ -94,8 +94,8 @@ body {
   font-weight: 900;
   line-height: ${titleLineHeight};
   letter-spacing: -1px;
-  max-width: 1000px;
-  text-shadow: 0 3px 12px rgba(0,0,0,0.5);
+  max-width: 960px;
+  text-shadow: 0 4px 16px rgba(0,0,0,0.6);
   word-break: keep-all;
 }
 .title .hl {
@@ -107,17 +107,17 @@ body {
   width: 80px; height: 6px;
   background: ${accent};
   border-radius: 3px;
-  margin-top: 28px;
+  margin-top: 36px;
 }
 .brand {
-  position: absolute; bottom: 36px; right: 50px; z-index: 2;
-  font-size: 26px; font-weight: 700;
+  position: absolute; bottom: 60px; right: 60px; z-index: 2;
+  font-size: 30px; font-weight: 700;
   color: rgba(255,255,255,0.7);
   letter-spacing: 3px;
 }
 .glow {
-  position: absolute; top: -100px; right: -100px;
-  width: 500px; height: 500px;
+  position: absolute; bottom: -150px; left: -150px;
+  width: 600px; height: 600px;
   background: radial-gradient(circle, ${accent}22 0%, transparent 70%);
   z-index: 1;
 }
@@ -139,7 +139,7 @@ body {
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
   const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 720 });
+  await page.setViewport({ width: 1080, height: 1920 });
   await page.setContent(buildHTML(), { waitUntil: 'networkidle0' });
   await page.screenshot({ path: outputPath, type: 'png' });
   await browser.close();

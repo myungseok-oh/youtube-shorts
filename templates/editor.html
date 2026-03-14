@@ -33,13 +33,41 @@
 
     <!-- Left: SFX Panel -->
     <aside id="sfx-panel" class="w-56 bg-gray-900 border-r border-gray-800 flex flex-col overflow-y-auto">
-      <div class="p-3 border-b border-gray-800">
-        <h3 class="text-xs font-semibold text-gray-400 mb-2">효과음</h3>
-        <div id="sfx-list" class="space-y-1"></div>
+      <!-- 검색 -->
+      <div class="p-2 border-b border-gray-800">
+        <input type="text" id="sidebar-search" placeholder="검색..."
+               oninput="filterSidebarItems(this.value)"
+               class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 outline-none focus:border-orange-500">
       </div>
-      <div class="p-3">
-        <h3 class="text-xs font-semibold text-gray-400 mb-2">BGM</h3>
-        <div id="bgm-list" class="space-y-1"></div>
+      <!-- 효과음 -->
+      <div class="sidebar-section" data-section="sfx">
+        <div class="sidebar-section-header" onclick="toggleSection('sfx')">
+          <span class="sidebar-arrow">▶</span>
+          <span class="text-xs font-semibold text-gray-400">효과음</span>
+        </div>
+        <div class="sidebar-section-body hidden" id="sfx-body">
+          <div id="sfx-list" class="space-y-1"></div>
+        </div>
+      </div>
+      <!-- BGM -->
+      <div class="sidebar-section" data-section="bgm">
+        <div class="sidebar-section-header" onclick="toggleSection('bgm')">
+          <span class="sidebar-arrow">▶</span>
+          <span class="text-xs font-semibold text-gray-400">BGM</span>
+        </div>
+        <div class="sidebar-section-body hidden" id="bgm-body">
+          <div id="bgm-list" class="space-y-1"></div>
+        </div>
+      </div>
+      <!-- 텍스트 이미지 -->
+      <div class="sidebar-section" data-section="textimg">
+        <div class="sidebar-section-header" onclick="toggleSection('textimg')">
+          <span class="sidebar-arrow">▶</span>
+          <span class="text-xs font-semibold text-gray-400">텍스트 이미지</span>
+        </div>
+        <div class="sidebar-section-body hidden" id="textimg-body">
+          <div id="text-images-list" class="space-y-1"></div>
+        </div>
       </div>
     </aside>
 
@@ -60,15 +88,6 @@
       <div class="flex items-center gap-3 px-4 py-2 bg-gray-900 border-t border-gray-800">
         <button id="btn-play" onclick="togglePlay()" class="text-lg">&#9654;</button>
         <span id="time-display" class="text-xs text-gray-400 font-mono w-24">00:00 / 00:00</span>
-        <input id="seek-bar" type="range" min="0" max="100" value="0" step="0.1"
-               class="flex-1 h-1 accent-orange-500">
-        <button onclick="startSfxPreview()" class="px-2 py-1 bg-green-700 hover:bg-green-600 rounded text-xs"
-                title="전체 영상 + SFX 미리 듣기">
-          &#9654; 미리보기
-        </button>
-        <button onclick="addTextOverlay()" class="px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded text-xs">
-          + 텍스트
-        </button>
       </div>
 
     </main>
@@ -76,21 +95,37 @@
     <!-- Right: Properties Panel -->
     <aside id="props-panel" class="w-64 bg-gray-900 border-l border-gray-800 overflow-y-auto">
       <div class="p-3">
-        <h3 class="text-xs font-semibold text-gray-400 mb-2">속성</h3>
-        <div id="props-content" class="text-xs text-gray-500">요소를 선택하세요</div>
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-xs font-semibold text-gray-400">속성</h3>
+          <button onclick="addTextOverlay()" class="px-2 py-1 bg-blue-700 hover:bg-blue-600 rounded text-[10px] font-medium">
+            + 텍스트
+          </button>
+        </div>
+        <div id="props-content" class="text-xs text-gray-500"></div>
       </div>
     </aside>
   </div>
 
   <!-- Timeline (Bottom) -->
-  <div id="timeline" class="bg-gray-900 border-t border-gray-800 flex flex-col" style="height:160px;">
-    <!-- Segment thumbnails -->
-    <div id="timeline-segments" class="flex-1 flex items-stretch overflow-x-auto px-2 py-1 gap-0.5">
-    </div>
-    <!-- SFX markers track (drop zone) -->
-    <div id="timeline-sfx" class="relative mx-2 mb-1" style="height:32px; background:#0d1117; border:1px dashed #374151; border-radius:4px;">
-      <div class="absolute left-2 top-1 text-[9px] text-gray-600 pointer-events-none select-none">SFX — 효과음을 여기에 드래그</div>
-      <div id="sfx-markers" class="absolute inset-0"></div>
+  <div id="timeline" class="bg-gray-900 border-t border-gray-800 flex flex-col" style="height:300px;">
+    <!-- Timeline body (seekable area with playhead) -->
+    <div id="timeline-body" class="relative flex-1 mx-2 mt-1 cursor-crosshair select-none">
+      <!-- Playhead -->
+      <div id="timeline-playhead"></div>
+      <!-- Segment color bar -->
+      <div id="timeline-segbar" class="flex" style="height:30px;"></div>
+      <!-- Thumbnail strip -->
+      <div id="timeline-thumbs" class="flex" style="height:100px;"></div>
+      <!-- SFX markers track (drop zone) -->
+      <div id="timeline-sfx" class="relative" style="height:60px; background:#0d1117; border:1px dashed #374151; border-radius:4px;">
+        <div class="absolute left-2 top-1 text-[9px] text-gray-600 pointer-events-none select-none">SFX</div>
+        <div id="sfx-markers" class="absolute inset-0"></div>
+      </div>
+      <!-- BGM track -->
+      <div id="timeline-bgm" class="relative" style="height:40px; background:#0d1117; border:1px dashed #374151; border-radius:0 0 4px 4px; margin-top:2px;">
+        <div class="absolute left-2 top-1 text-[9px] text-gray-600 pointer-events-none select-none">BGM</div>
+        <div id="bgm-bar-container" class="absolute inset-0"></div>
+      </div>
     </div>
   </div>
 

@@ -35,6 +35,7 @@ const date = data.date || '';
 const brand = data.brand || '이슈60초';
 const layout = data.layout || 'full';
 const bgDisplayMode = data.bgDisplayMode || 'zone';
+const skipOverlay = data.skipOverlay || false;
 const total = slides.length;
 
 function bgInfo(index) {
@@ -134,7 +135,7 @@ function commonStyles(accent, bgImg) {
     .bg-overlay {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
       background: ${bgImg
-        ? 'linear-gradient(180deg, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.45) 100%)'
+        ? 'linear-gradient(180deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.03) 40%, rgba(0,0,0,0.15) 100%)'
         : 'transparent'};
       z-index: 1;
     }
@@ -193,7 +194,7 @@ function commonStyles(accent, bgImg) {
       justify-content: center; align-items: center;
     }
     .text-bg {
-      background: rgba(5,8,20,0.72);
+      background: rgba(5,8,20,0.40);
       border-radius: 20px;
       padding: 40px 50px;
       max-width: 95%;
@@ -273,7 +274,7 @@ function zonedStyles(accent) {
       display: flex; flex-direction: column;
       justify-content: center; align-items: center;
       padding: 40px 60px;
-      background: linear-gradient(180deg, rgba(5,8,20,0.92) 0%, rgba(5,8,20,0.75) 100%);
+      background: linear-gradient(180deg, rgba(5,8,20,0.40) 0%, rgba(5,8,20,0.20) 100%);
     }
     .main-text {
       font-size: 100px; font-weight: 900;
@@ -283,7 +284,7 @@ function zonedStyles(accent) {
     }
     .sub-text {
       font-size: 56px; color: rgba(255,255,255,0.92);
-      text-align: center; font-weight: 400; padding: 0 30px;
+      text-align: center; font-weight: 700; padding: 0 30px;
       margin-top: 30px;
       text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
     }
@@ -382,7 +383,7 @@ function fullscreenZonedStyles(accent, bgImg) {
       display: flex; flex-direction: column;
       justify-content: center; align-items: center;
       padding: 40px 60px;
-      background: linear-gradient(180deg, rgba(5,8,20,0.75) 0%, rgba(5,8,20,0.55) 100%);
+      background: linear-gradient(180deg, rgba(5,8,20,0.40) 0%, rgba(5,8,20,0.20) 100%);
       backdrop-filter: blur(4px);
     }
     .main-text {
@@ -393,7 +394,7 @@ function fullscreenZonedStyles(accent, bgImg) {
     }
     .sub-text {
       font-size: 56px; color: rgba(255,255,255,0.92);
-      text-align: center; font-weight: 400; padding: 0 30px;
+      text-align: center; font-weight: 700; padding: 0 30px;
       margin-top: 30px;
       text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
     }
@@ -446,7 +447,7 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
   }
   .sub-text {
     font-size: 56px; color: rgba(255,255,255,0.92);
-    text-align: center; font-weight: 400; padding: 0 60px;
+    text-align: center; font-weight: 700; padding: 0 60px;
     margin-top: 40px;
     text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
   }
@@ -488,7 +489,7 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
   }
   .sub-text {
     font-size: 52px; color: rgba(255,255,255,0.92);
-    text-align: center; font-weight: 400; padding: 0 50px;
+    text-align: center; font-weight: 700; padding: 0 50px;
     margin-top: 30px;
     text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
   }
@@ -595,14 +596,20 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   if (circled && circled.length >= 2) {
     headlines = circled.map(h => h.trim());
   } else {
-    // "- " 또는 줄바꿈 기반 파싱
-    headlines = sub.split(/[\n·]/).map(h => h.trim()).filter(h => h.length > 0);
+    // (1) (2) (3) ... 패턴 파싱
+    const paren = sub.match(/\(\d+\)\s*[^(]*/g);
+    if (paren && paren.length >= 2) {
+      headlines = paren.map(h => h.trim());
+    } else {
+      // "- " 또는 줄바꿈 기반 파싱
+      headlines = sub.split(/[\n·]/).map(h => h.trim()).filter(h => h.length > 0);
+    }
   }
 
   const listHTML = headlines.map((h, i) => {
     const num = String(i + 1).padStart(2, '0');
-    // 번호 기호(①②...) 제거 후 텍스트만
-    const text = h.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '').replace(/^-\s*/, '').replace(/^\d+\.\s*/, '');
+    // 번호 기호(①②..., (1)...) 제거 후 텍스트만
+    const text = h.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '').replace(/^\(\d+\)\s*/, '').replace(/^-\s*/, '').replace(/^\d+\.\s*/, '');
     return `<div class="headline-item">
       <span class="headline-num">${num}</span>
       <span class="headline-text">${text}</span>
@@ -625,7 +632,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   .bg-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     background: ${bgImg
-      ? 'linear-gradient(180deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.50) 50%, rgba(0,0,0,0.60) 100%)'
+      ? 'linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.10) 40%, rgba(0,0,0,0.65) 100%)'
       : 'transparent'};
     z-index: 1;
   }
@@ -637,70 +644,70 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
     position: relative; z-index: 5;
     width: 100%; height: 100%;
     display: flex; flex-direction: column;
-    padding: 120px 80px 100px;
+    justify-content: flex-end;
+    padding: 0 70px 140px;
   }
-  /* 상단 배지 */
+  /* 카테고리 배지 */
   .badge {
     display: inline-block;
-    padding: 14px 36px;
-    background: linear-gradient(170deg, ${accent} 0%, color-mix(in srgb, ${accent} 70%, #000) 100%);
-    border: 3px solid rgba(255,255,255,0.5);
-    border-radius: 10px;
-    font-size: 34px; font-weight: 900;
-    letter-spacing: 4px; text-transform: uppercase;
+    padding: 12px 32px;
+    background: ${accent};
+    border-radius: 8px;
+    font-size: 34px; font-weight: 700;
+    letter-spacing: 2px;
     color: #ffffff;
     align-self: flex-start;
-    margin-bottom: 40px;
-    box-shadow: 0 6px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
-    text-shadow: 0 2px 4px rgba(0,0,0,0.4);
+    margin-bottom: 30px;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.3);
   }
   /* 타이틀 */
-  .title-area {
-    margin-bottom: 60px;
-  }
   .main-title {
-    font-size: 92px; font-weight: 900;
-    line-height: 1.25;
-    text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 40px rgba(0,0,0,0.7);
+    font-size: 88px; font-weight: 900;
+    line-height: 1.2;
+    color: #ffffff;
+    max-width: 960px;
+    word-break: keep-all;
+    text-shadow: 0 4px 16px rgba(0,0,0,0.6);
+    margin-bottom: 36px;
   }
   .hl {
     color: #ffd700;
-    background: linear-gradient(transparent 60%, rgba(255,215,0,0.18) 60%);
+    background: linear-gradient(transparent 55%, rgba(255,215,0,0.25) 55%);
     padding: 0 4px;
   }
   /* 구분선 */
-  .divider {
-    width: 160px; height: 4px;
-    background: rgba(255,255,255,0.15);
-    margin-bottom: 50px;
-    border-radius: 2px;
+  .accent-bar {
+    width: 80px; height: 6px;
+    background: ${accent};
+    border-radius: 3px;
+    margin-bottom: 40px;
   }
   /* 헤드라인 리스트 */
   .headline-list {
     display: flex; flex-direction: column;
-    gap: 28px; flex: 1;
-    justify-content: center;
+    gap: 20px;
   }
   .headline-item {
     display: flex; align-items: center;
-    gap: 24px;
-    padding: 28px 36px;
-    background: rgba(0,0,0,0.45);
+    gap: 20px;
+    padding: 20px 28px;
+    background: rgba(0,0,0,0.40);
     border-left: 5px solid ${accent};
-    border-radius: 0 12px 12px 0;
+    border-radius: 0 10px 10px 0;
     backdrop-filter: blur(8px);
   }
   .headline-num {
-    font-size: 36px; font-weight: 900;
+    font-size: 32px; font-weight: 900;
     color: ${accent};
-    min-width: 56px;
+    min-width: 48px;
     text-align: center;
     text-shadow: 0 2px 6px rgba(0,0,0,0.8);
   }
   .headline-text {
-    font-size: 44px; font-weight: 700;
-    line-height: 1.35;
-    text-shadow: 0 2px 10px rgba(0,0,0,0.9), 0 4px 20px rgba(0,0,0,0.6);
+    font-size: 40px; font-weight: 700;
+    line-height: 1.3;
+    color: #ffffff;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.9);
   }
   .source-text {
     position: absolute; bottom: 14px; right: 30px; z-index: 10;
@@ -718,10 +725,9 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   <div class="bg-overlay"></div>
   ${grainSVG()}
   <div class="content-wrap">
-    <div class="title-area">
-      <div class="main-title">${slide.main}</div>
-    </div>
-    <div class="divider"></div>
+    ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+    <div class="main-title">${slide.main}</div>
+    <div class="accent-bar"></div>
     <div class="headline-list">
       ${listHTML}
     </div>
@@ -973,7 +979,7 @@ async function main() {
     const isVideoBg = bgExt === '.mp4' || bgExt === '.gif';
 
     // 배경 이미지/영상이 있으면 overlay 생성 (Ken Burns / 영상 합성용)
-    const needOverlay = bgPath && fs.existsSync(bgPath);
+    const needOverlay = !skipOverlay && bgPath && fs.existsSync(bgPath);
 
     if (needOverlay) {
       if (layout === 'full' || bgDisplayMode === 'fullscreen') {

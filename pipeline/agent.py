@@ -181,20 +181,6 @@ def _run_claude(prompt: str, timeout: int = 120, use_web: bool = True,
     raise subprocess.TimeoutExpired(cmd, timeout) from last_err
 
 
-_DURATION_PRESETS = {
-    30: {
-        "normal": {"seconds": "35~45", "sentences": "8~12", "chars": "160~200",
-                   "slides": "4~6개(closing 포함)", "per_slide": "2~3개"},
-        "dense":  {"seconds": "35~45", "sentences": "8~10", "chars": "160~200",
-                   "slides": "8~10개(closing 포함)", "per_slide": "1개"},
-    },
-    60: {
-        "normal": {"seconds": "50~60", "sentences": "14~20", "chars": "200~300",
-                   "slides": "6~8개(closing 포함)", "per_slide": "2~4개"},
-        "dense":  {"seconds": "50~60", "sentences": "14~18", "chars": "200~300",
-                   "slides": "14~18개(closing 포함)", "per_slide": "1개"},
-    },
-}
 
 # ── 외부화 가능한 기본값 상수 ──────────────────────────────
 # 채널 config에 값이 있으면 해당 값으로 완전 대체. 비어있으면 기본값 사용.
@@ -205,14 +191,14 @@ DEFAULT_SCRIPT_RULES = """\
 - 하나의 뉴스 브리핑. sentences를 이어 읽으면 완결된 내레이션이 되어야 함
 - 슬라이드 간 자연스러운 연결 (접속 표현 활용)
 - 슬라이드별 역할: ①훅 → ②핵심 → ③배경 → ④영향 → ⑤전망 → ⑥클로징
-- sentences: {sentences}개, 각 15~25자, 총 {chars}자 (={seconds}초 분량)
-- 슬라이드 1개당 문장 {per_slide}개
+- sentences: 14~20개, 각 15~25자, 총 200~300자 (=50~60초 분량)
+- 슬라이드 1개당 문장 2~4개
 - ★ 슬라이드당 나레이션은 약 5초 또는 약 10초로 맞춰라 (한국어 TTS 초당 ~4.5음절 기준).
   - 5초 ≈ 문장 1~2개(20~25자), 10초 ≈ 문장 3~4개(40~50자)
   - 6~7초처럼 어중간한 길이는 피하라. 배경 영상이 5초 단위로 교체된다.
 - sentences에 채널명 언급 금지
 - 문장 종결 다양하게, 채널 지침 톤 준수
-- slides: {slides}개, 강조 키워드는 <span class="hl">...</span>
+- slides: 6~8개(closing 포함), 강조 키워드는 <span class="hl">...</span>
 - 첫 슬라이드: category에 주제에 맞는 태그(예: "경제","정치","코인","테크","사회" 등), main 짧고 강렬. "속보"는 실제 속보일 때만 사용
 - 마지막 슬라이드: 자동 처리. main에 짧은 마무리. bg_type: "closing". 나레이션(sentences) 배정 금지
 - youtube_title: 100자 이내, 클릭 유도. 채널 지침 제목 형식 따를 것
@@ -246,9 +232,9 @@ DEFAULT_ROUNDUP_RULES = """\
    - 나레이션(sentences) 배정 금지 — 구독/좋아요 텍스트가 자동 표시됨
 
 ### 대본 규칙
-- 전체 문장 {sentences}개, 각 15~25자
-- 전체 {seconds}초 (한국어 읽기 속도 초당 4~5음절), 총 {chars}자
-- **슬라이드 1개당 문장 {per_slide}개**
+- 전체 문장 14~20개, 각 15~25자
+- 전체 50~60초 (한국어 읽기 속도 초당 4~5음절), 총 200~300자
+- **슬라이드 1개당 문장 2~4개**
 - ★ 슬라이드당 나레이션은 약 5초 또는 약 10초로 맞춰라 (한국어 TTS 초당 ~4.5음절 기준).
   - 5초 ≈ 문장 1~2개(20~25자), 10초 ≈ 문장 3~4개(40~50자)
   - 6~7초처럼 어중간한 길이는 피하라. 배경 영상이 5초 단위로 교체된다
@@ -262,32 +248,15 @@ DEFAULT_ROUNDUP_RULES = """\
 - ★ 첫 슬라이드는 반드시 bg_type: "overview"로 지정할 것"""
 
 
-def _apply_duration_vars(template: str, p: dict) -> str:
-    """템플릿 내 동적 변수를 duration preset으로 치환."""
-    return (template
-            .replace("{sentences}", str(p["sentences"]))
-            .replace("{chars}", str(p["chars"]))
-            .replace("{seconds}", str(p["seconds"]))
-            .replace("{slides}", str(p["slides"]))
-            .replace("{per_slide}", str(p["per_slide"])))
 
-
-def _build_script_schema(target_duration: int = 60, channel_format: str = "single",
+def _build_script_schema(channel_format: str = "single",
                          script_rules: str = "", roundup_rules: str = "",
-                         slide_density: str = "normal",
                          has_outro: bool = False) -> str:
-    """target_duration(초)에 맞는 SCRIPT_JSON_SCHEMA 생성."""
-    presets = _DURATION_PRESETS.get(target_duration)
-    if not presets:
-        closest = min(_DURATION_PRESETS.keys(), key=lambda k: abs(k - target_duration))
-        presets = _DURATION_PRESETS[closest]
-    p = presets.get(slide_density, presets.get("normal"))
-
+    """SCRIPT_JSON_SCHEMA 생성. 슬라이드/문장 수는 채널 지침(script_rules)에서 직접 지정."""
     if channel_format == "roundup":
-        return _build_roundup_schema(p, roundup_rules, has_outro=has_outro)
+        return _build_roundup_schema(roundup_rules, has_outro=has_outro)
 
     rules_text = script_rules.strip() if script_rules and script_rules.strip() else DEFAULT_SCRIPT_RULES
-    rules_text = _apply_duration_vars(rules_text, p)
 
     if has_outro:
         rules_text += "\n- ★ 이 채널은 별도 아웃트로가 있으므로 closing 슬라이드를 생성하지 마라. 마지막 콘텐츠 슬라이드로 끝내라."
@@ -307,11 +276,10 @@ def _build_script_schema(target_duration: int = 60, channel_format: str = "singl
 """
 
 
-def _build_roundup_schema(p: dict, roundup_rules: str = "",
+def _build_roundup_schema(roundup_rules: str = "",
                           has_outro: bool = False) -> str:
     """라운드업(멀티뉴스) 형식 스키마."""
     rules_text = roundup_rules.strip() if roundup_rules and roundup_rules.strip() else DEFAULT_ROUNDUP_RULES
-    rules_text = _apply_duration_vars(rules_text, p)
     if has_outro:
         rules_text += "\n- ★ 이 채널은 별도 아웃트로가 있으므로 closing 슬라이드를 생성하지 마라. 마지막 콘텐츠 슬라이드로 끝내라."
 
@@ -329,7 +297,7 @@ def _build_roundup_schema(p: dict, roundup_rules: str = "",
   "slides": [
     {{
       "category": "오늘의 뉴스",
-      "main": "오늘의 핵심 뉴스 <span class=\\"hl\\">5선</span>",
+      "main": "1분 <span class=\\"hl\\">경제</span> 뉴스",
       "sub": "① 주제1 ② 주제2 ③ 주제3 ④ 주제4 ⑤ 주제5",
 
       "bg_type": "overview"
@@ -351,7 +319,7 @@ def _build_roundup_schema(p: dict, roundup_rules: str = "",
 
 
 # 하위 호환: 기존 코드에서 직접 참조하는 경우
-SCRIPT_JSON_SCHEMA = _build_script_schema(60)
+SCRIPT_JSON_SCHEMA = _build_script_schema()
 
 
 def _is_specific_topic(request: str) -> bool:
@@ -462,16 +430,14 @@ def _parse_topics(raw: str, fallback: str) -> list[str]:
 
 
 def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
-                    target_duration: int = 60, channel_format: str = "single",
+                    channel_format: str = "single",
                     script_rules: str = "", roundup_rules: str = "",
-                    slide_density: str = "normal",
                     has_outro: bool = False,
                     use_subagent: bool = False) -> dict:
     """Claude CLI로 뉴스 검색 + script_json 생성."""
-    schema = _build_script_schema(target_duration, channel_format=channel_format,
+    schema = _build_script_schema(channel_format=channel_format,
                                   script_rules=script_rules, roundup_rules=roundup_rules,
-                                  slide_density=slide_density, has_outro=has_outro)
-    duration_label = f"{target_duration}초" if target_duration <= 60 else f"{target_duration // 60}분"
+                                  has_outro=has_outro)
     now = datetime.now()
     now_str = now.strftime("%Y년 %m월 %d일 %H시")
     date_str = now.strftime("%Y-%m-%d")
@@ -481,7 +447,7 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
         topic_list = [t.strip() for t in topic.split(" / ") if t.strip()]
         topic_display = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(topic_list))
         topic_section = f"""아래 {len(topic_list)}개 주제에 대해 각각 최신 뉴스를 웹에서 검색하고,
-라운드업(멀티뉴스) 형식의 {duration_label} 쇼츠 영상용 script_json을 생성해줘.
+라운드업(멀티뉴스) 형식의 쇼츠 영상용 script_json을 생성해줘.
 
 주제 목록:
 {topic_display}
@@ -491,7 +457,7 @@ def generate_script(topic: str, instructions: str, brand: str = "이슈60초",
         topic_section = f"""주제: {topic}
 
 위 지침에 따라 이 주제에 대한 최신 뉴스를 웹에서 검색하고,
-{duration_label} 쇼츠 영상용 script_json을 생성해줘."""
+쇼츠 영상용 script_json을 생성해줘."""
 
     prompt = f"""{instructions}
 
@@ -785,6 +751,16 @@ def _estimate_slide_durations(slides: list[dict], sentences: list[dict]) -> dict
     return durations
 
 
+def _count_slide_sentences(slides: list[dict], sentences: list[dict]) -> dict[int, int]:
+    """슬라이드별 문장 수 계산."""
+    counts: dict[int, int] = {}
+    for sent in sentences:
+        slide_idx = sent.get("slide", 1) - 1
+        if sent.get("text", "").strip():
+            counts[slide_idx] = counts.get(slide_idx, 0) + 1
+    return counts
+
+
 def generate_image_prompts(topic: str, slides: list[dict],
                            prompt_style: str = "",
                            layout: str = "full",
@@ -792,7 +768,9 @@ def generate_image_prompts(topic: str, slides: list[dict],
                            scene_references: str = "",
                            bg_display_mode: str = "zone",
                            sentences: list[dict] | None = None,
-                           bg_media_type: str = "video") -> list[str]:
+                           bg_media_type: str = "auto",
+                           auto_bg_source: str = "",
+                           first_slide_single_bg: bool = False) -> list[str]:
     """대본의 슬라이드 정보로 이미지 생성 프롬프트(영어) 생성.
 
     SD 모델은 영어 프롬프트만 이해하므로 반드시 영어로 출력.
@@ -800,10 +778,38 @@ def generate_image_prompts(topic: str, slides: list[dict],
     layout: 슬라이드 레이아웃 (full/center/top/bottom) — 이미지 사이즈/비율 결정
     scene_references: 채널별 주제→현장 매핑 레퍼런스 (비어있으면 생략)
     sentences: 문장 리스트. 슬라이드별 나레이션 길이 추정에 사용.
+    bg_media_type: 배경 교체 전략 (single/per-sentence/auto)
+    auto_bg_source: 배경 소스 (gemini/sd_image/sd_video/openverse) — auto 모드에서 참조
     웹 검색 불필요 — 빠르게 완료됨.
     """
+    # auto 모드: 배경 소스에 따라 전략 결정
+    _first_slide_single = first_slide_single_bg
+    _effective_type = bg_media_type
+    if bg_media_type == "auto":
+        if auto_bg_source in ("sd_video",):
+            _effective_type = "timed"  # 영상 → 시간 기준 교체
+        else:
+            _effective_type = "per-sentence"  # 이미지 → 문장별 교체
+
     # 슬라이드별 나레이션 길이 추정
-    slide_durations = _estimate_slide_durations(slides, sentences or [])
+    _sents = sentences or []
+    slide_durations = _estimate_slide_durations(slides, _sents)
+    slide_sentence_counts = _count_slide_sentences(slides, _sents)
+
+    def _bg_count_for_slide(slide_idx: int) -> int:
+        """슬라이드에 필요한 배경 수 계산."""
+        if _first_slide_single and slide_idx == 0:
+            return 1
+        if _effective_type == "single":
+            return 1
+        elif _effective_type == "per-sentence":
+            n = slide_sentence_counts.get(slide_idx, 1)
+            return max(1, n)
+        else:  # timed
+            dur = slide_durations.get(slide_idx, 5.0)
+            if dur > 6.0:
+                return 2
+            return 1
 
     slide_descs = []
     prompt_count = 0
@@ -813,10 +819,10 @@ def generate_image_prompts(topic: str, slides: list[dict],
         clean_main = (s.get("main", "")).replace("<span class=\"hl\">", "").replace("</span>", "")
         bg_type = s.get("bg_type", "photo")
         est_dur = slide_durations.get(i, 5.0)
-        need_two = (bg_media_type == "video") and (est_dur > 6.0)
-        count_label = " [×2 prompts — 나레이션 길어서 배경 2개 필요]" if need_two else ""
-        slide_descs.append(f"Slide {i+1}: [bg_type={bg_type}] [{s.get('category', '')}] {clean_main} — {s.get('sub', '')} (~{est_dur:.0f}s){count_label}")
-        prompt_count += 2 if need_two else 1
+        bg_n = _bg_count_for_slide(i)
+        count_label = f" [x{bg_n} prompts -- 배경 {bg_n}개 필요]" if bg_n > 1 else ""
+        slide_descs.append(f"Slide {i+1}: [bg_type={bg_type}] [{s.get('category', '')}] {clean_main} -- {s.get('sub', '')} (~{est_dur:.0f}s, {slide_sentence_counts.get(i, 1)}문장){count_label}")
+        prompt_count += bg_n
 
     style_rules = prompt_style.strip() if prompt_style and prompt_style.strip() else DEFAULT_IMAGE_PROMPT_STYLE
 
@@ -841,8 +847,8 @@ Slides:
 
 ## 출력 형식
 각 슬라이드에 대해 ko, en, motion 3개 필드를 생성.
-**[×2 prompts]로 표시된 슬라이드는 서로 다른 장면의 프롬프트를 2개 연속 출력하라.**
-(같은 주제를 다른 앵글/장소/스케일로. 예: wide shot → close-up, 외부 → 내부)
+**[xN prompts]로 표시된 슬라이드는 서로 다른 장면의 프롬프트를 N개 연속 출력하라.**
+(같은 주제를 다른 앵글/장소/스케일로. 예: wide shot -> close-up, 외부 -> 내부, 전경 -> 디테일)
 
 - ko: 촬영 현장을 구체적으로 (예: "울산 정유소 증류탑 야경, 가스 플레어 불빛")
 - en: 영어 이미지 프롬프트, 30-60 words, 5요소 필수 (Subject, Setting, Lighting, Camera, Style)
@@ -857,13 +863,12 @@ Output ONLY a JSON array with exactly {prompt_count} items, no other text:
 [{{"ko":"한국어 설명", "en":"English prompt", "motion":"camera movement"}}, ...]"""
 
     # 슬라이드→프롬프트 매핑 (slide 필드 추가용)
-    slide_prompt_map = []  # [(slide_idx_0based, need_two), ...]
+    slide_prompt_map = []  # [(slide_idx_0based, bg_count), ...]
     for i, s in enumerate(slides):
         if s.get("bg_type") == "closing":
             continue
-        est_dur = slide_durations.get(i, 5.0)
-        need_two = (bg_media_type == "video") and (est_dur > 6.0)
-        slide_prompt_map.append((i, need_two))
+        bg_n = _bg_count_for_slide(i)
+        slide_prompt_map.append((i, bg_n))
 
     raw = _run_claude(prompt, timeout=120, use_web=False,
                       model="claude-opus-4-6")
@@ -886,9 +891,8 @@ Output ONLY a JSON array with exactly {prompt_count} items, no other text:
             result = []
             # slide 필드 매핑: 어떤 프롬프트가 어떤 슬라이드에 속하는지
             prompt_idx = 0
-            for slide_idx, need_two in slide_prompt_map:
-                count = 2 if need_two else 1
-                for _ in range(count):
+            for slide_idx, bg_count in slide_prompt_map:
+                for _ in range(bg_count):
                     if prompt_idx < len(prompts):
                         p = prompts[prompt_idx]
                         if isinstance(p, dict) and "ko" in p and "en" in p:

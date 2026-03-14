@@ -158,7 +158,6 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
         ch_config = json.loads(channel.get("config", "{}")) if channel else {}
         image_prompt_style = ch_config.get("image_prompt_style", "")
         image_scene_references = ch_config.get("image_scene_references", "")
-        target_duration = ch_config.get("target_duration", 60)
         channel_format = ch_config.get("format", "single")
         script_rules = ch_config.get("script_rules", "")
         roundup_rules = ch_config.get("roundup_rules", "")
@@ -203,15 +202,12 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
         if script_json is None:
             _update_step(db, job_id, "news_search", "running")
             try:
-                slide_density = ch_config.get("slide_density", "normal")
                 has_outro = bool(ch_config.get("outro_narration", "").strip())
                 use_subagent = bool(ch_config.get("use_subagent", False))
                 script_json = generate_script(topic, instructions, brand,
-                                              target_duration=target_duration,
                                               channel_format=channel_format,
                                               script_rules=script_rules,
                                               roundup_rules=roundup_rules,
-                                              slide_density=slide_density,
                                               has_outro=has_outro,
                                               use_subagent=use_subagent)
 
@@ -255,7 +251,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
                 print(f"[runner] image_prompt exists in slides ({len(_existing_a)})")
             else:
                 bg_display_mode_a = ch_config.get("bg_display_mode", "zone")
-                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a, scene_references=image_scene_references, bg_display_mode=bg_display_mode_a, sentences=script_json.get("sentences", []), bg_media_type=ch_config.get("bg_media_type", "video"))
+                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a, scene_references=image_scene_references, bg_display_mode=bg_display_mode_a, sentences=script_json.get("sentences", []), bg_media_type=ch_config.get("bg_media_type", "auto"), auto_bg_source=ch_config.get("auto_bg_source", ""), first_slide_single_bg=ch_config.get("first_slide_single_bg", False))
         except Exception as e:
             print(f"[runner] image prompt generation failed (non-fatal): {e}")
             image_prompts = None
@@ -317,7 +313,7 @@ def _get_qa_retry_count(db, job_id: str) -> int:
 def _qa_restart(db, job_id, restart_from, retry_count,
                 channel, topic, brand, dirs,
                 tts_voice_override, tts_rate_override, sovits_cfg_override,
-                qa_feedback: str = "", target_duration: int = 60):
+                qa_feedback: str = ""):
     """QA 실패 시 해당 단계부터 재작업"""
     instructions = channel.get("instructions", "") if channel else ""
     ch_config_qa = json.loads(channel.get("config", "{}")) if channel else {}
@@ -330,10 +326,8 @@ def _qa_restart(db, job_id, restart_from, retry_count,
             feedback_section = f"\n\n⚠️ 이전 대본이 QA 검토에서 탈락했습니다. 아래 문제점을 반드시 수정해주세요:\n{qa_feedback}\n"
         try:
             new_script = generate_script(topic, instructions + feedback_section, brand,
-                                         target_duration=target_duration,
                                          script_rules=ch_config_qa.get("script_rules", ""),
                                          roundup_rules=ch_config_qa.get("roundup_rules", ""),
-                                         slide_density=ch_config_qa.get("slide_density", "normal"),
                                          has_outro=bool(ch_config_qa.get("outro_narration", "").strip()),
                                          use_subagent=bool(ch_config_qa.get("use_subagent", False)))
             _yt_title_qa = new_script.get("youtube_title", "").strip()
@@ -393,8 +387,6 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
         ch_config_pb = json.loads(channel.get("config", "{}")) if channel else {}
         slide_layout = ch_config_pb.get("slide_layout", "full")
         bg_display_mode = ch_config_pb.get("bg_display_mode", "zone")
-        target_duration = ch_config_pb.get("target_duration", 60)
-
         dirs = _get_job_dirs(job_id)
         sentences = script_json.get("sentences", [])
         slides_data = script_json.get("slides", [])
@@ -474,7 +466,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 scene_references=image_scene_references_b,
                                 bg_display_mode=bg_display_mode_b,
                                 sentences=sentences,
-                                bg_media_type=ch_config_b.get("bg_media_type", "video"),
+                                bg_media_type=ch_config_b.get("bg_media_type", "auto"),
+                                auto_bg_source=ch_config_b.get("auto_bg_source", ""),
+                                first_slide_single_bg=ch_config_b.get("first_slide_single_bg", False),
                             )
                             if image_prompts and any(_prompt_en(p) for p in image_prompts):
                                 print(f"[runner] Phase B 프롬프트 재생성 성공 ({len(image_prompts)}개)")
@@ -1061,30 +1055,54 @@ def _strip_closing_audio(sentences: list, timeline: dict):
 
 
 def _pad_slide_audio(merged_audio: dict, timeline: dict, gap: float = 0.3):
-    """각 슬라이드 오디오 끝에 무음 패딩 추가 (나래이션 간 자연스러운 쉼).
+    """각 슬라이드 오디오에 무음 패딩 추가.
 
-    마지막 슬라이드(클로징)는 패딩 제외.
+    - 끝 패딩: 마지막 슬라이드 제외 (나래이션 간 자연스러운 쉼)
+    - 앞 패딩: 첫 슬라이드 제외 (acrossfade가 블렌딩하는 구간을 무음으로 채워 나레이션 보호)
+      앞 패딩 >= crossfade duration 이면 acrossfade는 무음만 블렌딩하고 나레이션은 온전히 재생됨.
     """
     sorted_keys = sorted(merged_audio.keys())
     if len(sorted_keys) <= 1:
         return
-    # 마지막 슬라이드 제외
-    for s_key in sorted_keys[:-1]:
+
+    for idx, s_key in enumerate(sorted_keys):
         audio_path = merged_audio[s_key]
         if not os.path.exists(audio_path):
             continue
-        padded = audio_path + ".padded.wav"
-        result = subprocess.run([
-            config.ffmpeg(), "-y",
-            "-i", audio_path,
-            "-af", f"apad=pad_dur={gap}",
-            "-ar", "44100", "-ac", "2",
-            padded
-        ], capture_output=True)
-        if result.returncode == 0 and os.path.exists(padded):
-            os.replace(padded, audio_path)
-            timeline["slide_durations"][s_key] += gap
-            timeline["total_duration"] += gap
+
+        is_first = (idx == 0)
+        is_last = (idx == len(sorted_keys) - 1)
+
+        # 앞 패딩: 첫 슬라이드 제외 (acrossfade 나레이션 보호)
+        if not is_first:
+            pre_padded = audio_path + ".prepad.wav"
+            result = subprocess.run([
+                config.ffmpeg(), "-y",
+                "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo:d={gap}",
+                "-i", audio_path,
+                "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[out]",
+                "-map", "[out]", "-ar", "44100", "-ac", "2",
+                pre_padded
+            ], capture_output=True)
+            if result.returncode == 0 and os.path.exists(pre_padded):
+                os.replace(pre_padded, audio_path)
+                timeline["slide_durations"][s_key] += gap
+                timeline["total_duration"] += gap
+
+        # 끝 패딩: 마지막 슬라이드 제외
+        if not is_last:
+            padded = audio_path + ".padded.wav"
+            result = subprocess.run([
+                config.ffmpeg(), "-y",
+                "-i", audio_path,
+                "-af", f"apad=pad_dur={gap}",
+                "-ar", "44100", "-ac", "2",
+                padded
+            ], capture_output=True)
+            if result.returncode == 0 and os.path.exists(padded):
+                os.replace(padded, audio_path)
+                timeline["slide_durations"][s_key] += gap
+                timeline["total_duration"] += gap
 
 
 def _find_channel_image(channel_id: str, prefix: str) -> str | None:
@@ -1306,8 +1324,6 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
         ch_config_fp = json.loads(channel.get("config", "{}")) if channel else {}
         slide_layout = ch_config_fp.get("slide_layout", "full")
         bg_display_mode = ch_config_fp.get("bg_display_mode", "zone")
-        target_duration = ch_config_fp.get("target_duration", 60)
-
         dirs = _get_job_dirs(job_id)
 
         # 인트로 나레이션 템플릿 치환 + 대본 연결 지시
@@ -1338,10 +1354,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
             _update_step(db, job_id, "news_search", "running")
             try:
                 script_json = generate_script(topic, instructions, brand,
-                                              target_duration=target_duration,
                                               script_rules=ch_config_fp.get("script_rules", ""),
                                               roundup_rules=ch_config_fp.get("roundup_rules", ""),
-                                              slide_density=ch_config_fp.get("slide_density", "normal"),
                                               has_outro=bool(ch_config_fp.get("outro_narration", "").strip()),
                                               use_subagent=bool(ch_config_fp.get("use_subagent", False)))
                 _update_step(db, job_id, "news_search", "completed",

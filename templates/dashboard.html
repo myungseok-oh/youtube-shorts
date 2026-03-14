@@ -161,13 +161,6 @@
       <!-- 탭: 영상 -->
       <div id="cs-tab-video" class="cs-tab-content hidden space-y-4">
         <div>
-          <label class="block text-sm text-gray-400 mb-1">목표 영상 길이 (초)</label>
-          <input id="cs-target-duration" type="number" min="15" max="180" step="5" value="60"
-                 oninput="updateDurationHint()"
-                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-          <p id="cs-duration-hint" class="text-xs text-gray-500 mt-1"></p>
-        </div>
-        <div>
           <label class="block text-sm text-gray-400 mb-1">슬라이드 레이아웃</label>
           <select id="cs-slide-layout" onchange="toggleBgDisplayMode()"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
@@ -200,19 +193,16 @@
           <label class="block text-sm text-gray-400 mb-1">배경 미디어 타입</label>
           <select id="cs-bg-media-type"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-            <option value="video">영상 — 6초 기준, 긴 나레이션은 배경 2-3장</option>
-            <option value="image">정적 이미지 — 슬라이드당 배경 1장 (나레이션 길어도)</option>
+            <option value="auto">자동 — 이미지면 문장별, 영상이면 시간 기준</option>
+            <option value="single">단일 — 슬라이드당 배경 1장</option>
+            <option value="per-sentence">문장별 — 문장마다 다른 배경 배치</option>
           </select>
-          <p class="text-xs text-gray-500 mt-1">정적 이미지: 배경 수 줄여 제작 시간 단축. 영상: 긴 슬라이드에 배경 교체로 시각적 변화</p>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">슬라이드 밀도</label>
-          <select id="cs-slide-density"
-                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-            <option value="normal">일반 — 슬라이드당 2~4문장 (정적 배경에 적합)</option>
-            <option value="dense">촘촘하게 — 슬라이드당 1~2문장 (영상 배경에 적합, ~5초/슬라이드)</option>
-          </select>
-          <p class="text-xs text-gray-500 mt-1">영상 배경(6초) 사용 시 촘촘하게 설정하면 루프 없이 자연스럽게 전환</p>
+          <p class="text-xs text-gray-500 mt-1">자동: 배경 소스에 따라 최적 전략. 단일: Ken Burns 모션으로 시각적 변화. 문장별: 풍부한 장면 전환</p>
+          <label class="flex items-center gap-2 mt-2 cursor-pointer">
+            <input type="checkbox" id="cs-first-slide-single-bg" class="rounded bg-gray-800 border-gray-600">
+            <span class="text-sm text-gray-400">첫 슬라이드 배경 1장 고정</span>
+          </label>
+          <p class="text-xs text-gray-500 mt-1">인트로/오프닝 슬라이드는 배경 미디어 타입과 무관하게 항상 1장</p>
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">영상 제작 방식</label>
@@ -670,7 +660,23 @@
   <!-- 수동 대본 입력 모달 -->
   <div id="manual-modal" class="modal-overlay hidden">
     <div class="modal-content modal-wide">
-      <div id="manual-modal-content"></div>
+      <div id="manual-modal-content" style="flex:1;display:flex;flex-direction:column;min-height:0;"></div>
+    </div>
+  </div>
+
+  <!-- JSON 붙여넣기 모달 -->
+  <div id="json-paste-modal" class="modal-overlay hidden" style="z-index:60;">
+    <div class="modal-content" style="max-width:560px;">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-bold">JSON 붙여넣기</h3>
+        <button onclick="closeModal('json-paste-modal')" class="text-gray-500 hover:text-white text-lg transition">&times;</button>
+      </div>
+      <label class="block text-xs text-gray-400 mb-1">AI가 생성한 JSON을 붙여넣으세요</label>
+      <textarea id="manual-json-input" rows="10" placeholder='{"topic": "...", "slides": [...], "narration": [...]}'
+                class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono"></textarea>
+      <div class="flex justify-end mt-3">
+        <button onclick="applyJsonPaste(); closeModal('json-paste-modal')" class="px-4 py-2 text-xs bg-orange-600 hover:bg-orange-500 rounded-lg transition font-medium">적용</button>
+      </div>
     </div>
   </div>
 

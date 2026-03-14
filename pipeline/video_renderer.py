@@ -468,7 +468,7 @@ def _concat_with_xfade(segment_files: list[str], output_path: str,
     """xfade 크로스페이드로 세그먼트 합성.
 
     영상: xfade=transition=fade (모든 입력을 1080x1920/24fps로 정규화)
-    오디오: acrossfade (44100Hz/stereo로 정규화)
+    오디오: 앞 패딩 atrim + hard-cut concat (44100Hz/stereo, 블렌딩 없음)
     """
     n = len(segment_files)
     if n < 2:
@@ -493,19 +493,25 @@ def _concat_with_xfade(segment_files: list[str], output_path: str,
 
     # filter_complex 구성
     # 1) 각 입력의 비디오/오디오를 정규화 (fps, 해상도, 오디오 포맷 통일)
-    # 2) xfade 체인 (비디오), acrossfade 체인 (오디오)
+    # 2) xfade 체인 (비디오), 오디오는 앞 패딩 trim + concat (하드컷, 블렌딩 없음)
     norm_filters = []
     for i in range(n):
         norm_filters.append(
             f"[{i}:v]fps=24,scale=1080:1920:force_original_aspect_ratio=decrease,"
             f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[nv{i}]"
         )
-        norm_filters.append(
-            f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[na{i}]"
-        )
+        # 2번째 이후 오디오: 앞 xd초 trim (앞 패딩 중 xd만큼 제거 → 비디오 xfade와 싱크)
+        if i > 0:
+            norm_filters.append(
+                f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
+                f"atrim=start={xd:.3f},asetpts=PTS-STARTPTS[na{i}]"
+            )
+        else:
+            norm_filters.append(
+                f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[na{i}]"
+            )
 
     vfilters = []
-    afilters = []
     offset = durations[0] - xd  # 첫 xfade 시작점
 
     for i in range(1, n):
@@ -515,14 +521,12 @@ def _concat_with_xfade(segment_files: list[str], output_path: str,
             f"{vin}[nv{i}]xfade=transition=fade:duration={xd:.3f}:offset={offset:.3f}{vout}"
         )
 
-        ain = f"[xa{i-2}]" if i >= 2 else f"[na0]"
-        aout = f"[xa{i-1}]" if i < n - 1 else "[aout]"
-        afilters.append(
-            f"{ain}[na{i}]acrossfade=d={xd:.3f}:c1=tri:c2=tri{aout}"
-        )
-
         if i < n - 1:
             offset += durations[i] - xd
+
+    # 오디오: 모든 스트림을 단순 concat (하드컷, acrossfade 없음)
+    audio_inputs = "".join(f"[na{i}]" for i in range(n))
+    afilters = [f"{audio_inputs}concat=n={n}:v=0:a=1[aout]"]
 
     filter_complex = ";".join(norm_filters + vfilters + afilters)
 

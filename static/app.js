@@ -654,21 +654,64 @@ function renderWizardStep1(jobId, scriptData, stepsData) {
   const sentences = script.sentences || [];
 
   // 슬라이드 보기
-  let slideView = `<div class="script-panel" id="script-slide-view">`;
+  let slideView = `<div class="script-panel slide-edit-layout" id="script-slide-view"><div class="slide-edit-left">`;
   slides.forEach((s, i) => {
     const isClosing = i === slides.length - 1;
+    // <br>을 \n으로 변환하여 textarea에 표시, 저장 시 다시 <br>로 변환
+    const mainText = (s.main || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, (m) => m);
+    const subText = (s.sub || "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, (m) => m);
     slideView += `
       <div class="slide-item">
         <div class="flex items-center gap-2 mb-1">
           <span class="text-xs font-bold text-orange-400">${i + 1}</span>
           <span class="text-xs text-gray-500">${esc(s.category || "")}</span>
+          <span class="text-xs text-gray-600">${s.bg_type || ""}</span>
         </div>
-        <div class="text-sm text-gray-200">${s.main || ""}</div>
-        ${s.sub ? `<div class="text-xs text-gray-500 mt-1">${s.sub}</div>` : ""}
+        <textarea class="slide-edit-main" data-slide-idx="${i}" rows="2" placeholder="메인 텍스트">${mainText}</textarea>
+        <textarea class="slide-edit-sub" data-slide-idx="${i}" rows="1" placeholder="서브 텍스트">${subText}</textarea>
         ${isClosing ? `<span class="text-xs text-gray-600">(클로징)</span>` : ""}
       </div>`;
   });
-  slideView += `</div>`;
+  slideView += `<div class="mt-3 flex gap-2">
+    <button onclick="saveSlideScript('${jobId}')" id="btn-save-slides"
+            class="px-4 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xs font-medium transition">저장</button>
+    <span id="slide-save-msg" class="text-xs text-green-400 self-center hidden">저장 완료</span>
+  </div>`;
+  slideView += `</div><div class="slide-edit-right">
+    <div class="fmt-toolbar-title">텍스트 서식</div>
+    <div class="fmt-group">
+      <div class="fmt-label">스타일</div>
+      <div class="fmt-row">
+        <button onclick="slideFormatHL()" class="fmt-btn" title="강조 (노란색)">HL</button>
+        <button onclick="slideFormatBold()" class="fmt-btn" title="굵게"><b>B</b></button>
+        <button onclick="slideFormatItalic()" class="fmt-btn" title="기울임"><i>I</i></button>
+      </div>
+    </div>
+    <div class="fmt-group">
+      <div class="fmt-label">크기</div>
+      <div class="fmt-row">
+        <button onclick="slideFormatSize('130%')" class="fmt-btn" title="크게">A+</button>
+        <button onclick="slideFormatSize('80%')" class="fmt-btn" title="작게">A-</button>
+      </div>
+    </div>
+    <div class="fmt-group">
+      <div class="fmt-label">색상</div>
+      <div class="fmt-row">
+        <button onclick="slideFormatColor('#ffd700')" class="fmt-btn fmt-color" title="노란색" style="background:#ffd700"></button>
+        <button onclick="slideFormatColor('#ff4444')" class="fmt-btn fmt-color" title="빨간색" style="background:#ff4444"></button>
+        <button onclick="slideFormatColor('#4fc3f7')" class="fmt-btn fmt-color" title="파란색" style="background:#4fc3f7"></button>
+        <button onclick="slideFormatColor('#66bb6a')" class="fmt-btn fmt-color" title="초록색" style="background:#66bb6a"></button>
+        <button onclick="slideFormatColor('#ffffff')" class="fmt-btn fmt-color" title="흰색" style="background:#ffffff"></button>
+      </div>
+    </div>
+    <div class="fmt-group">
+      <div class="fmt-label">삽입</div>
+      <div class="fmt-row">
+        <button onclick="slideInsertBR()" class="fmt-btn" title="줄바꿈">↵ 줄바꿈</button>
+      </div>
+    </div>
+    <div class="fmt-hint">텍스트 선택 후 버튼 클릭</div>
+  </div></div>`;
 
   // 나레이션 대본
   let narrationView = `<div class="script-panel hidden" id="script-narration-view">`;
@@ -741,12 +784,12 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
         </div>
       </div>`;
     }).join("");
-    imgPromptsHtml = `<details class="mb-3" open>
+    imgPromptsHtml = `<details class="mb-2" open>
       <summary class="flex items-center justify-between text-xs font-semibold text-gray-400 cursor-pointer mb-1">
         <span>이미지 프롬프트 <span class="text-orange-400 font-normal">${(_slideLayout === "center" || _slideLayout === "top" || _slideLayout === "bottom") ? "📐 1080×960" : "📐 1080×1920"}</span></span>
         <button onclick="event.stopPropagation(); copyImagePrompts(this)" class="copy-icon-btn" title="복사">&#x1F4CB;</button>
       </summary>
-      <div class="bg-gray-900 rounded p-2" id="image-prompts-box">${items}</div>
+      <div class="bg-gray-900 rounded p-2 prompt-scroll-area" id="image-prompts-box">${items}</div>
     </details>`;
   } else {
     imgPromptsHtml = `<div class="mb-3 flex items-center gap-2">
@@ -758,7 +801,7 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
 
   // 업로드 슬롯: 프롬프트가 있으면 프롬프트 수 기준, 없으면 슬라이드(closing 제외) 기준
   const slotCount = hasImgPrompts ? imgPrompts.filter(p => (typeof p === "object" ? p.en : p)).length : bgCount;
-  let slotsHtml = `<div class="upload-grid">`;
+  let slotsHtml = `<div class="upload-scroll-area"><div class="upload-grid">`;
   for (let i = 1; i <= slotCount; i++) {
     const promptSlide = hasImgPrompts && imgPrompts[i-1] ? (imgPrompts[i-1].slide || i) : i;
     const bgType = (slides[promptSlide - 1] || {}).bg_type || "photo";
@@ -803,7 +846,7 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
         </div>
       </div>`;
   }
-  slotsHtml += `</div>
+  slotsHtml += `</div></div>
     <div id="prompt-edit-area" class="prompt-edit-area hidden">
       <div class="prompt-edit-header">
         <span class="text-xs text-gray-400">슬롯 <span id="prompt-edit-index"></span> 이미지 프롬프트 <span id="prompt-size-hint" class="text-orange-400 ml-2"></span></span>
@@ -1575,20 +1618,6 @@ async function deleteChannelBg(type) {
 
 // ─── Channel TTS Settings ───
 
-function updateDurationHint() {
-  const v = parseInt(document.getElementById("cs-target-duration").value) || 60;
-  const presets = {
-    30: "35~45초, 문장 8~12개, 슬라이드 4~6개",
-    60: "50~60초, 문장 14~20개, 슬라이드 6~8개",
-  };
-  const hint = document.getElementById("cs-duration-hint");
-  if (presets[v]) {
-    hint.textContent = presets[v];
-  } else {
-    const closest = v <= 45 ? 30 : 60;
-    hint.textContent = `${presets[closest]} (${closest}초 프리셋 기준 적용)`;
-  }
-}
 
 function toggleAutoBgSource() {
   const mode = document.getElementById("cs-production-mode").value;
@@ -2451,15 +2480,8 @@ async function onSlotDrop(e, jobId, targetIdx) {
     body: JSON.stringify({ a: sourceIdx, b: targetIdx }),
   });
   if (res.ok) {
-    // 스크롤 위치 저장 후 복원
-    const wb = document.querySelector(".wizard-body");
-    const scrollTop = wb ? wb.scrollTop : 0;
-    _lastDetailStatus = null;
+    // swap 완료 → 작업 상세 다시 로드하여 슬롯 갱신
     await refreshJobDetail(jobId);
-    requestAnimationFrame(() => {
-      const wb2 = document.querySelector(".wizard-body");
-      if (wb2) wb2.scrollTop = scrollTop;
-    });
   }
 }
 
@@ -2551,6 +2573,66 @@ async function saveNarrationScript(jobId) {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// ─── Slide Script Edit (슬라이드 텍스트 수정) ───
+
+async function saveSlideScript(jobId) {
+  const mains = document.querySelectorAll(".slide-edit-main");
+  const subs = document.querySelectorAll(".slide-edit-sub");
+  if (!mains.length) return;
+  const slides = Array.from(mains).map((el, i) => ({
+    main: el.value.replace(/\n/g, "<br>"),
+    sub: subs[i] ? subs[i].value.replace(/\n/g, "<br>") : "",
+  }));
+  const btn = document.getElementById("btn-save-slides");
+  const msg = document.getElementById("slide-save-msg");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/slides`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slides }),
+    });
+    if (res.ok) {
+      if (msg) { msg.classList.remove("hidden"); setTimeout(() => msg.classList.add("hidden"), 2000); }
+    } else {
+      const err = await res.json();
+      alert(err.detail || "저장 실패");
+    }
+  } catch (e) {
+    alert("저장 요청 실패");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 슬라이드 텍스트 서식 도구 — 선택 영역에 HTML 태그 삽입
+function slideFormatWrap(tag, attrs = "") {
+  const ta = document.activeElement;
+  if (!ta || (!ta.classList.contains("slide-edit-main") && !ta.classList.contains("slide-edit-sub"))) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  const sel = ta.value.substring(start, end);
+  if (!sel) return;
+  const open = attrs ? `<${tag} ${attrs}>` : `<${tag}>`;
+  const close = `</${tag}>`;
+  ta.value = ta.value.substring(0, start) + open + sel + close + ta.value.substring(end);
+  ta.focus();
+  ta.setSelectionRange(start + open.length, start + open.length + sel.length);
+}
+
+function slideFormatHL() { slideFormatWrap("span", 'class="hl"'); }
+function slideFormatBold() { slideFormatWrap("b"); }
+function slideFormatItalic() { slideFormatWrap("i"); }
+function slideFormatSize(size) { slideFormatWrap("span", `style="font-size:${size}"`); }
+function slideFormatColor(color) { slideFormatWrap("span", `style="color:${color}"`); }
+function slideInsertBR() {
+  const ta = document.activeElement;
+  if (!ta || (!ta.classList.contains("slide-edit-main") && !ta.classList.contains("slide-edit-sub"))) return;
+  const pos = ta.selectionStart;
+  ta.value = ta.value.substring(0, pos) + "\n" + ta.value.substring(pos);
+  ta.focus();
+  ta.setSelectionRange(pos + 1, pos + 1);
 }
 
 // ─── Retry / Reset Job ───
@@ -2895,11 +2977,10 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-roundup-rules").value = cfg.roundup_rules || "";
   document.getElementById("cs-image-style").value = cfg.image_style || "mixed";
   document.getElementById("cs-format").value = cfg.format || "single";
-  document.getElementById("cs-bg-media-type").value = cfg.bg_media_type || "video";
-  document.getElementById("cs-target-duration").value = String(cfg.target_duration || 60);
-  updateDurationHint();
+  document.getElementById("cs-bg-media-type").value = cfg.bg_media_type || "auto";
+  document.getElementById("cs-first-slide-single-bg").checked = !!cfg.first_slide_single_bg;
   document.getElementById("cs-slide-layout").value = cfg.slide_layout || "full";
-  document.getElementById("cs-slide-density").value = cfg.slide_density || "normal";
+
   document.getElementById("cs-bg-display-mode").value = cfg.bg_display_mode || "zone";
   toggleBgDisplayMode();
   document.getElementById("cs-production-mode").value = cfg.production_mode || "manual";
@@ -3008,9 +3089,10 @@ async function saveChannelSettings() {
   cfg.image_style = document.getElementById("cs-image-style").value;
   cfg.format = document.getElementById("cs-format").value;
   cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
-  cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
+  cfg.first_slide_single_bg = document.getElementById("cs-first-slide-single-bg").checked;
+
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
-  cfg.slide_density = document.getElementById("cs-slide-density").value;
+
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
@@ -3267,9 +3349,10 @@ async function saveChannelSettingsSilent() {
   cfg.image_style = document.getElementById("cs-image-style").value;
   cfg.format = document.getElementById("cs-format").value;
   cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
-  cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
+  cfg.first_slide_single_bg = document.getElementById("cs-first-slide-single-bg").checked;
+
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
-  cfg.slide_density = document.getElementById("cs-slide-density").value;
+
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
@@ -3330,24 +3413,22 @@ let _manualCategory = "";
 function _buildManualPrompt(channelId) {
   const ch = channelsCache.find(c => c.id === channelId);
   const cfg = ch ? JSON.parse(ch.config || "{}") : {};
-  const duration = cfg.target_duration || 60;
   const fmt = cfg.format || "single";
   const instructions = (ch && ch.instructions) ? ch.instructions : "";
   const slideLayout = cfg.slide_layout || "full";
   const imageStyle = cfg.image_style || "mixed";
   const imagePromptStyle = cfg.image_prompt_style || "";
-
-  const isShort = duration <= 30;
-  const slideCount = isShort ? 5 : 10;
-  const sentenceLen = isShort ? "15~25자" : "15~30자";
-  const mainTextLen = isShort ? "12~15자" : "12~20자";
-  const subTextLen = isShort ? "20~25자" : "20~30자";
-  const durationLabel = duration + "초";
+  const targetDuration = cfg.target_duration || 60;
+  const scriptRules = (fmt === "roundup") ? (cfg.roundup_rules || "") : (cfg.script_rules || "");
+  const bgMediaType = cfg.bg_media_type || "auto";
+  const autoBgSource = cfg.auto_bg_source || "sd_image";
 
   let prompt = `너는 유튜브 쇼츠 뉴스 제작 전문가다.
 
 사용자가 입력한 뉴스 주제를 기반으로
-${durationLabel} 분량의 유튜브 쇼츠 뉴스를 제작한다.
+유튜브 쇼츠 뉴스를 제작한다.
+
+목표 영상 길이: ${targetDuration}초
 `;
 
   if (instructions) {
@@ -3358,47 +3439,44 @@ ${instructions}
 `;
   }
 
-  if (instructions) {
-    // 채널 지침이 있으면 구조/슬라이드 수는 지침에 위임
+  // 대본 규칙 (script_rules)
+  if (scriptRules) {
     prompt += `
-다음 규칙을 반드시 지켜라.
-채널 지침의 구성/슬라이드 수를 따르되, 아래 작성 규칙도 준수한다.`;
+[대본 규칙 — 반드시 준수]
+
+${scriptRules}
+`;
   } else {
-    // 채널 지침 없으면 기본 규칙 제공
+    // 기본 규칙
     prompt += `
-다음 규칙을 반드시 지켜라.
+[대본 규칙]
 
-[뉴스 구성 규칙]
-
-1. 전체 길이: 약 ${durationLabel}
-2. 슬라이드 개수: ${slideCount}개
-3. 첫 슬라이드는 강력한 훅(Hook) 문장
-4. 뉴스 톤 유지 (객관적, 간결)
-5. 과장 표현 금지`;
+- 슬라이드: ${targetDuration <= 30 ? '4~6개' : '6~8개'} (closing 포함)
+- 문장: ${targetDuration <= 30 ? '8~12개, 총 160~200자' : '14~20개, 총 200~300자'}
+- 슬라이드 1개당 문장 2~4개 (5개 이상 금지)
+- 첫 슬라이드: 강력한 훅(Hook) 문장, category에 주제 태그
+- 마지막 슬라이드: bg_type "closing", 나레이션 배정 금지
+- 강조 키워드는 <span class="hl">...</span>으로 감싸기
+- 뉴스 톤 유지 (객관적, 간결), 과장 표현 금지
+- bg_type: photo(장소/사물) | broll(시네마틱) | graph(인포그래픽) | logo(기업 건물) | closing(마지막)
+- main/sub 텍스트가 이미지 프롬프트로 변환되므로 시각화 가능한 구체적 내용 필수`;
 
     if (fmt === "roundup") {
       prompt += `
-6. 라운드업 형식: 여러 뉴스를 한 영상에 묶어서 전달
-7. 첫 슬라이드에 주제 목록 소개`;
+- 라운드업 형식: 여러 뉴스를 한 영상에 묶어서 전달
+- 첫 슬라이드: bg_type "overview", 주제 목록 소개`;
     }
   }
 
   prompt += `
 
-[슬라이드 작성 규칙]
+[슬라이드 텍스트 규칙]
 
-메인 텍스트
-- ${mainTextLen} 이내
-- 강한 키워드 중심
-
-보조 텍스트
-- ${subTextLen} 이내
-- 핵심 설명
+메인 텍스트: 12~20자, 강한 키워드 중심, 강조는 <span class="hl">키워드</span>
+보조 텍스트: 20~30자, 핵심 설명
 
 bg_type: ${imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 사진 스타일)' : imageStyle === 'infographic' ? '모든 슬라이드 "graph" 고정 (인포그래픽/일러스트/차트 스타일)' : '슬라이드별 배경 유형 선택 (photo=실사, graph=인포그래픽, broll=B-roll, logo=로고)'}
-
-슬라이드 레이아웃: ${slideLayout}
-이미지 스타일: ${imageStyle === 'photo' ? '포토 (실사)' : imageStyle === 'infographic' ? '인포그래픽 (일러스트/차트/다이어그램)' : '혼합 (슬라이드별 자동)'}${imagePromptStyle ? `
+슬라이드 레이아웃: ${slideLayout}${imagePromptStyle ? `
 
 [이미지 프롬프트 스타일]
 ${imagePromptStyle}` : ''}
@@ -3407,8 +3485,9 @@ ${imagePromptStyle}` : ''}
 
 1. 슬라이드와 동일한 순서
 2. 한 항목당 1~3문장 (자연스럽게 이어지는 분량)
-3. 전체 나레이션을 읽었을 때 영상 길이에 맞도록 조절
+3. 전체 나레이션 읽기 시간이 ${targetDuration}초에 맞도록 조절
 4. 자연스러운 뉴스 톤
+5. sentences는 TTS가 읽는 텍스트이므로 HTML 태그 금지, 순수 텍스트만
 
 [출력 형식]
 
@@ -3422,10 +3501,10 @@ ${imagePromptStyle}` : ''}
   "slides": [
     {
       "bg_type": "${imageStyle === 'photo' ? 'photo' : imageStyle === 'infographic' ? 'graph' : ''}",
-      "main_text": "",
+      "main_text": "핵심 <span class=\\"hl\\">강조</span> 텍스트",
       "sub_text": "",
-      "image_prompt_ko": "",
-      "image_prompt_en": ""
+      "image_prompt_ko": ["한국어 프롬프트1", "한국어 프롬프트2"],
+      "image_prompt_en": ["English prompt 1", "English prompt 2"]
     }
   ],
   "narration": [
@@ -3436,10 +3515,19 @@ ${imagePromptStyle}` : ''}
   ]
 }
 
-category: 속보인 경우에만 "속보", 아니면 빈 문자열 "". 영상 전체에 적용되는 상위 분류.
+category: 속보인 경우에만 "속보", 아니면 주제 태그(예: "경제","정치","코인","테크","사회" 등)
 
-image_prompt_ko: 해당 슬라이드의 배경 이미지를 설명하는 한국어 프롬프트 (30~50자, 구체적 장면 묘사)
+image_prompt_ko: 배경 이미지 한국어 프롬프트 (30~50자, 구체적 장면 묘사)
 image_prompt_en: 같은 내용의 영어 프롬프트 (30~60 words, subject+setting+lighting+camera+style 포함)
+${bgMediaType === "single" ? `
+★ 이미지 프롬프트는 슬라이드당 1개씩만 생성한다.` : bgMediaType === "per-sentence" ? `
+★ 이미지 프롬프트는 슬라이드당 나레이션 문장 수만큼 생성한다.
+  예: 슬라이드에 문장 3개 → image_prompt_ko/en도 3세트 (배열로 제공)
+  각 프롬프트는 서로 다른 앵글/장면으로 시각적 변화를 준다.` : `
+★ 이미지 프롬프트는 슬라이드당 나레이션 문장 수만큼 생성한다. (배경 미디어 타입: auto)
+  예: 슬라이드에 문장 3개 → image_prompt_ko/en도 3세트 (배열로 제공)
+  각 프롬프트는 서로 다른 앵글/장면으로 시각적 변화를 준다.
+  단, 첫 슬라이드는 항상 1개만 생성한다.`}
 
 [생성 요청 뉴스 주제]
 
@@ -3522,7 +3610,6 @@ function applyJsonPaste() {
       }));
     }
 
-    document.getElementById("manual-json-paste-area").classList.add("hidden");
     renderManualModal(_manualChannelId);
 
     // 다시 topic/title 값 복원 (renderManualModal이 input을 재생성하므로)
@@ -3604,19 +3691,11 @@ function renderManualModal(channelId) {
       <h3 class="text-lg font-bold">수동 대본 작성</h3>
       <div class="flex items-center gap-2">
         <button onclick="copyManualPrompt(this)" class="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded-lg transition">지침 복사</button>
-        <button onclick="toggleJsonPaste()" class="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg transition">JSON 붙여넣기</button>
+        <button onclick="openModal('json-paste-modal')" class="px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 rounded-lg transition">JSON 붙여넣기</button>
         <button onclick="closeModal('manual-modal')" class="text-gray-500 hover:text-white text-lg transition ml-1">&times;</button>
       </div>
     </div>
-    <div id="manual-json-paste-area" class="hidden mb-3 p-3 bg-gray-900 border border-gray-700 rounded-lg">
-      <label class="block text-xs text-gray-400 mb-1">AI가 생성한 JSON을 붙여넣으세요</label>
-      <textarea id="manual-json-input" rows="6" placeholder='{"topic": "...", "slides": [...], "narration": [...]}'
-                class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs font-mono"></textarea>
-      <div class="flex justify-end mt-2">
-        <button onclick="applyJsonPaste()" class="px-3 py-1.5 text-xs bg-orange-600 hover:bg-orange-500 rounded transition font-medium">적용</button>
-      </div>
-    </div>
-    <div class="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
+    <div class="space-y-3 overflow-y-auto pr-1" style="flex:1;min-height:0;">
       <div class="grid grid-cols-3 gap-3">
         <div class="col-span-2">
           <label class="block text-xs text-gray-400 mb-1">주제 (필수)</label>
@@ -3766,6 +3845,9 @@ async function submitManualJob(channelId) {
   }
 }
 
+function openModal(id) {
+  document.getElementById(id).classList.remove("hidden");
+}
 function closeModal(id) {
   document.getElementById(id).classList.add("hidden");
   if (id === "job-detail-modal") currentDetailJobId = null;
