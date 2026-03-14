@@ -262,7 +262,7 @@
 
 /* ─── Timeline ─── */
 .comp-timeline {
-  height: 160px;
+  height: 180px;
   background: #1a1c24;
   border-top: 1px solid #2a2d38;
   flex-shrink: 0;
@@ -275,11 +275,18 @@
   background: #1e2028;
   border-bottom: 1px solid #2a2d38;
   margin-left: 48px;
+  flex-shrink: 0;
 }
 .comp-track {
   display: flex;
+  min-height: 28px;
+}
+.comp-track.track-slides {
+  flex: 3;
+}
+.comp-track.track-sfx,
+.comp-track.track-bgm {
   flex: 1;
-  min-height: 0;
 }
 .comp-track-label {
   width: 48px;

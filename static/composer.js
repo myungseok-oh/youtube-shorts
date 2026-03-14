@@ -52,7 +52,7 @@ function renderTimeline() {
     block.draggable = true;
     block.dataset.idx = idx;
     block.dataset.slideNum = sl.num;
-    block.style.minWidth = "120px";
+    block.style.minWidth = "80px";
     block.style.flex = `${Math.max(dur, 1)} 0 0`;
 
     // 배경 썸네일
