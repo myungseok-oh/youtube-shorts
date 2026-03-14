@@ -55,34 +55,25 @@ function renderTimeline() {
     block.style.minWidth = "80px";
     block.style.flex = `${Math.max(dur, 1)} 0 0`;
 
-    // 배경 썸네일
-    let thumbHtml = "";
-    if (hasBg) {
-      if (sl.bg_url.includes(".mp4") || sl.bg_url.includes(".gif")) {
-        thumbHtml = `<video src="${sl.bg_url}" muted autoplay loop playsinline class="slide-thumb-media"></video>`;
-      } else {
-        thumbHtml = `<img src="${sl.bg_url}" class="slide-thumb-media" draggable="false">`;
-      }
+    // 프레임 스트립: 배경 이미지를 반복 배치
+    let framesHtml = "";
+    if (hasBg && !sl.bg_url.includes(".mp4") && !sl.bg_url.includes(".gif")) {
+      // 정적 이미지: background-image repeat로 프레임 스트립
+      framesHtml = `<div class="slide-frames" style="background-image:url('${sl.bg_url}');"></div>`;
+    } else if (hasBg) {
+      // 영상: 단일 썸네일
+      framesHtml = `<div class="slide-frames"><video src="${sl.bg_url}" muted playsinline style="height:100%;opacity:0.7;"></video></div>`;
     } else {
-      thumbHtml = `<div class="slide-thumb-empty">
-        <span class="text-[10px]">이미지 없음</span>
-      </div>`;
+      framesHtml = `<div class="slide-frames slide-frames-empty"></div>`;
     }
 
     const bgTypeBadge = {photo:"📷",broll:"🎬",graph:"📊",logo:"🏢",closing:"🔚"}[sl.bg_type] || "📷";
-    const audioIcon = hasAudio ? "🔊" : "🔇";
 
     block.innerHTML = `
-      <div class="slide-thumb">${thumbHtml}</div>
-      <div class="slide-info">
-        <div class="slide-info-top">
-          <span class="slide-num">${bgTypeBadge} ${sl.num}</span>
-          <span class="slide-dur">${dur.toFixed(1)}s</span>
-        </div>
-        <div class="slide-info-bottom">
-          <span class="text-[9px]">${audioIcon}</span>
-          <span class="slide-main" title="${_esc(sl.main)}">${_esc(_truncate(sl.main, 20))}</span>
-        </div>
+      ${framesHtml}
+      <div class="slide-block-label">
+        <span>${bgTypeBadge} ${sl.num}</span>
+        <span>${dur.toFixed(1)}s</span>
       </div>
     `;
 
@@ -618,12 +609,17 @@ function _animatePlayheadForSlide() {
   _playheadPos = Math.min(1, pos);
   updatePlayhead();
 
+  // 타임라인 자동 스크롤
+  const slideTrack = document.getElementById("slide-track");
+  if (slideTrack && slideTrack.scrollWidth > slideTrack.clientWidth) {
+    const scrollTarget = pos * slideTrack.scrollWidth - slideTrack.clientWidth / 2;
+    slideTrack.scrollLeft = Math.max(0, scrollTarget);
+  }
+
   const statusEl = document.getElementById("audio-status");
   const totalElapsed = elapsed + curElapsed;
-  const m = Math.floor(totalElapsed / 60);
-  const s = Math.floor(totalElapsed % 60);
   if (statusEl) {
-    statusEl.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} / ${_fmtDur(total)} — 슬라이드 ${_previewSlideIdx + 1}/${slides.length}`;
+    statusEl.textContent = `${_fmtDur(totalElapsed)} / ${_fmtDur(total)} — 슬라이드 ${_previewSlideIdx + 1}/${slides.length}`;
   }
 
   _previewTimer = requestAnimationFrame(_animatePlayheadForSlide);
