@@ -2659,8 +2659,10 @@ async def composer_page(request: Request, job_id: str):
     job = get_job(db, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
+    import time
     return templates.TemplateResponse("composer.html", {
         "request": request, "job_id": job_id, "job": job,
+        "cache_bust": int(time.time()),
     })
 
 

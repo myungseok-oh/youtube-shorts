@@ -139,13 +139,8 @@ let _isDraggingPlayhead = false;
 
 function updatePlayhead() {
   const ph = document.getElementById("timeline-playhead");
-  if (!ph) { console.warn("[playhead] element not found"); return; }
-  const pct = _playheadPos * 100;
-  ph.style.left = pct + "%";
-  // 디버그: 5% 단위로 로그
-  if (Math.floor(pct) % 5 === 0 && pct > 0) {
-    console.log("[playhead]", pct.toFixed(1) + "%");
-  }
+  if (!ph) return;
+  ph.style.left = (_playheadPos * 100) + "%";
 }
 
 function onTimelineMouseDown(e) {
@@ -618,7 +613,23 @@ async function playSlideAudio() {
   stopAllAudio();
   document.getElementById("btn-play-slide").innerHTML = "&#9646;&#9646;";
   _previewing = true;
+
+  // 해당 슬라이드 시작 위치로 플레이헤드 설정 + 틱 시작
+  _buildSlideTimeMap();
+  _previewStartTime = performance.now();
+  _previewSlideIdx = -1;
+  _previewAudioPlayed = new Set();
+
+  // 이 슬라이드의 시작 시점으로 오프셋
+  const slideIdx = composeState.slide_order.indexOf(sl.num);
+  let slideStart = 0;
+  for (let i = 0; i < slideIdx && i < _slideTimeMap.length; i++) {
+    slideStart += getSlideDuration(_slideTimeMap[i].num);
+  }
+  _previewStartTime = performance.now() - slideStart * 1000;
+
   _playAudioChain(slideAudio, 0, () => { stopAllAudio(); });
+  _previewTick();
 }
 
 function _playAudioChain(audioList, idx, onDone) {
@@ -688,7 +699,6 @@ async function playAllSlides() {
   }
 
   _buildSlideTimeMap();
-  console.log("[preview] 시작. slides:", _slideTimeMap.length, "total:", getTotalDuration(), "s");
   _previewTick();
 }
 

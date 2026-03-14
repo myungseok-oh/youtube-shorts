@@ -7,7 +7,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Do+Hyeon&family=Gaegu:wght@400;700&family=Gothic+A1:wght@400;700;900&family=Jua&family=Nanum+Gothic:wght@400;700&family=Nanum+Myeongjo:wght@400;700&family=Noto+Sans+KR:wght@400;700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/composer.css">
+  <link rel="stylesheet" href="/static/composer.css?v={{ cache_bust }}">
 </head>
 <body class="bg-[#15171e] text-white h-screen flex flex-col select-none overflow-hidden">
 
@@ -106,6 +106,6 @@
   <script>
     const JOB_ID = "{{ job_id }}";
   </script>
-  <script src="/static/composer.js"></script>
+  <script src="/static/composer.js?v={{ cache_bust }}"></script>
 </body>
 </html>
