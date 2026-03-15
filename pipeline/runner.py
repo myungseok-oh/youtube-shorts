@@ -587,6 +587,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
 
             # compose_data에서 슬라이드 오버라이드 로드
             _compose_ovr = {}
+            _cd = {}
             try:
                 from pipeline.composer import load_compose_data
                 _cd = load_compose_data(job_id)
@@ -601,7 +602,13 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                           bg_display_mode=bg_display_mode,
                                           zone_ratio=ch_config_pb.get("slide_zone_ratio", ""),
                                           text_bg=ch_config_pb.get("slide_text_bg", 4),
-                                          slide_overrides=_compose_ovr)
+                                          slide_overrides=_compose_ovr,
+                                          sub_text_size=ch_config_pb.get("sub_text_size", 0),
+                                          accent_color=ch_config_pb.get("slide_accent_color", ""),
+                                          hl_color=ch_config_pb.get("slide_hl_color", ""),
+                                          bg_gradient=ch_config_pb.get("slide_bg_gradient", ""),
+                                          main_text_size=ch_config_pb.get("slide_main_text_size", 0),
+                                          badge_size=ch_config_pb.get("slide_badge_size", 0))
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,
@@ -650,14 +657,20 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 raise
         else:
             # --- TTS 모드 ---
-            # 이미 오디오 파일이 모두 있으면 스킵
+            # 이미 오디오 파일이 모두 있으면 스킵 (단, 엔진/음성 변경 시 재생성)
+            force_tts = bool(tts_engine_override or tts_voice_override or sovits_cfg_override)
             existing_audio = _find_existing_audio(dirs["audio"], len(sentences))
-            if existing_audio:
+            if existing_audio and not force_tts:
                 _update_step(db, job_id, "tts", "completed",
                              output_data={"files": existing_audio,
                                           "count": len(existing_audio),
                                           "engine": "cached"})
             else:
+                # 엔진/음성 변경 시 기존 오디오 삭제
+                if force_tts:
+                    import glob as glob_mod
+                    for f in glob_mod.glob(os.path.join(dirs["audio"], "audio_*")):
+                        os.remove(f)
                 _update_step(db, job_id, "tts", "running")
                 try:
                     ch_config = json.loads(channel.get("config", "{}")) if channel else {}
@@ -748,6 +761,11 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
 
                 # 효과음 설정 로드
                 sfx_cfg = _ch_cfg_render if (_ch_cfg_render.get("sfx_enabled") or _ch_cfg_render.get("bgm_enabled") or _ch_cfg_render.get("crossfade_duration")) else None
+                # compose_data에서 나레이션 볼륨 로드
+                if _cd.get("narr_volume") is not None:
+                    if sfx_cfg is None:
+                        sfx_cfg = dict(_ch_cfg_render)
+                    sfx_cfg["narr_volume"] = _cd["narr_volume"]
 
                 # SFX/BGM은 인트로 wrap 후 별도 적용 (타이밍 오프셋 보정)
                 concat_cfg = dict(_ch_cfg_render)
@@ -1594,7 +1612,13 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                           bg_display_mode=bg_display_mode,
                                           zone_ratio=ch_config_fp.get("slide_zone_ratio", ""),
                                           text_bg=ch_config_fp.get("slide_text_bg", 4),
-                                          slide_overrides={})
+                                          slide_overrides={},
+                                          sub_text_size=ch_config_fp.get("sub_text_size", 0),
+                                          accent_color=ch_config_fp.get("slide_accent_color", ""),
+                                          hl_color=ch_config_fp.get("slide_hl_color", ""),
+                                          bg_gradient=ch_config_fp.get("slide_bg_gradient", ""),
+                                          main_text_size=ch_config_fp.get("slide_main_text_size", 0),
+                                          badge_size=ch_config_fp.get("slide_badge_size", 0))
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,

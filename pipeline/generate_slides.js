@@ -52,6 +52,20 @@ const zoneBotPct = (zoneRatio[2] / _zrTotal * 100).toFixed(1);
 const _textBgVal = data.textBg != null ? Number(data.textBg) : 4;
 const textBgOpacity = Math.max(0, Math.min(1, _textBgVal / 10));
 
+// 서브 텍스트 크기 (0이면 기본 56px)
+const _subTextSize = data.subTextSize || 0;
+
+// 채널별 스타일 파라미터
+const _accentColor = data.accentColor || '';
+const _hlColor = data.hlColor || '#ffd700';
+const _bgGradRaw = data.bgGradient || '';
+const _bgGrad = _bgGradRaw.split(',').map(s => s.trim()).filter(Boolean);
+const bgGrad0 = _bgGrad[0] || '#0b0e1a';
+const bgGrad1 = _bgGrad[1] || '#141b2d';
+const bgGrad2 = _bgGrad[2] || '#1a2238';
+const _mainTextSize = data.mainTextSize || 0;
+const _badgeSize = data.badgeSize || 0;
+
 function bgInfo(index) {
   const bg = backgrounds[index];
   if (!bg) return { css: '', source: '', dataUrl: '' };
@@ -110,7 +124,7 @@ function buildHTML(slide, index) {
   if (ovr.main !== undefined) s.main = ovr.main;
   if (ovr.sub !== undefined) s.sub = ovr.sub;
 
-  const accent = '#ff6b35';
+  const accent = _accentColor || s.accent || '#ff6b35';
   const bgData = bgInfo(index);
   const progressPct = total > 1 ? ((slideNum) / total * 100).toFixed(1) : 100;
 
@@ -139,7 +153,8 @@ function buildHTML(slide, index) {
   }
 
   // Fullscreen mode: full-bg image with semi-transparent text zones
-  if (bgDisplayMode === 'fullscreen') {
+  // top/bottom 레이아웃은 이미지가 특정 영역에만 표시되어야 하므로 zoned 방식 사용
+  if (bgDisplayMode === 'fullscreen' && (layout === 'full' || layout === 'center')) {
     if (index === 0) return buildFullscreenOpening(s, accent, bgData, progressPct);
     return buildFullscreenContent(s, accent, bgData, progressPct, index);
   }
@@ -159,7 +174,7 @@ function buildHiddenOverlay(slide, bgImg, progressPct) {
     width: 1080px; height: 1920px;
     font-family: 'Noto Sans KR', sans-serif;
     overflow: hidden; position: relative;
-    ${bgImg ? `background: ${bgImg} center/cover no-repeat;` : `background: #0b0e1a;`}
+    ${bgImg ? `background: ${bgImg} center/cover no-repeat;` : `background: ${bgGrad0};`}
   }
 </style></head>
 <body></body></html>`;
@@ -200,7 +215,7 @@ function buildCustomContent(slide, accent, bgImg, progressPct, index, bgSource, 
     word-break: keep-all; overflow-wrap: break-word;
     ${bgImg
       ? `background: ${bgImg} center/cover no-repeat;`
-      : `background: linear-gradient(170deg, #0b0e1a 0%, #141b2d 40%, #1a2238 100%);`
+      : `background: linear-gradient(170deg, ${bgGrad0} 0%, ${bgGrad1} 40%, ${bgGrad2} 100%);`
     }
   }
   .bg-overlay {
@@ -282,7 +297,7 @@ function commonStyles(accent, bgImg) {
       word-break: keep-all; overflow-wrap: break-word;
       ${bgImg
         ? `background: ${bgImg} center/cover no-repeat;`
-        : `background: linear-gradient(170deg, #0b0e1a 0%, #141b2d 40%, #1a2238 100%);`
+        : `background: linear-gradient(170deg, ${bgGrad0} 0%, ${bgGrad1} 40%, ${bgGrad2} 100%);`
       }
     }
     .bg-overlay {
@@ -313,7 +328,7 @@ function commonStyles(accent, bgImg) {
       background: linear-gradient(170deg, ${accent} 0%, color-mix(in srgb, ${accent} 70%, #000) 100%);
       border: 3px solid rgba(255,255,255,0.5);
       border-radius: 10px;
-      font-size: 34px; font-weight: 900;
+      font-size: ${_badgeSize || 34}px; font-weight: 900;
       letter-spacing: 6px;
       color: #ffffff;
       box-shadow: 0 6px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
@@ -336,8 +351,8 @@ function commonStyles(accent, bgImg) {
       color: rgba(255,255,255,0.9);
     }
     .hl {
-      color: #ffd700;
-      background: linear-gradient(transparent 60%, rgba(255,215,0,0.18) 60%);
+      color: ${_hlColor};
+      background: linear-gradient(transparent 60%, ${_hlColor}2E 60%);
       padding: 0 4px;
     }
     .content-wrap {
@@ -367,7 +382,7 @@ function zonedStyles(accent) {
       font-family: 'Noto Sans KR', sans-serif;
       color: #ffffff; overflow: hidden; position: relative;
       word-break: keep-all; overflow-wrap: break-word;
-      background: #0b0e1a;
+      background: ${bgGrad0};
     }
     .grain {
       position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -384,7 +399,7 @@ function zonedStyles(accent) {
       background: linear-gradient(170deg, #ff4d4d 0%, #cc0000 100%);
       border: 3px solid rgba(255,255,255,0.5);
       border-radius: 10px;
-      font-size: 34px; font-weight: 900;
+      font-size: ${_badgeSize || 34}px; font-weight: 900;
       letter-spacing: 6px;
       color: #ffffff;
       box-shadow: 0 6px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
@@ -407,15 +422,15 @@ function zonedStyles(accent) {
       color: rgba(255,255,255,0.9);
     }
     .hl {
-      color: #ffd700;
-      background: linear-gradient(transparent 60%, rgba(255,215,0,0.18) 60%);
+      color: ${_hlColor};
+      background: linear-gradient(transparent 60%, ${_hlColor}2E 60%);
       padding: 0 4px;
     }
     .image-zone {
       position: relative;
       width: 100%;
       overflow: hidden;
-      background: linear-gradient(135deg, #141b2d 0%, #1a2238 100%);
+      background: linear-gradient(135deg, ${bgGrad1} 0%, ${bgGrad2} 100%);
     }
     .image-zone img {
       width: 100%; height: 100%;
@@ -430,13 +445,13 @@ function zonedStyles(accent) {
       background: rgba(5,8,20,${textBgOpacity});
     }
     .main-text {
-      font-size: 100px; font-weight: 900;
+      font-size: ${_mainTextSize || 100}px; font-weight: 900;
       text-align: center; line-height: 1.25;
       padding: 0 20px;
       text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 40px rgba(0,0,0,0.7);
     }
     .sub-text {
-      font-size: 56px; color: rgba(255,255,255,0.92);
+      font-size: ${_subTextSize || 56}px; color: rgba(255,255,255,0.92);
       text-align: center; font-weight: 700; padding: 0 30px;
       margin-top: 30px;
       text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
@@ -485,7 +500,7 @@ function fullscreenZonedStyles(accent, bgImg) {
       word-break: keep-all; overflow-wrap: break-word;
       ${bgImg
         ? `background: ${bgImg} center/cover no-repeat;`
-        : `background: linear-gradient(170deg, #0b0e1a 0%, #141b2d 40%, #1a2238 100%);`
+        : `background: linear-gradient(170deg, ${bgGrad0} 0%, ${bgGrad1} 40%, ${bgGrad2} 100%);`
       }
     }
     .grain {
@@ -503,7 +518,7 @@ function fullscreenZonedStyles(accent, bgImg) {
       background: linear-gradient(170deg, #ff4d4d 0%, #cc0000 100%);
       border: 3px solid rgba(255,255,255,0.5);
       border-radius: 10px;
-      font-size: 34px; font-weight: 900;
+      font-size: ${_badgeSize || 34}px; font-weight: 900;
       letter-spacing: 6px;
       color: #ffffff;
       box-shadow: 0 6px 20px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
@@ -526,8 +541,8 @@ function fullscreenZonedStyles(accent, bgImg) {
       color: rgba(255,255,255,0.9);
     }
     .hl {
-      color: #ffd700;
-      background: linear-gradient(transparent 60%, rgba(255,215,0,0.18) 60%);
+      color: ${_hlColor};
+      background: linear-gradient(transparent 60%, ${_hlColor}2E 60%);
       padding: 0 4px;
     }
     .text-zone {
@@ -540,13 +555,13 @@ function fullscreenZonedStyles(accent, bgImg) {
       backdrop-filter: blur(4px);
     }
     .main-text {
-      font-size: 100px; font-weight: 900;
+      font-size: ${_mainTextSize || 100}px; font-weight: 900;
       text-align: center; line-height: 1.25;
       padding: 0 20px;
       text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 40px rgba(0,0,0,0.7);
     }
     .sub-text {
-      font-size: 56px; color: rgba(255,255,255,0.92);
+      font-size: ${_subTextSize || 56}px; color: rgba(255,255,255,0.92);
       text-align: center; font-weight: 700; padding: 0 30px;
       margin-top: 30px;
       text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
@@ -574,8 +589,13 @@ function fullscreenZonedStyles(accent, bgImg) {
 
 // ──── Image zone HTML for zoned layouts ────
 function imageZoneHTML(bgData, heightPct) {
+  // top/bottom 레이아웃: contain으로 이미지 전체 표시 (잘림 없음)
+  // center 레이아웃: cover로 영역 채움
+  const isTopBot = (layout === 'top' || layout === 'bottom');
+  const fit = isTopBot ? 'contain' : 'cover';
+  const pos = layout === 'bottom' ? 'top' : layout === 'top' ? 'bottom' : 'center';
   const imgTag = bgData.dataUrl
-    ? `<img src="${bgData.dataUrl}" style="width:100%;height:100%;object-fit:cover;">`
+    ? `<img src="${bgData.dataUrl}" style="width:100%;height:100%;object-fit:${fit};object-position:${pos};">`
     : '';
   return `<div class="image-zone" style="height:${heightPct}%;">${imgTag}</div>`;
 }
@@ -592,14 +612,14 @@ function buildOpening(slide, accent, bgImg, progressPct, bgSource) {
   .top-bar { display: none; }
   .accent-stripe { display: none; }
   .main-text {
-    font-size: 110px; font-weight: 900;
+    font-size: ${_mainTextSize ? _mainTextSize + 10 : 110}px; font-weight: 900;
     text-align: center; line-height: 1.25;
     padding: 0 50px;
     text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 50px rgba(0,0,0,0.7);
     letter-spacing: -3px;
   }
   .sub-text {
-    font-size: 56px; color: rgba(255,255,255,0.92);
+    font-size: ${_subTextSize || 56}px; color: rgba(255,255,255,0.92);
     text-align: center; font-weight: 700; padding: 0 60px;
     margin-top: 40px;
     text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
@@ -635,13 +655,13 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
   .divider-top { margin-bottom: 50px; }
   .divider-bottom { margin-top: 50px; }
   .main-text {
-    font-size: 100px; font-weight: 900;
+    font-size: ${_mainTextSize || 100}px; font-weight: 900;
     text-align: center; line-height: 1.25;
     padding: 0 50px;
     text-shadow: 0 4px 16px rgba(0,0,0,0.95), 0 8px 40px rgba(0,0,0,0.7);
   }
   .sub-text {
-    font-size: 52px; color: rgba(255,255,255,0.92);
+    font-size: ${_subTextSize || 52}px; color: rgba(255,255,255,0.92);
     text-align: center; font-weight: 700; padding: 0 50px;
     margin-top: 30px;
     text-shadow: 0 3px 12px rgba(0,0,0,0.95), 0 6px 30px rgba(0,0,0,0.7);
@@ -690,7 +710,7 @@ function buildClosing(slide, accent, bgImg, progressPct) {
 <html><head><meta charset="utf-8"><style>
   ${commonStyles(accent, bgImg)}
   .brand-text {
-    font-size: 110px; font-weight: 900;
+    font-size: ${_mainTextSize ? _mainTextSize + 10 : 110}px; font-weight: 900;
     text-align: center; letter-spacing: 8px;
     text-shadow: 0 2px 8px rgba(0,0,0,0.9), 0 4px 40px rgba(0,0,0,0.6);
   }
@@ -779,7 +799,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
     color: #ffffff; overflow: hidden; position: relative;
     ${bgImg
       ? `background: ${bgImg} center/cover no-repeat;`
-      : `background: linear-gradient(170deg, #0b0e1a 0%, #141b2d 40%, #1a2238 100%);`
+      : `background: linear-gradient(170deg, ${bgGrad0} 0%, ${bgGrad1} 40%, ${bgGrad2} 100%);`
     }
   }
   .bg-overlay {
@@ -806,7 +826,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
     padding: 12px 32px;
     background: ${accent};
     border-radius: 8px;
-    font-size: 34px; font-weight: 700;
+    font-size: ${_badgeSize || 34}px; font-weight: 700;
     letter-spacing: 2px;
     color: #ffffff;
     align-self: flex-start;
@@ -824,8 +844,8 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
     margin-bottom: 36px;
   }
   .hl {
-    color: #ffd700;
-    background: linear-gradient(transparent 55%, rgba(255,215,0,0.25) 55%);
+    color: ${_hlColor};
+    background: linear-gradient(transparent 55%, ${_hlColor}40 55%);
     padding: 0 4px;
   }
   /* 구분선 */
@@ -857,7 +877,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
     text-shadow: 0 2px 6px rgba(0,0,0,0.8);
   }
   .headline-text {
-    font-size: 40px; font-weight: 700;
+    font-size: ${_subTextSize || 40}px; font-weight: 700;
     line-height: 1.3;
     color: #ffffff;
     text-shadow: 0 2px 8px rgba(0,0,0,0.9);
@@ -898,34 +918,36 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
 function buildFullscreenOpening(slide, accent, bgData, progressPct) {
   const bgImg = bgData.css;
   const textHTML = `
-    <div class="main-text" style="font-size:120px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
+    <div class="main-text" style="font-size:${_mainTextSize ? _mainTextSize + 20 : 120}px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text" style="font-size:44px;">${slide.sub}</div>` : ''}
   `;
 
   let bodyContent = '';
   if (layout === 'center') {
     bodyContent = `
-      <div class="text-zone" style="height:35%;justify-content:flex-end;padding-bottom:20px;">
-        <div class="main-text" style="font-size:120px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
+      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
+        <div class="main-text" style="font-size:${_mainTextSize ? _mainTextSize + 20 : 120}px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
       </div>
-      <div style="height:40%;"></div>
-      <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">
+      <div style="height:${zoneMidPct}%;"></div>
+      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
         ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
       </div>
     `;
   } else if (layout === 'top') {
+    const imgPct = parseFloat(zoneTopPct) + parseFloat(zoneMidPct);
     bodyContent = `
-      <div style="height:50%;"></div>
-      <div class="text-zone" style="height:50%;">
+      <div style="height:${imgPct}%;"></div>
+      <div class="text-zone" style="height:${zoneBotPct}%;">
         ${textHTML}
       </div>
     `;
   } else if (layout === 'bottom') {
+    const imgPct = parseFloat(zoneMidPct) + parseFloat(zoneBotPct);
     bodyContent = `
-      <div class="text-zone" style="height:50%;">
+      <div class="text-zone" style="height:${zoneTopPct}%;">
         ${textHTML}
       </div>
-      <div style="height:50%;"></div>
+      <div style="height:${imgPct}%;"></div>
     `;
   } else {
     // full layout (기본) — 전체 배경 위에 중앙 텍스트
@@ -960,11 +982,11 @@ function buildFullscreenContent(slide, accent, bgData, progressPct, index) {
   let bodyContent = '';
   if (layout === 'center') {
     bodyContent = `
-      <div class="text-zone" style="height:25%;justify-content:flex-end;padding-bottom:20px;">
-        <div class="main-text" style="font-size:100px;">${slide.main}</div>
+      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
+        <div class="main-text" style="font-size:${_mainTextSize || 100}px;">${slide.main}</div>
       </div>
-      <div style="height:50%;"></div>
-      <div class="text-zone" style="height:25%;justify-content:flex-start;padding-top:20px;">
+      <div style="height:${zoneMidPct}%;"></div>
+      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
         ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
       </div>
     `;
@@ -1013,7 +1035,7 @@ function buildFullscreenContent(slide, accent, bgData, progressPct, index) {
 // ──── Zoned Opening 슬라이드 ────
 function buildZonedOpening(slide, accent, bgData, progressPct) {
   const textHTML = `
-    <div class="main-text" style="font-size:120px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
+    <div class="main-text" style="font-size:${_mainTextSize ? _mainTextSize + 20 : 120}px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
     ${slide.sub ? `<div class="sub-text" style="font-size:44px;">${slide.sub}</div>` : ''}
   `;
 
@@ -1021,7 +1043,7 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
   if (layout === 'center') {
     bodyContent = `
       <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
-        <div class="main-text" style="font-size:120px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
+        <div class="main-text" style="font-size:${_mainTextSize ? _mainTextSize + 20 : 120}px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
       </div>
       ${imageZoneHTML(bgData, parseFloat(zoneMidPct))}
       <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
@@ -1029,18 +1051,20 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
       </div>
     `;
   } else if (layout === 'top') {
+    const imgPct = parseFloat(zoneTopPct) + parseFloat(zoneMidPct);
     bodyContent = `
-      ${imageZoneHTML(bgData, 50)}
-      <div class="text-zone" style="height:50%;">
+      ${imageZoneHTML(bgData, imgPct)}
+      <div class="text-zone" style="height:${zoneBotPct}%;">
         ${textHTML}
       </div>
     `;
   } else if (layout === 'bottom') {
+    const imgPct = parseFloat(zoneMidPct) + parseFloat(zoneBotPct);
     bodyContent = `
-      <div class="text-zone" style="height:50%;">
+      <div class="text-zone" style="height:${zoneTopPct}%;">
         ${textHTML}
       </div>
-      ${imageZoneHTML(bgData, 50)}
+      ${imageZoneHTML(bgData, imgPct)}
     `;
   }
 
@@ -1067,7 +1091,7 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
   if (layout === 'center') {
     bodyContent = `
       <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
-        <div class="main-text" style="font-size:100px;">${slide.main}</div>
+        <div class="main-text" style="font-size:${_mainTextSize || 100}px;">${slide.main}</div>
       </div>
       ${imageZoneHTML(bgData, parseFloat(zoneMidPct))}
       <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
@@ -1075,18 +1099,20 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
       </div>
     `;
   } else if (layout === 'top') {
+    const imgPct = parseFloat(zoneTopPct) + parseFloat(zoneMidPct);
     bodyContent = `
-      ${imageZoneHTML(bgData, 50)}
-      <div class="text-zone" style="height:50%;">
+      ${imageZoneHTML(bgData, imgPct)}
+      <div class="text-zone" style="height:${zoneBotPct}%;">
         ${textHTML}
       </div>
     `;
   } else if (layout === 'bottom') {
+    const imgPct = parseFloat(zoneMidPct) + parseFloat(zoneBotPct);
     bodyContent = `
-      <div class="text-zone" style="height:50%;">
+      <div class="text-zone" style="height:${zoneTopPct}%;">
         ${textHTML}
       </div>
-      ${imageZoneHTML(bgData, 50)}
+      ${imageZoneHTML(bgData, imgPct)}
     `;
   }
 

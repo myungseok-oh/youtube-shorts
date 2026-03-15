@@ -308,10 +308,27 @@ def _render_kenburns_segment(bg_path: str, overlay_path: str, audio_path: str,
     zoom_expr, x_expr, y_expr = preset
     total_frames = int(duration * 24) + 5  # 24fps
 
-    # zoompan: 입력 이미지를 줌/패닝하여 영상화
-    # 입력을 1.15배 스케일하여 줌아웃 시에도 검은 테두리 방지
+    # 입력 이미지 비율 감지 → 1:1이면 중앙 배치, 9:16이면 전체 채움
+    from PIL import Image as _PILImage
+    try:
+        _img = _PILImage.open(bg_path)
+        _iw, _ih = _img.size
+        _img.close()
+    except Exception:
+        _iw, _ih = 1080, 1920
+
+    _aspect = _iw / _ih if _ih > 0 else 1.0
+    if _aspect > 0.8:  # 1:1 또는 가로 이미지 (center/top/bottom 레이아웃)
+        # 원본 비율 유지, 1080 폭에 맞추고 세로는 비율대로, 나머지 검정
+        _scale_w = 1242  # 1080 * 1.15
+        _scale_h = int(_scale_w / _aspect)
+        _pad = f",pad=1242:2208:(ow-iw)/2:(oh-ih)/2:black"
+    else:  # 9:16 세로 이미지 (full 레이아웃)
+        _scale_w, _scale_h = 1242, 2208
+        _pad = ""
+
     filter_complex = (
-        f"[0:v]scale=1242:2208,format=rgba,"
+        f"[0:v]scale={_scale_w}:{_scale_h},format=rgba{_pad},"
         f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
         f":d={total_frames}:s=1080x1920:fps=24[bg];"
         f"[bg][1:v]overlay=0:0:shortest=1[out]"
@@ -350,8 +367,8 @@ def _render_video_segment(bg_path: str, overlay_path: str, audio_path: str,
         "-loop", "1", "-i", overlay_path,
         "-i", audio_path,
         "-filter_complex",
-        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-        "crop=1080:1920,fps=24[bg];"
+        "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=24[bg];"
         "[bg][1:v]overlay=0:0:shortest=1[out]",
         "-map", "[out]", "-map", "2:a",
         "-c:v", "libx264", "-preset", "fast",
@@ -591,8 +608,15 @@ def _mix_audio(input_path: str, output_path: str,
     # 추가 입력 파일 수집: (파일경로, 필터라벨)
     extra_inputs = []  # [(path, ...)]
     filter_parts = []
-    mix_labels = ["[0:a]"]  # 원본 오디오는 항상 첫 번째
     input_idx = 1  # 0 = 원본 영상
+
+    # --- 나레이션 볼륨 ---
+    narr_vol = (cfg.get("narr_volume", 100) or 100) / 100.0
+    if narr_vol != 1.0:
+        filter_parts.append(f"[0:a]volume={narr_vol}[narr]")
+        mix_labels = ["[narr]"]
+    else:
+        mix_labels = ["[0:a]"]
 
     # --- BGM ---
     if mix_bgm:

@@ -631,16 +631,22 @@ async def api_create_manual_job(request: Request):
         script_json=script_json,
     )
 
-    # 슬라이드에 image_prompt_en이 있으면 meta_json에 복사
-    slides = script_json.get("slides", [])
-    _prompts = [
-        {"ko": s.get("image_prompt_ko", ""), "en": s.get("image_prompt_en", "")}
-        for s in slides if s.get("bg_type") != "closing"
-    ]
-    if any(p.get("en") for p in _prompts):
-        meta = {"image_prompts": _prompts}
+    # image_prompts 저장: 프론트에서 보낸 다중 프롬프트 우선, 없으면 슬라이드에서 추출
+    ext_prompts = body.get("image_prompts")
+    if ext_prompts and len(ext_prompts) > 0:
+        meta = {"image_prompts": ext_prompts}
         db.execute("UPDATE jobs SET meta_json = ? WHERE id = ?",
                    [json.dumps(meta, ensure_ascii=False), job["id"]])
+    else:
+        slides = script_json.get("slides", [])
+        _prompts = [
+            {"ko": s.get("image_prompt_ko", ""), "en": s.get("image_prompt_en", "")}
+            for s in slides if s.get("bg_type") != "closing"
+        ]
+        if any(p.get("en") for p in _prompts):
+            meta = {"image_prompts": _prompts}
+            db.execute("UPDATE jobs SET meta_json = ? WHERE id = ?",
+                       [json.dumps(meta, ensure_ascii=False), job["id"]])
 
     # Phase A 스킵 → 바로 waiting_slides
     db.execute("UPDATE jobs SET status = 'waiting_slides' WHERE id = ?", [job["id"]])
@@ -824,19 +830,22 @@ async def api_get_job_script(job_id: str):
     if job.get("script_json"):
         script_json = json.loads(job["script_json"])
 
-    # 업로드된 배경 이미지 확인
+    # 업로드된 배경 이미지 확인 (mp4 우선)
     bg_dir = os.path.join(config.output_dir(), job_id, "backgrounds")
     uploaded_bgs = {}
     if os.path.isdir(bg_dir):
         for fname in os.listdir(bg_dir):
             for ext in ["mp4", "jpg", "jpeg", "png", "webp", "gif"]:
                 if fname.lower().endswith(f".{ext}"):
-                    # bg_1.jpg → 1
                     parts = fname.rsplit(".", 1)[0]  # bg_1
                     try:
                         idx = int(parts.split("_")[1])
                         fpath = os.path.join(bg_dir, fname)
                         mtime = int(os.path.getmtime(fpath))
+                        existing = uploaded_bgs.get(idx, "")
+                        # mp4가 이미 있으면 덮어쓰지 않음 (영상 우선)
+                        if ".mp4" in existing:
+                            continue
                         uploaded_bgs[idx] = f"/api/jobs/{job_id}/backgrounds/{fname}?t={mtime}"
                     except (IndexError, ValueError):
                         pass
@@ -1778,7 +1787,6 @@ async def api_sd_generate_auto(job_id: str):
     script = json.loads(job["script_json"])
     slides = script.get("slides", [])
     sentences = script.get("sentences", [])
-    bg_count = len(slides) - 1  # closing 제외
 
     # 채널 config
     channel = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
@@ -1803,14 +1811,18 @@ async def api_sd_generate_auto(job_id: str):
     full_text = " ".join(s["text"] for s in sentences)
 
     gemini_count = 0  # Gemini 요청 간 딜레이용 카운터
-    for i in range(min(len(prompts), bg_count)):
+    for i, raw_p in enumerate(prompts):
         idx = i + 1
-        slide = slides[i] if i < len(slides) else {}
+        # 프롬프트에 slide 필드가 있으면 해당 슬라이드 정보 사용, 없으면 순서대로
+        slide_num = (raw_p.get("slide", i + 1) if isinstance(raw_p, dict) else i + 1)
+        slide_idx = slide_num - 1
+        slide = slides[slide_idx] if slide_idx < len(slides) else {}
         bg_type = slide.get("bg_type", "photo")
 
         # dict → 영어 프롬프트 문자열 추출
-        raw_p = prompts[i]
         en_prompt = raw_p.get("en", raw_p) if isinstance(raw_p, dict) else raw_p
+        media_type = raw_p.get("media", "image") if isinstance(raw_p, dict) else "image"
+        motion = raw_p.get("motion", "") if isinstance(raw_p, dict) else ""
 
         # 기존 파일 정리
         for ext in ["jpg", "jpeg", "png", "webp", "gif", "mp4"]:
@@ -1841,14 +1853,6 @@ async def api_sd_generate_auto(job_id: str):
                     _ar
                 )
                 gemini_count += 1
-
-            elif bg_type == "graph":
-                # SD 모드: graph → Claude 인포그래픽
-                output_path = os.path.join(bg_dir, f"bg_{idx}.png")
-                await asyncio.to_thread(
-                    generate_infographic, slide, full_text, output_path,
-                    1080, 960
-                )
 
             elif auto_bg_source == "sd_video" or bg_type == "broll":
                 # SD 영상 생성
@@ -1905,7 +1909,13 @@ async def api_rerender_slides(job_id: str):
         backgrounds=bg_results, layout=slide_layout,
         skip_overlay=True,
         zone_ratio=ch_cfg.get("slide_zone_ratio", ""),
-        text_bg=ch_cfg.get("slide_text_bg", 4)
+        text_bg=ch_cfg.get("slide_text_bg", 4),
+        sub_text_size=ch_cfg.get("sub_text_size", 0),
+        accent_color=ch_cfg.get("slide_accent_color", ""),
+        hl_color=ch_cfg.get("slide_hl_color", ""),
+        bg_gradient=ch_cfg.get("slide_bg_gradient", ""),
+        main_text_size=ch_cfg.get("slide_main_text_size", 0),
+        badge_size=ch_cfg.get("slide_badge_size", 0),
     )
 
     return {"ok": True, "layout": slide_layout, "slides": len(slide_paths)}
@@ -2715,6 +2725,7 @@ async def api_composer_tts(job_id: str, request: Request):
     body = await request.json()
     slide_num = body.get("slide_num")  # None이면 전체
     tts_engine = body.get("tts_engine", "edge-tts")
+    tts_voice = body.get("tts_voice", "")  # UI에서 선택한 음성
 
     # 대상 문장 필터링
     if slide_num:
@@ -2728,9 +2739,9 @@ async def api_composer_tts(job_id: str, request: Request):
     audio_dir = os.path.join(config.output_dir(), job_id, "audio")
     os.makedirs(audio_dir, exist_ok=True)
 
-    # 채널 config에서 음성 설정 가져오기
+    # 음성 설정: UI 선택값 우선, 없으면 채널 config
     ch_id = job.get("channel_id", "")
-    voice = ""
+    voice = tts_voice
     rate = None
     sovits_cfg = None
 
@@ -2738,11 +2749,22 @@ async def api_composer_tts(job_id: str, request: Request):
         ch = get_channel(db_ch, ch_id)
         if ch and ch.get("config"):
             ch_cfg = json.loads(ch["config"]) if isinstance(ch["config"], str) else ch["config"]
-            if tts_engine == "google-cloud":
-                voice = ch_cfg.get("google_voice", "ko-KR-Wavenet-A")
-            else:
-                voice = ch_cfg.get("tts_voice", "ko-KR-SunHiNeural")
+            if not voice:
+                if tts_engine == "google-cloud":
+                    voice = ch_cfg.get("google_voice", "ko-KR-Wavenet-A")
+                else:
+                    voice = ch_cfg.get("tts_voice", "ko-KR-SunHiNeural")
             rate = ch_cfg.get("tts_rate")
+
+    # GPT-SoVITS 설정
+    if tts_engine == "gpt-sovits":
+        ref_voice = tts_voice or (ch_cfg.get("sovits_ref_voice", "") if ch_id else "")
+        if ref_voice:
+            ref_voices_dir = os.path.join(config.root_dir(), "data", "ref_voices")
+            sovits_cfg = {
+                "ref_audio": os.path.join(ref_voices_dir, ref_voice),
+                "ref_text": ch_cfg.get("sovits_ref_text", "") if ch_id else "",
+            }
 
     # 특정 슬라이드만 생성 시: 해당 문장의 인덱스에 맞는 오디오만 생성
     if slide_num:
@@ -2857,6 +2879,12 @@ async def api_serve_job_audio(job_id: str, filename: str):
 
 
 if __name__ == "__main__":
+    # Windows: ProactorEventLoop의 ConnectionResetError 방지
+    # SelectorEventLoop는 소켓 종료를 깔끔하게 처리함
+    import sys, asyncio
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     cfg = config.load()
     uvicorn.run(app,
                 host=cfg["server"]["host"],

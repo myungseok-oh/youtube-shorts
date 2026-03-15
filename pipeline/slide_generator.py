@@ -36,7 +36,13 @@ def generate_slides(slides_data: list[dict], output_dir: str,
                     skip_overlay: bool = False,
                     zone_ratio: str = "",
                     text_bg: int = 4,
-                    slide_overrides: dict | None = None) -> list[str]:
+                    slide_overrides: dict | None = None,
+                    sub_text_size: int = 0,
+                    accent_color: str = "",
+                    hl_color: str = "",
+                    bg_gradient: str = "",
+                    main_text_size: int = 0,
+                    badge_size: int = 0) -> list[str]:
     """슬라이드 데이터를 받아 PNG 이미지 생성.
 
     Args:
@@ -69,6 +75,12 @@ def generate_slides(slides_data: list[dict], output_dir: str,
         "skipOverlay": skip_overlay,
         "zoneRatio": zone_ratio,
         "textBg": text_bg,
+        "subTextSize": sub_text_size,
+        "accentColor": accent_color,
+        "hlColor": hl_color,
+        "bgGradient": bg_gradient,
+        "mainTextSize": main_text_size,
+        "badgeSize": badge_size,
         "slideOverrides": slide_overrides or {},
     }
 

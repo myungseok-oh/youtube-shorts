@@ -46,6 +46,13 @@ def get_composer_data(job_id: str, script: dict | None = None,
     # composer 편집 상태 로드
     compose_data = load_compose_data(job_id)
 
+    # TTS 음성 목록
+    from pipeline.tts_generator import EDGE_VOICES, GOOGLE_CLOUD_VOICES
+    tts_voices = {
+        "edge-tts": {k: v for k, v in EDGE_VOICES.items()},
+        "google-cloud": {k: v for k, v in GOOGLE_CLOUD_VOICES.items()},
+    }
+
     return {
         "job_id": job_id,
         "slides": slides,
@@ -53,6 +60,7 @@ def get_composer_data(job_id: str, script: dict | None = None,
         "bgm_list": bgm_list,
         "compose_data": compose_data,
         "channel_config": channel_config or {},
+        "tts_voices": tts_voices,
     }
 
 

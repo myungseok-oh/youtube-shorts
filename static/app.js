@@ -785,7 +785,13 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
             ${motion ? `<br><span class="text-blue-400">🎬 ${esc(motion)}</span>` : ""}
           </div>
           <div class="flex gap-1 flex-shrink-0 items-start">
-            <button onclick="event.stopPropagation(); bgToVideo('${jobId}', ${i+1}, this)" class="rounded bg-purple-800 hover:bg-purple-600 text-purple-200 flex-shrink-0 font-bold" title="영상화 (Veo)" style="font-size:10px;padding:2px 5px;line-height:1;">VEO</button>
+            ${(() => {
+              const bgUrl = uploadedBgs[i+1] || "";
+              const isMp4 = bgUrl.includes(".mp4");
+              return isMp4
+                ? `<span class="rounded bg-green-800 text-green-300 flex-shrink-0 font-bold" style="font-size:10px;padding:2px 5px;line-height:1;">MP4</span>`
+                : `<button onclick="event.stopPropagation(); bgToVideo('${jobId}', ${i+1}, this)" class="rounded bg-purple-800 hover:bg-purple-600 text-purple-200 flex-shrink-0 font-bold" title="영상화 (Veo)" style="font-size:10px;padding:2px 5px;line-height:1;">VEO</button>`;
+            })()}
             <button onclick="event.stopPropagation(); copyOnePrompt(this, \`${esc(copyText)}\`)" class="copy-icon-btn text-gray-600 hover:text-white flex-shrink-0" style="font-size:11px;padding:1px 3px;">&#x1F4CB;</button>
           </div>
         </div>
@@ -1343,6 +1349,32 @@ function renderJobDetail(scriptData, stepsData) {
     </div>
     ${wizardFooter}
   `;
+
+  // GPT-SoVITS 참조 음성 목록 로드
+  _loadSovitsRefSelect();
+}
+
+async function _loadSovitsRefSelect() {
+  const select = document.getElementById("sovits-ref-select");
+  if (!select) return;
+  try {
+    const res = await fetch("/api/ref-voices");
+    const voices = await res.json();
+    // 채널 config에서 기본 참조 음성 가져오기
+    const jobCh = channelsCache.find(c => c.jobs?.some(j => j.id === currentDetailJobId));
+    let chCfg = {};
+    try { chCfg = JSON.parse(jobCh?.config || "{}"); } catch {}
+    const defaultRef = chCfg.sovits_ref_voice || "";
+
+    select.innerHTML = '<option value="">-- 선택하세요 --</option>';
+    for (const v of voices) {
+      const opt = document.createElement("option");
+      opt.value = v.filename;
+      opt.textContent = `${v.name} (${v.size_kb} KB)`;
+      if (v.filename === defaultRef) opt.selected = true;
+      select.appendChild(opt);
+    }
+  } catch {}
 }
 
 /* OLD TAB FUNCTIONS REMOVED — replaced by wizard */
@@ -1400,22 +1432,33 @@ function copyPrompt(btn) {
 
 async function bgToVideo(jobId, bgIdx, btn) {
   if (!confirm(`bg_${bgIdx}을 Veo 3.1 Fast로 영상화합니다.\n비용: ~$0.60 (6초)\n진행할까요?`)) return;
+  if (btn.disabled) return;
   const origText = btn.innerHTML;
   btn.innerHTML = "⏳";
   btn.disabled = true;
+
+  // 로딩 표시
+  const statusEl = document.getElementById("sd-status");
+  if (statusEl) statusEl.innerHTML = `<div class="text-xs text-purple-400 mb-2 flex items-center gap-2"><span class="veo-spinner"></span> bg_${bgIdx} Image-to-Video 변환 중... (약 1~2분)</div>`;
+
   try {
     const resp = await fetch(`/api/jobs/${jobId}/bg/${bgIdx}/to-video`, { method: "POST" });
     const data = await resp.json();
     if (resp.ok) {
       btn.innerHTML = "✅";
+      if (statusEl) statusEl.innerHTML = `<div class="text-xs text-green-400 mb-2">bg_${bgIdx} 영상 변환 완료</div>`;
       setTimeout(() => { btn.innerHTML = "🎬"; }, 3000);
+      _lastDetailStatus = null;
+      await refreshJobDetail(jobId);
     } else {
       alert(`영상화 실패: ${data.detail || "unknown error"}`);
       btn.innerHTML = origText;
+      if (statusEl) statusEl.innerHTML = `<div class="text-xs text-red-400 mb-2">bg_${bgIdx} 영상화 실패</div>`;
     }
   } catch (e) {
     alert(`영상화 요청 실패: ${e.message}`);
     btn.innerHTML = origText;
+    if (statusEl) statusEl.innerHTML = "";
   }
   btn.disabled = false;
 }
@@ -1535,6 +1578,7 @@ function toggleNarrationEngine() {
     googleSection.classList.remove("hidden");
   } else if (engine === "gpt-sovits") {
     sovitsSection.classList.remove("hidden");
+    _loadSovitsRefSelect();
   } else {
     edgeSection.classList.remove("hidden");
   }
@@ -1855,6 +1899,38 @@ async function previewChannelVoice() {
   btn.disabled = false;
 }
 
+async function previewSovitsNarration() {
+  const refVoice = document.getElementById("sovits-ref-select").value;
+  const refText = document.getElementById("sovits-ref-text").value.trim();
+  const btn = document.getElementById("btn-preview-sovits");
+  const audio = document.getElementById("voice-preview-popup");
+
+  if (!refVoice) { alert("참조 음성을 선택하세요"); return; }
+
+  btn.textContent = "생성중...";
+  btn.disabled = true;
+
+  try {
+    const res = await fetch("/api/tts/preview-sovits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref_voice: refVoice, ref_text: refText }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "생성 실패");
+    }
+    const blob = await res.blob();
+    audio.src = URL.createObjectURL(blob);
+    audio.classList.remove("hidden");
+    audio.play().catch(() => {});
+  } catch (e) {
+    alert("GPT-SoVITS 미리듣기 실패: " + e.message);
+  }
+  btn.textContent = "미리듣기";
+  btn.disabled = false;
+}
+
 async function previewSovitsVoice() {
   const refVoice = document.getElementById("cs-sovits-ref-voice").value;
   const refText = document.getElementById("cs-sovits-ref-text").value.trim();
@@ -1936,16 +2012,22 @@ async function sdGenerateAuto(jobId) {
   const btn = document.getElementById("btn-sd-auto");
   const statusEl = document.getElementById("sd-status");
 
+  // 즉시 버튼 비활성화 (중복 클릭 방지)
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = "준비중...";
+
   // 프롬프트 확인
   const promptRes = await fetch(`/api/jobs/${jobId}/sd-prompts`);
   const promptData = await promptRes.json();
   if (!promptData.prompts || promptData.prompts.length === 0) {
     statusEl.innerHTML = `<div class="text-xs text-yellow-400 mb-2">먼저 프롬프트를 생성하세요.</div>`;
+    btn.textContent = _bgSource === 'gemini' ? 'Gemini 생성' : _bgSource === 'sd_video' ? 'SD 영상 생성' : 'SD 이미지 생성';
+    btn.disabled = false;
     return;
   }
 
   btn.textContent = "생성중...";
-  btn.disabled = true;
   statusEl.innerHTML = `<div class="text-xs text-emerald-400 mb-2">AI 배경 이미지 생성 중...</div>`;
 
   try {
@@ -1982,11 +2064,18 @@ async function sdGenerateAll(jobId, mode) {
   const btn = document.getElementById(btnId);
   const statusEl = document.getElementById("sd-status");
 
+  // 즉시 버튼 비활성화 (중복 클릭 방지)
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = "준비중...";
+
   // 프롬프트 존재 확인
   const promptRes = await fetch(`/api/jobs/${jobId}/sd-prompts`);
   const promptData = await promptRes.json();
   if (!promptData.prompts || promptData.prompts.length === 0) {
     statusEl.innerHTML = `<div class="text-xs text-yellow-400 mb-2">먼저 [SD 프롬프트 생성] 버튼을 눌러 프롬프트를 생성하세요.</div>`;
+    btn.textContent = mode === "video" ? "SD 영상 생성" : "SD 이미지 생성";
+    btn.disabled = false;
     return;
   }
 
@@ -1995,11 +2084,12 @@ async function sdGenerateAll(jobId, mode) {
   const sdData = await sdRes.json();
   if (!sdData.available) {
     statusEl.innerHTML = `<div class="text-xs text-red-400 mb-2">ComfyUI 서버가 실행 중이 아닙니다 (${sdData.host}:${sdData.port})</div>`;
+    btn.textContent = mode === "video" ? "SD 영상 생성" : "SD 이미지 생성";
+    btn.disabled = false;
     return;
   }
 
   btn.textContent = "생성중...";
-  btn.disabled = true;
   const label = mode === "video" ? "영상" : "이미지";
   statusEl.innerHTML = `<div class="text-xs text-purple-400 mb-2">SD ${label} 일괄 생성 중... (시간이 걸릴 수 있습니다)</div>`;
 
@@ -3456,6 +3546,7 @@ async function fillPromptDefault(textareaId, key) {
 
 let _manualSlides = [];
 let _manualSentences = [];
+let _manualImagePrompts = [];  // JSON 붙여넣기에서 온 원본 image_prompts
 let _manualChannelId = null;
 let _manualCategory = "";
 
@@ -3472,10 +3563,11 @@ function _buildManualPrompt(channelId) {
   const bgMediaType = cfg.bg_media_type || "auto";
   const autoBgSource = cfg.auto_bg_source || "sd_image";
 
-  let prompt = `너는 유튜브 쇼츠 뉴스 제작 전문가다.
+  const channelName = ch ? ch.name : "유튜브 쇼츠";
+  let prompt = `너는 "${channelName}" 유튜브 쇼츠 콘텐츠 제작 전문가다.
 
-사용자가 입력한 뉴스 주제를 기반으로
-유튜브 쇼츠 뉴스를 제작한다.
+사용자가 입력한 주제를 기반으로
+유튜브 쇼츠 영상을 제작한다.
 
 목표 영상 길이: ${targetDuration}초
 `;
@@ -3500,14 +3592,17 @@ ${scriptRules}
     prompt += `
 [대본 규칙]
 
-- 슬라이드: ${targetDuration <= 30 ? '4~6개' : '6~8개'} (closing 포함)
+- 슬라이드: ${targetDuration <= 30 ? '4~6개' : '6~8개'} (closing 제외, 시스템이 자동 추가)
 - 문장: ${targetDuration <= 30 ? '8~12개, 총 160~200자' : '14~20개, 총 200~300자'}
 - 슬라이드 1개당 문장 2~4개 (5개 이상 금지)
+- ★ 배경 1개당 표시 시간: 이미지 ~5초, 영상(video) ~6초
+  - 나레이션 길이를 배경 교체 타이밍에 맞출 것
+  - 한국어 TTS 초당 ~4.5음절 기준
 - 첫 슬라이드: 강력한 훅(Hook) 문장, category에 주제 태그
-- 마지막 슬라이드: bg_type "closing", 나레이션 배정 금지
+- closing 슬라이드는 생성하지 않음 (시스템이 자동 추가)
 - 강조 키워드는 <span class="hl">...</span>으로 감싸기
-- 뉴스 톤 유지 (객관적, 간결), 과장 표현 금지
-- bg_type: photo(장소/사물) | broll(시네마틱) | graph(인포그래픽) | logo(기업 건물) | closing(마지막)
+- 채널 지침의 톤과 스타일을 반드시 따를 것
+- bg_type: photo(장소/사물) | broll(시네마틱) | graph(인포그래픽) | logo(기업 건물)
 - main/sub 텍스트가 이미지 프롬프트로 변환되므로 시각화 가능한 구체적 내용 필수`;
 
     if (fmt === "roundup") {
@@ -3532,11 +3627,14 @@ ${imagePromptStyle}` : ''}
 
 [나레이션 규칙]
 
-1. 슬라이드와 동일한 순서
-2. 한 항목당 1~3문장 (자연스럽게 이어지는 분량)
-3. 전체 나레이션 읽기 시간이 ${targetDuration}초에 맞도록 조절
-4. 자연스러운 뉴스 톤
-5. sentences는 TTS가 읽는 텍스트이므로 HTML 태그 금지, 순수 텍스트만
+1. narration 항목 1개 = image_prompts 항목 1개 (반드시 같은 개수, 1:1 대응)
+2. 전체 나레이션 읽기 시간이 ${targetDuration}초에 맞도록 조절
+3. 채널 지침에 맞는 자연스러운 톤
+4. narration text는 TTS가 읽는 텍스트이므로 HTML 태그 금지, 순수 텍스트만
+5. ★ 나레이션 1항목의 글자 수는 대응하는 배경 표시 시간에 맞출 것:
+   - image 배경(~5초): 20~25자
+   - video 배경(~6초): 25~30자
+   - 12~17자처럼 짧으면 배경과 갭이 생김. 반드시 글자 수 지킬 것
 
 [출력 형식]
 
@@ -3551,34 +3649,66 @@ ${imagePromptStyle}` : ''}
     {
       "bg_type": "${imageStyle === 'photo' || imageStyle === 'anime' ? 'photo' : imageStyle === 'infographic' ? 'graph' : ''}",
       "main_text": "핵심 <span class=\\"hl\\">강조</span> 텍스트",
-      "sub_text": "",
-      "image_prompt_ko": ["한국어 프롬프트1", "한국어 프롬프트2"],
-      "image_prompt_en": ["English prompt 1", "English prompt 2"]
+      "sub_text": ""
     }
   ],
   "narration": [
-    {
-      "slide": 1,
-      "text": ""
-    }
+    { "slide": 1, "text": "첫 번째 배경에 맞는 나레이션 (~5초 분량)" },
+    { "slide": 1, "text": "두 번째 배경에 맞는 나레이션 (~6초 분량)" }
+  ],
+  "image_prompts": [
+    { "slide": 1, "ko": "한국어 장면 묘사", "en": "English prompt 30-60 words", "media": "image", "motion": "" },
+    { "slide": 1, "ko": "같은 슬라이드 두번째 배경", "en": "Different angle prompt", "media": "video", "motion": "gentle pan left to right" }
   ]
 }
 
-category: 속보인 경우에만 "속보", 아니면 주제 태그(예: "경제","정치","코인","테크","사회" 등)
+★ narration 개수 = image_prompts 개수 (같은 slide 번호끼리 순서대로 1:1 대응)
+★ closing 슬라이드는 생성하지 않는다 (시스템이 자동 추가)
 
-image_prompt_ko: 배경 이미지 한국어 프롬프트 (30~50자, 구체적 장면 묘사)
-image_prompt_en: 같은 내용의 영어 프롬프트 (30~60 words, subject+setting+lighting+camera+style 포함)
+[필드 설명]
+- category: 주제를 대표하는 태그 (예: "경제","정치","코인","테크","사회","교양","과학" 등)
+- image_prompts.ko: 배경 이미지 한국어 프롬프트 (30~50자, 구체적 장면 묘사)
+- image_prompts.en: 영어 프롬프트 (30~60 words, subject+setting+lighting+camera+style 포함)
+- image_prompts.media: "image" 또는 "video" — 정적 이미지(~5초) 또는 영상(~6초)
+- image_prompts.motion: video일 때 카메라/피사체 움직임, image일 때 빈 문자열
+
+[media 배치 규칙]
+- 전체 프롬프트 중 25~35%만 "video" (과하면 산만해짐)
+- ★★ graph/overview 타입 슬라이드는 반드시 전부 "image" (video 절대 금지)
+- 같은 슬라이드 내 video는 최대 1개
+- 나레이션 흐름에 맞춰 배치:
+  설명/도입 → image | 행동/움직임/변화 → video | 결론/정리 → image
+
+[motion 작성 규칙 — 장면을 구체적으로 연출]
+★ "slow zoom in", "pan left" 같은 단순 카메라 동작만 쓰지 말 것.
+★ 무엇이 어떻게 움직이는지, 장면이 어떻게 변하는지를 구체적으로 묘사해야 한다.
+
+좋은 예:
+- "steam rising slowly from a coffee cup while camera pushes in closer to the surface"
+- "sunlight gradually shifting across a wooden desk, casting moving shadows over notebooks"
+- "camera slowly orbits around scattered coffee beans as one bean rolls gently to the side"
+- "rain drops sliding down a cafe window glass while blurred city lights glow in background"
+- "person flipping a notebook page while camera dollies forward past the coffee cup"
+
+나쁜 예 (너무 단순 — 금지):
+- "slow zoom in" / "zoom out" / "pan left" / "pan right"
+
+motion 구성 요소 (2~3개 조합할 것):
+1. 카메라 동작: zoom in/out, pan, dolly, crane, orbit, tilt, tracking, push in
+2. 피사체 동작: 물체가 움직이거나 변하는 모습 (흔들림, 흐름, 회전, 떨어짐, 펼쳐짐 등)
+3. 환경 변화: 빛의 이동, 그림자, 연기/김, 바람, 물결 등
+
+- ★ 매번 다른 motion 조합 사용 (같은 패턴 반복 금지)
+- ★ en 프롬프트에도 motion 내용을 자연스럽게 포함할 것
+[배경 프롬프트 개수 규칙]
 ${bgMediaType === "single" ? `
-★ 이미지 프롬프트는 슬라이드당 1개씩만 생성한다.` : bgMediaType === "per-sentence" ? `
-★ 이미지 프롬프트는 슬라이드당 나레이션 문장 수만큼 생성한다.
-  예: 슬라이드에 문장 3개 → image_prompt_ko/en도 3세트 (배열로 제공)
-  각 프롬프트는 서로 다른 앵글/장면으로 시각적 변화를 준다.` : `
-★ 이미지 프롬프트는 슬라이드당 나레이션 문장 수만큼 생성한다. (배경 미디어 타입: auto)
-  예: 슬라이드에 문장 3개 → image_prompt_ko/en도 3세트 (배열로 제공)
-  각 프롬프트는 서로 다른 앵글/장면으로 시각적 변화를 준다.
-  단, 첫 슬라이드는 항상 1개만 생성한다.`}
+★ 슬라이드당 narration 1항목, image_prompts 1개씩만 생성한다.` : `
+★ 슬라이드 나레이션 총 길이에 따라 배경 개수 결정:
+  - ~5초(배경 1개) | ~10초(배경 2개) | ~15초(배경 3개)
+  - 한 슬라이드에 배경 N개 → narration도 N항목 (같은 slide 번호)
+  각 배경 프롬프트는 서로 다른 앵글/장면/스케일로 시각적 변화를 준다.`}
 
-[생성 요청 뉴스 주제]
+[생성 요청 주제]
 
 `;
   return prompt;
@@ -3587,6 +3717,7 @@ ${bgMediaType === "single" ? `
 function openManualModal(channelId) {
   _manualChannelId = channelId;
   _manualCategory = "";
+  _manualImagePrompts = [];
   _manualSlides = [{ main: "", sub: "", bg_type: "photo", image_prompt_ko: "", image_prompt_en: "" }];
   _manualSentences = [{ text: "", slide: 1 }];
   document.getElementById("manual-modal").classList.remove("hidden");
@@ -3635,15 +3766,27 @@ function applyJsonPaste() {
     // top-level category
     _manualCategory = data.category || "";
 
+    // image_prompts (최상위 배열) → 원본 보존 + 슬라이드별 매핑
+    const imgPrompts = Array.isArray(data.image_prompts) ? data.image_prompts : [];
+    _manualImagePrompts = imgPrompts;
+
     // slides
     if (Array.isArray(data.slides) && data.slides.length > 0) {
-      _manualSlides = data.slides.map(s => ({
-        main: s.main_text || s.main || "",
-        sub: s.sub_text || s.sub || "",
-        bg_type: s.bg_type || "photo",
-        image_prompt_ko: s.image_prompt_ko || "",
-        image_prompt_en: s.image_prompt_en || "",
-      }));
+      _manualSlides = data.slides.map((s, i) => {
+        const slideNum = i + 1;
+        // image_prompts에서 이 슬라이드의 프롬프트들 찾기
+        const slidePrompts = imgPrompts.filter(p => p.slide === slideNum);
+        // 첫 번째 프롬프트의 ko/en을 슬라이드에 매핑 (기존 UI 호환)
+        const firstP = slidePrompts[0] || {};
+        return {
+          main: s.main_text || s.main || "",
+          sub: s.sub_text || s.sub || "",
+          bg_type: s.bg_type || "photo",
+          image_prompt_ko: s.image_prompt_ko || firstP.ko || "",
+          image_prompt_en: s.image_prompt_en || firstP.en || "",
+          image_prompts: slidePrompts.length > 0 ? slidePrompts : undefined,
+        };
+      });
     }
 
     // narration
@@ -3702,20 +3845,43 @@ function renderManualModal(channelId) {
                onchange="updateManualSlide(${i}, 'sub', this.value)"
                class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
       </div>
-      <div class="grid grid-cols-2 gap-2 mb-2">
-        <div>
-          <label class="block text-xs text-gray-500 mb-1">이미지 프롬프트 (한)</label>
-          <textarea rows="2" placeholder="배경 이미지 한국어 프롬프트"
-                    onchange="updateManualSlide(${i}, 'image_prompt_ko', this.value)"
-                    class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">${esc(s.image_prompt_ko || '')}</textarea>
-        </div>
-        <div>
-          <label class="block text-xs text-gray-500 mb-1">이미지 프롬프트 (영)</label>
-          <textarea rows="2" placeholder="Background image English prompt"
-                    onchange="updateManualSlide(${i}, 'image_prompt_en', this.value)"
-                    class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">${esc(s.image_prompt_en || '')}</textarea>
-        </div>
-      </div>
+      ${(() => {
+        const slideNum = i + 1;
+        const slidePrompts = _manualImagePrompts.filter(p => p.slide === slideNum);
+        if (slidePrompts.length > 0) {
+          return slidePrompts.map((p, pi) => {
+            const mediaBadge = p.media === 'video'
+              ? '<span class="text-purple-400 font-bold text-[10px] ml-1">VIDEO</span>'
+              : '<span class="text-gray-500 text-[10px] ml-1">IMAGE</span>';
+            return `<div class="grid grid-cols-2 gap-2 mb-1">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">배경 ${pi+1}/${slidePrompts.length} (한)${mediaBadge}</label>
+                <textarea rows="2" onchange="_updateManualPrompt(${slideNum}, ${pi}, 'ko', this.value)"
+                  class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">${esc(p.ko || '')}</textarea>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">배경 ${pi+1}/${slidePrompts.length} (영)</label>
+                <textarea rows="2" onchange="_updateManualPrompt(${slideNum}, ${pi}, 'en', this.value)"
+                  class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">${esc(p.en || '')}</textarea>
+              </div>
+            </div>`;
+          }).join('');
+        }
+        return `<div class="grid grid-cols-2 gap-2 mb-2">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">이미지 프롬프트 (한)</label>
+            <textarea rows="2" placeholder="배경 이미지 한국어 프롬프트"
+                      onchange="updateManualSlide(${i}, 'image_prompt_ko', this.value)"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">${esc(s.image_prompt_ko || '')}</textarea>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">이미지 프롬프트 (영)</label>
+            <textarea rows="2" placeholder="Background image English prompt"
+                      onchange="updateManualSlide(${i}, 'image_prompt_en', this.value)"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">${esc(s.image_prompt_en || '')}</textarea>
+          </div>
+        </div>`;
+      })()}
     </div>
   `).join("");
 
@@ -3800,6 +3966,13 @@ function updateManualSlide(idx, field, value) {
   _manualSlides[idx][field] = value;
 }
 
+function _updateManualPrompt(slideNum, promptIdx, field, value) {
+  const slidePrompts = _manualImagePrompts.filter(p => p.slide === slideNum);
+  if (slidePrompts[promptIdx]) {
+    slidePrompts[promptIdx][field] = value;
+  }
+}
+
 function updateManualSentence(idx, field, value) {
   _manualSentences[idx][field] = value;
 }
@@ -3862,6 +4035,22 @@ async function submitManualJob(channelId) {
     slide: s.slide,
   }));
 
+  // image_prompts 수집: JSON 붙여넣기 원본 우선, 없으면 슬라이드별 단일 프롬프트
+  let imagePrompts = [];
+  if (_manualImagePrompts.length > 0) {
+    imagePrompts = _manualImagePrompts;
+  } else {
+    _manualSlides.forEach((s, i) => {
+      if (s.image_prompt_en) {
+        imagePrompts.push({
+          ko: s.image_prompt_ko || "", en: s.image_prompt_en,
+          media: "image", motion: "",
+          slide: i + 1,
+        });
+      }
+    });
+  }
+
   const scriptJson = {
     news_date: newsDate,
     youtube_title: ytTitle,
@@ -3878,6 +4067,7 @@ async function submitManualJob(channelId) {
         channel_id: channelId,
         topic: topic,
         script_json: scriptJson,
+        image_prompts: imagePrompts.length > 0 ? imagePrompts : undefined,
       }),
     });
     if (!res.ok) {

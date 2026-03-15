@@ -282,10 +282,10 @@ function renderPreview() {
       ${subText ? `<div class="overlay-sub" style="font-size:${subSize}px; color:${subColor};">${subText}</div>` : ""}
       ${!isHidden ? `
         <div class="el-rotate" onmousedown="startOverlayRotate(event)">↻</div>
-        <div class="el-resize el-r-tl" onmousedown="startOverlayResize(event)"></div>
-        <div class="el-resize el-r-tr" onmousedown="startOverlayResize(event)"></div>
-        <div class="el-resize el-r-bl" onmousedown="startOverlayResize(event)"></div>
-        <div class="el-resize el-r-br" onmousedown="startOverlayResize(event)"></div>
+        <div class="el-resize el-r-tl" onmousedown="startOverlayResize(event, 'tl')"></div>
+        <div class="el-resize el-r-tr" onmousedown="startOverlayResize(event, 'tr')"></div>
+        <div class="el-resize el-r-bl" onmousedown="startOverlayResize(event, 'bl')"></div>
+        <div class="el-resize el-r-br" onmousedown="startOverlayResize(event, 'br')"></div>
       ` : ''}
     </div>
   `;
@@ -304,10 +304,10 @@ function renderPreview() {
       style="left:${ftX}px;top:${ftY}px;font-size:${ftSize}px;color:${ft.color || '#ffffff'};font-family:'${ftFont}',sans-serif;transform:translate(-50%,-50%) rotate(${ftRot}deg);"
       onmousedown="startFreeTextDrag(event, ${ftIdx})">${_esc(ft.text)}
       <div class="el-rotate" onmousedown="startElementRotate(event, 'freeText', ${ftIdx})">↻</div>
-      <div class="el-resize el-r-tl" onmousedown="startFreeTextResize(event, ${ftIdx})"></div>
-      <div class="el-resize el-r-tr" onmousedown="startFreeTextResize(event, ${ftIdx})"></div>
-      <div class="el-resize el-r-bl" onmousedown="startFreeTextResize(event, ${ftIdx})"></div>
-      <div class="el-resize el-r-br" onmousedown="startFreeTextResize(event, ${ftIdx})"></div>
+      <div class="el-resize el-r-tl" onmousedown="startFreeTextResize(event, ${ftIdx}, 'tl')"></div>
+      <div class="el-resize el-r-tr" onmousedown="startFreeTextResize(event, ${ftIdx}, 'tr')"></div>
+      <div class="el-resize el-r-bl" onmousedown="startFreeTextResize(event, ${ftIdx}, 'bl')"></div>
+      <div class="el-resize el-r-br" onmousedown="startFreeTextResize(event, ${ftIdx}, 'br')"></div>
     </div>`;
   });
 
@@ -339,10 +339,10 @@ function renderPreview() {
       onmousedown="startElementDrag(event, ${eIdx})">
       ${inner}
       <div class="el-rotate" onmousedown="startElementRotate(event, 'element', ${eIdx})">↻</div>
-      <div class="el-resize el-r-tl" onmousedown="startElementResize(event, ${eIdx})"></div>
-      <div class="el-resize el-r-tr" onmousedown="startElementResize(event, ${eIdx})"></div>
-      <div class="el-resize el-r-bl" onmousedown="startElementResize(event, ${eIdx})"></div>
-      <div class="el-resize el-r-br" onmousedown="startElementResize(event, ${eIdx})"></div>
+      <div class="el-resize el-r-tl" onmousedown="startElementResize(event, ${eIdx}, 'tl')"></div>
+      <div class="el-resize el-r-tr" onmousedown="startElementResize(event, ${eIdx}, 'tr')"></div>
+      <div class="el-resize el-r-bl" onmousedown="startElementResize(event, ${eIdx}, 'bl')"></div>
+      <div class="el-resize el-r-br" onmousedown="startElementResize(event, ${eIdx}, 'br')"></div>
     </div>`;
   });
 
@@ -425,7 +425,7 @@ function startOverlayRotate(e) {
   document.addEventListener("mouseup", onUp);
 }
 
-function startOverlayResize(e) {
+function startOverlayResize(e, corner) {
   e.preventDefault();
   e.stopPropagation();
   const sl = getSelectedSlide();
@@ -434,24 +434,34 @@ function startOverlayResize(e) {
   const overlay = document.getElementById("text-overlay-drag");
   if (!overlay) return;
 
-  const rect = overlay.getBoundingClientRect();
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  const startDist = Math.hypot(e.clientX - cx, e.clientY - cy);
+  const rot = (ovr.rotation || 0) * Math.PI / 180;
+  const cosR = Math.cos(rot), sinR = Math.sin(rot);
+  const startX = e.clientX, startY = e.clientY;
   const origW = ovr.maxWidth || 1000;
   const origMainSize = ovr.mainSize || 100;
   const origSubSize = ovr.subSize || 52;
 
   function onMove(e2) {
-    const dist = Math.hypot(e2.clientX - cx, e2.clientY - cy);
-    const scale = dist / (startDist || 1);
+    // 마우스 이동량을 로컬 좌표계(회전 해제)로 변환
+    const dx = (e2.clientX - startX) / SCALE;
+    const dy = (e2.clientY - startY) / SCALE;
+    const localDx = dx * cosR + dy * sinR;
+    const localDy = -dx * sinR + dy * cosR;
 
-    const newW = Math.max(200, Math.round(origW * scale));
+    // 코너 방향에 따라 부호 결정
+    const sx = corner.includes('r') ? 1 : -1;
+    const sy = corner.includes('b') ? 1 : -1;
+
+    // 가로: maxWidth 조절
+    const scaleX = Math.max(0.2, (origW + sx * localDx * 2) / origW);
+    const newW = Math.max(200, Math.round(origW * scaleX));
     setOverride(sl.num, "maxWidth", newW);
     overlay.style.width = `${newW * SCALE}px`;
 
-    const newMain = Math.round(Math.max(24, Math.min(200, origMainSize * scale)));
-    const newSub = Math.round(Math.max(16, Math.min(120, origSubSize * scale)));
+    // 세로: fontSize 조절
+    const scaleY = Math.max(0.2, 1 + sy * localDy * 2 / (origMainSize * 4));
+    const newMain = Math.round(Math.max(24, Math.min(200, origMainSize * scaleY)));
+    const newSub = Math.round(Math.max(16, Math.min(120, origSubSize * scaleY)));
     setOverride(sl.num, "mainSize", newMain);
     setOverride(sl.num, "subSize", newSub);
 
@@ -552,12 +562,13 @@ async function generateTTS(slideNum) {
   if (status) status.textContent = "TTS 생성 중...";
 
   const engine = document.getElementById("tts-engine")?.value || "edge-tts";
+  const voice = document.getElementById("tts-voice")?.value || "";
 
   try {
     const r = await fetch(`/api/jobs/${JOB_ID}/composer/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slide_num: slideNum, tts_engine: engine }),
+      body: JSON.stringify({ slide_num: slideNum, tts_engine: engine, tts_voice: voice }),
     });
     const data = await r.json();
     if (data.ok) {
@@ -583,12 +594,13 @@ async function generateAllTTS() {
   if (status) status.textContent = "전체 TTS 생성 중...";
 
   const engine = document.getElementById("tts-engine")?.value || "edge-tts";
+  const voice = document.getElementById("tts-voice")?.value || "";
 
   try {
     const r = await fetch(`/api/jobs/${JOB_ID}/composer/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tts_engine: engine }),  // slide_num 없으면 전체
+      body: JSON.stringify({ tts_engine: engine, tts_voice: voice }),  // slide_num 없으면 전체
     });
     const data = await r.json();
     if (data.ok) {
@@ -652,6 +664,7 @@ function previewAudio(path, btnEl) {
   if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
   _previewAudioPath = path;
   _playingAudio = new Audio(path);
+  _playingAudio.volume = (composeState.narr_volume !== undefined ? composeState.narr_volume : 100) / 100;
   _playingAudio.play().catch(() => {});
   if (btnEl) btnEl.textContent = '■';
   _playingAudio.addEventListener("ended", () => {
@@ -758,10 +771,20 @@ async function playSlideAudio() {
 function _playAudioChain(audioList, idx, onDone) {
   if (!_previewing || idx >= audioList.length) { if (onDone) onDone(); return; }
   _playingAudio = new Audio(audioList[idx].path);
+  _playingAudio.volume = (composeState.narr_volume !== undefined ? composeState.narr_volume : 100) / 100;
   _playingAudio.play().catch(() => {});
   _playingAudio.addEventListener("ended", () => {
     _playAudioChain(audioList, idx + 1, onDone);
   });
+}
+
+function updateNarrVolume(val) {
+  composeState.narr_volume = val;
+  _dirty = true;
+  const label = document.getElementById("narr-vol-val");
+  if (label) label.textContent = val + "%";
+  // 현재 재생 중인 나레이션에도 즉시 적용
+  if (_playingAudio) _playingAudio.volume = val / 100;
 }
 
 // 전체 미리보기: 슬라이드 순서대로 배경+오버레이+나레이션 재생
@@ -1455,13 +1478,24 @@ function renderTabNarration() {
   }
 
   // TTS
+  const curVoice = chCfg.tts_voice || chCfg.google_voice || "";
+  const voiceMap = composerData.tts_voices || {};
+
   html += `<div class="ctrl-section" style="margin-top:10px;">
     <div class="ctrl-row"><span class="ctrl-label">TTS</span>
-      <select id="tts-engine" class="ctrl-input" style="font-size:10px;">
+      <select id="tts-engine" class="ctrl-input" style="font-size:10px;" onchange="_updateVoiceSelect()">
         <option value="edge-tts" ${curEngine === 'edge-tts' ? 'selected' : ''}>Edge TTS</option>
         <option value="google-cloud" ${curEngine === 'google-cloud' ? 'selected' : ''}>Google Cloud</option>
         <option value="gpt-sovits" ${curEngine === 'gpt-sovits' ? 'selected' : ''}>GPT-SoVITS</option>
       </select>
+    </div>
+    <div class="ctrl-row" id="voice-row" style="margin-top:4px;"><span class="ctrl-label">음성</span>
+      <select id="tts-voice" class="ctrl-input" style="font-size:10px;"></select>
+    </div>
+    <div class="ctrl-row" style="margin-top:4px;"><span class="ctrl-label">볼륨</span>
+      <input type="range" min="0" max="100" value="${(composeState.narr_volume !== undefined ? composeState.narr_volume : 100)}"
+        style="flex:1;accent-color:#34d399;" oninput="updateNarrVolume(+this.value)" title="나레이션 볼륨">
+      <span id="narr-vol-val" style="font-size:9px;color:#9ca3af;width:28px;text-align:right;">${(composeState.narr_volume !== undefined ? composeState.narr_volume : 100)}%</span>
     </div>
     <div style="display:flex;gap:4px;margin-top:4px;">
       <button onclick="generateTTS(${sl.num})" id="btn-gen-tts"
@@ -1480,6 +1514,68 @@ function renderTabNarration() {
   html += `<div id="tts-status" style="font-size:9px;color:#6b7280;margin-top:4px;"></div>`;
 
   el.innerHTML = html;
+  _updateVoiceSelect();
+}
+
+const _FALLBACK_VOICES = {
+  "edge-tts": {
+    "ko-KR-SunHiNeural": "\uC120\uD788 (\uC5EC\uC131)",
+    "ko-KR-HyunsuNeural": "\uD604\uC218 (\uB0A8\uC131)",
+    "ko-KR-HyunsuMultilingualNeural": "\uD604\uC218 \uBA40\uD2F0\uB9C1\uAD00 (\uB0A8\uC131)",
+    "ko-KR-InJoonNeural": "\uC778\uC900 (\uB0A8\uC131)",
+  },
+  "google-cloud": {
+    "ko-KR-Wavenet-A": "Wavenet A (\uC5EC\uC131)",
+    "ko-KR-Wavenet-B": "Wavenet B (\uC5EC\uC131)",
+    "ko-KR-Wavenet-C": "Wavenet C (\uB0A8\uC131)",
+    "ko-KR-Wavenet-D": "Wavenet D (\uB0A8\uC131)",
+    "ko-KR-Neural2-A": "Neural2 A (\uC5EC\uC131)",
+    "ko-KR-Neural2-B": "Neural2 B (\uC5EC\uC131)",
+    "ko-KR-Neural2-C": "Neural2 C (\uB0A8\uC131)",
+  },
+};
+
+function _updateVoiceSelect() {
+  const engineSel = document.getElementById("tts-engine");
+  const voiceSel = document.getElementById("tts-voice");
+  const voiceRow = document.getElementById("voice-row");
+  if (!engineSel || !voiceSel) return;
+
+  const engine = engineSel.value;
+  const serverVoices = composerData.tts_voices || {};
+  const voices = serverVoices[engine] || _FALLBACK_VOICES[engine] || {};
+  const chCfg = composerData.channel_config || {};
+
+  // GPT-SoVITS → 참조 음성 목록 로드
+  if (engine === "gpt-sovits") {
+    voiceRow.style.display = "";
+    _loadSovitsVoices(voiceSel, chCfg.sovits_ref_voice || "");
+    return;
+  }
+  voiceRow.style.display = "";
+
+  // 채널 기본 음성
+  const defaultVoice = engine === "google-cloud"
+    ? (chCfg.google_voice || "ko-KR-Wavenet-A")
+    : (chCfg.tts_voice || "ko-KR-SunHiNeural");
+
+  let opts = "";
+  for (const [key, label] of Object.entries(voices)) {
+    opts += `<option value="${key}" ${key === defaultVoice ? 'selected' : ''}>${label}</option>`;
+  }
+  voiceSel.innerHTML = opts;
+}
+
+async function _loadSovitsVoices(selectEl, defaultRef) {
+  try {
+    const res = await fetch("/api/ref-voices");
+    const voices = await res.json();
+    let opts = '<option value="">-- \uC120\uD0DD\uD558\uC138\uC694 --</option>';
+    for (const v of voices) {
+      opts += `<option value="${v.filename}" ${v.filename === defaultRef ? 'selected' : ''}>${v.name} (${v.size_kb} KB)</option>`;
+    }
+    selectEl.innerHTML = opts;
+  } catch {}
 }
 
 // ─── SFX Drag & Drop ───
@@ -1930,23 +2026,42 @@ function startElementRotate(e, type, idx) {
   document.addEventListener("mouseup", onUp);
 }
 
-function startElementResize(e, idx) {
+function startElementResize(e, idx, corner) {
   e.preventDefault();
   e.stopPropagation();
   const elem = composeState.elements[idx];
   if (!elem) return;
-  const box = e.target.parentElement;
-  const rect = box.getBoundingClientRect();
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  const startDist = Math.hypot(e.clientX - cx, e.clientY - cy);
+
   const origW = elem.width || 300, origH = elem.height || 250;
-  const aspect = origW / origH;
+  const origX = elem.x || 540, origY = elem.y || 500;
+  const rot = (elem.rotation || 0) * Math.PI / 180;
+  const cosR = Math.cos(rot), sinR = Math.sin(rot);
+  const startMX = e.clientX, startMY = e.clientY;
+
+  // 코너 방향: r=+1, l=-1 / b=+1, t=-1
+  const sx = corner.includes('r') ? 1 : -1;
+  const sy = corner.includes('b') ? 1 : -1;
+
   function onMove(e2) {
-    const dist = Math.hypot(e2.clientX - cx, e2.clientY - cy);
-    const scale = dist / (startDist || 1);
-    elem.width = Math.max(50, Math.round(origW * scale));
-    elem.height = Math.max(50, Math.round(elem.width / aspect));
+    // 마우스 이동량 → 데이터 좌표 변환
+    const dx = (e2.clientX - startMX) / SCALE;
+    const dy = (e2.clientY - startMY) / SCALE;
+
+    // 로컬 좌표로 변환 (회전 보정)
+    const localDx = dx * cosR + dy * sinR;
+    const localDy = -dx * sinR + dy * cosR;
+
+    const newW = Math.max(50, Math.round(origW + sx * localDx));
+    const newH = Math.max(50, Math.round(origH + sy * localDy));
+    const dW = newW - origW, dH = newH - origH;
+
+    // 중심 이동: 앵커(반대 코너) 고정을 위해 변화량의 절반만큼 이동
+    const shiftLX = sx * dW / 2, shiftLY = sy * dH / 2;
+    elem.x = Math.round(origX + (shiftLX * cosR - shiftLY * sinR));
+    elem.y = Math.round(origY + (shiftLX * sinR + shiftLY * cosR));
+    elem.width = newW;
+    elem.height = newH;
+
     _dirty = true;
     renderPreview();
   }
@@ -1984,22 +2099,28 @@ function startFreeTextDrag(e, ftIdx) {
   document.addEventListener("mouseup", onUp);
 }
 
-function startFreeTextResize(e, ftIdx) {
+function startFreeTextResize(e, ftIdx, corner) {
   e.preventDefault();
   e.stopPropagation();
   const ft = composeState.freeTexts[ftIdx];
   if (!ft) return;
-  const box = e.target.parentElement;
-  const rect = box.getBoundingClientRect();
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  const startDist = Math.hypot(e.clientX - cx, e.clientY - cy);
+
+  const rot = (ft.rotation || 0) * Math.PI / 180;
+  const cosR = Math.cos(rot), sinR = Math.sin(rot);
+  const startX = e.clientX, startY = e.clientY;
   const origSize = ft.size || 48;
 
+  // 코너 방향
+  const sy = corner.includes('b') ? 1 : -1;
+
   function onMove(e2) {
-    const dist = Math.hypot(e2.clientX - cx, e2.clientY - cy);
-    const scale = dist / (startDist || 1);
-    ft.size = Math.max(12, Math.min(200, Math.round(origSize * scale)));
+    const dx = (e2.clientX - startX) / SCALE;
+    const dy = (e2.clientY - startY) / SCALE;
+    // 로컬 좌표로 변환 (회전 보정)
+    const localDy = -dx * sinR + dy * cosR;
+    // 세로 이동량으로 폰트 크기 조절
+    const scaleY = Math.max(0.25, 1 + sy * localDy / (origSize * 2));
+    ft.size = Math.max(12, Math.min(200, Math.round(origSize * scaleY)));
     _dirty = true;
     renderPreview();
   }
