@@ -65,6 +65,8 @@ const bgGrad1 = _bgGrad[1] || '#141b2d';
 const bgGrad2 = _bgGrad[2] || '#1a2238';
 const _mainTextSize = data.mainTextSize || 0;
 const _badgeSize = data.badgeSize || 0;
+const _showBadge = data.showBadge !== false;      // 기본 true, false면 뱃지 숨김
+const _showSlideNum = data.showSlideNum || false;  // 기본 false, 라운드업만 true
 
 function bgInfo(index) {
   const bg = backgrounds[index];
@@ -108,7 +110,7 @@ function sourceLabel(source) {
 }
 
 function badgeHTML(category, style = '') {
-  if (!category) return '';
+  if (!category || !_showBadge) return '';
   const isBreaking = category === '속보' || category === '긴급';
   const cls = isBreaking ? 'badge breaking' : 'badge';
   const s = style ? ` style="${style}"` : '';
@@ -279,7 +281,7 @@ function buildCustomContent(slide, accent, bgImg, progressPct, index, bgSource, 
       ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
     </div>
   </div>
-  <div class="slide-num">${String(index).padStart(2, '0')}</div>
+  ${_showSlideNum ? `<div class="slide-num">${String(index).padStart(2, '0')}</div>` : ''}
   ${sourceLabel(bgSource)}
   ${progressBar(progressPct)}
 </body></html>`;
@@ -698,7 +700,7 @@ function buildContent(slide, accent, bgImg, progressPct, index, bgSource) {
       ${slide.sub ? `<div class="sub-text">${slide.sub}</div>` : ''}
     </div>
   </div>
-  <div class="slide-num">${String(index).padStart(2, '0')}</div>
+  ${_showSlideNum ? `<div class="slide-num">${String(index).padStart(2, '0')}</div>` : ''}
   ${sourceLabel(bgSource)}
   ${progressBar(progressPct)}
 </body></html>`;
@@ -898,7 +900,7 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   <div class="bg-overlay"></div>
   ${grainSVG()}
   <div class="content-wrap">
-    ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+    ${badgeHTML(slide.category)}
     <div class="main-title">${slide.main}</div>
     <div class="accent-bar"></div>
     <div class="headline-list">
@@ -953,7 +955,7 @@ function buildFullscreenOpening(slide, accent, bgData, progressPct) {
     // full layout (기본) — 전체 배경 위에 중앙 텍스트
     bodyContent = `
       <div class="text-zone" style="height:100%;justify-content:center;">
-        ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+        ${badgeHTML(slide.category)}
         ${textHTML}
       </div>
     `;
@@ -1008,7 +1010,7 @@ function buildFullscreenContent(slide, accent, bgData, progressPct, index) {
     // full layout (기본) — 전체 배경 위에 중앙 텍스트
     bodyContent = `
       <div class="text-zone" style="height:100%;justify-content:center;">
-        ${slide.category ? `<div class="badge">${slide.category}</div>` : ''}
+        ${badgeHTML(slide.category)}
         ${textHTML}
       </div>
     `;
@@ -1023,7 +1025,7 @@ function buildFullscreenContent(slide, accent, bgData, progressPct, index) {
   <div class="corner-tl"></div>
   <div class="corner-br"></div>
   ${bodyContent}
-  <div class="slide-num">${String(index).padStart(2, '0')}</div>
+  ${_showSlideNum ? `<div class="slide-num">${String(index).padStart(2, '0')}</div>` : ''}
   ${sourceLabel(bgData.source)}
 </body></html>`;
 }
@@ -1125,7 +1127,7 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
   <div class="corner-tl"></div>
   <div class="corner-br"></div>
   ${bodyContent}
-  <div class="slide-num">${String(index).padStart(2, '0')}</div>
+  ${_showSlideNum ? `<div class="slide-num">${String(index).padStart(2, '0')}</div>` : ''}
   ${sourceLabel(bgData.source)}
 </body></html>`;
 }

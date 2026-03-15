@@ -55,16 +55,21 @@
 - Phase 8 (GPT-SoVITS 다양한 음성): **완료** (파이프라인 통합, 참조 음성 지원)
 
 ## 파이프라인 단계
-1. news_search → 2. script → 3. slides (배경+슬라이드) → 4. tts (또는 나레이션 업로드) → 5. render → 6. upload
-- QA 단계 제거됨
+1. synopsis → 2. visual_plan → 3. script → 4. slides (배경+슬라이드) → 5. tts (또는 나레이션 업로드) → 6. render → 7. upload
 
 ## 파이프라인 흐름 (2단계 실행)
 
-### Phase A: 대본 생성 (병렬)
+### Phase A: 비주얼 주도 대본 생성 (병렬)
 ```
 채널 실행 → parse_request() → 주제 리스트
-         → 주제별 Job 생성 → generate_script() → script_json → waiting_slides
+         → 주제별 Job 생성
+         → generate_synopsis() [Sonnet, 웹검색] → 시놉시스 + 팩트 수집
+         → generate_visual_plan() [Opus, 웹검색X] → 비주얼 플랜 (이미지/영상 프롬프트 + duration)
+         → generate_script_from_plan() [Sonnet, 웹검색X] → script_json (비주얼에 맞춘 대본)
+         → waiting_slides
 ```
+- 비주얼이 영상을 주도: 이미지/영상 구성을 먼저 결정하고 대본이 따라감
+- image 씬: 5초 또는 10초, video 씬: ~6초 (duration에 맞춘 나레이션 분량)
 - 24시간 내 동일 주제 중복 필터링
 - 주제 간 다른 분야 강제 (프롬프트 강화)
 

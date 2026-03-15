@@ -22,7 +22,11 @@ if sys.stderr and hasattr(sys.stderr, 'encoding') and sys.stderr.encoding and sy
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 from pipeline import config
-from pipeline.agent import generate_script, generate_image_prompts
+from pipeline.agent import (
+    generate_script, generate_image_prompts,
+    generate_synopsis, generate_visual_plan, generate_script_from_plan,
+    generate_all_in_one,
+)
 from pipeline.tts_generator import generate_audio, GOOGLE_CLOUD_VOICES
 from pipeline.slide_generator import generate_slides, generate_thumbnail
 from pipeline.sync_engine import build_timeline, merge_slide_audio
@@ -51,14 +55,17 @@ def _prompt_en(p) -> str:
 
 
 STEP_DEFINITIONS = [
-    {"name": "news_search", "order": 1, "label": "뉴스 검색"},
-    {"name": "script",      "order": 2, "label": "대본 작성"},
-    {"name": "slides",      "order": 3, "label": "슬라이드"},
-    {"name": "tts",          "order": 4, "label": "TTS"},
-    {"name": "render",       "order": 5, "label": "영상 합성"},
-    {"name": "qa",           "order": 6, "label": "QA 검토"},
+    {"name": "synopsis",     "order": 1, "label": "시놉시스"},
+    {"name": "visual_plan",  "order": 2, "label": "비주얼 플랜"},
+    {"name": "script",       "order": 3, "label": "대본 작성"},
+    {"name": "slides",       "order": 4, "label": "슬라이드"},
+    {"name": "tts",          "order": 5, "label": "TTS"},
+    {"name": "render",       "order": 6, "label": "영상 합성"},
     {"name": "upload",       "order": 7, "label": "업로드"},
 ]
+
+# Phase A step names (for retry/recover logic)
+PHASE_A_STEPS = ("synopsis", "visual_plan", "script")
 
 MAX_QA_RETRIES = 2
 
@@ -144,7 +151,7 @@ def _build_sovits_cfg(ch_config: dict, channel_id: str) -> dict:
 # ─── Phase A: 뉴스 검색 + 대본 작성 → waiting_slides ───
 
 def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
-    """Phase A: news_search + script → status waiting_slides"""
+    """Phase A v2: synopsis → visual_plan → script → waiting_slides"""
     try:
         db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
                     ["running", _now(), job_id])
@@ -183,7 +190,9 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
                              "인트로에서 이미 한 인사/소개를 반복하지 마세요.")
 
         # 아웃트로가 있으면 나래이션에 마무리 멘트 금지
+        has_outro = bool(ch_config.get("outro_narration", "").strip())
         if _find_channel_image(channel_id, "outro_bg"):
+            has_outro = True
             instructions += ("\n\n★ 이 채널은 별도 아웃트로 영상이 있습니다. "
                              "나레이션(sentences)에 마무리 인사, 구독/좋아요 요청, "
                              "'~였습니다' 같은 엔딩 멘트를 절대 포함하지 마세요. "
@@ -201,63 +210,56 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
                 print(f"[runner] market_crawler failed, skipping: {e}")
 
         if script_json is None:
-            _update_step(db, job_id, "news_search", "running")
+            target_duration = int(ch_config.get("target_duration", 60))
+
+            # ── 통합 1회 호출: 시놉시스 + 비주얼 플랜 + 대본 ──
+            _update_step(db, job_id, "synopsis", "running")
             try:
-                has_outro = bool(ch_config.get("outro_narration", "").strip())
-                use_subagent = bool(ch_config.get("use_subagent", False))
-                script_json = generate_script(topic, instructions, brand,
-                                              channel_format=channel_format,
-                                              script_rules=script_rules,
-                                              roundup_rules=roundup_rules,
-                                              has_outro=has_outro,
-                                              use_subagent=use_subagent)
-
-                _update_step(db, job_id, "news_search", "completed",
-                             output_data={"message": "뉴스 검색 완료"})
-                _update_step(db, job_id, "script", "completed",
-                             output_data={
-                                 "sentences": len(script_json.get("sentences", [])),
-                                 "slides": len(script_json.get("slides", [])),
-                             })
-
-                # topic을 실제 제목으로 업데이트
-                _yt_title = script_json.get("youtube_title", "").strip()
-                _real_topic = _yt_title or script_json.get("title", "").strip() or topic
-                db.execute(
-                    "UPDATE jobs SET script_json = ?, topic = ?, updated_at = ? WHERE id = ?",
-                    [json.dumps(script_json, ensure_ascii=False), _real_topic, _now(), job_id]
+                result = generate_all_in_one(
+                    topic, instructions, brand,
+                    channel_format=channel_format,
+                    has_outro=has_outro,
+                    target_duration=target_duration,
+                    prompt_style=image_prompt_style,
+                    layout=ch_config.get("slide_layout", "full"),
+                    image_style=ch_config.get("image_style", "mixed"),
+                    scene_references=image_scene_references,
+                    bg_display_mode=ch_config.get("bg_display_mode", "zone"),
+                    bg_media_type=ch_config.get("bg_media_type", "auto"),
+                    script_rules=script_rules,
+                    roundup_rules=roundup_rules,
                 )
-
             except Exception as e:
-                _update_step(db, job_id, "news_search", "failed", error_msg=str(e))
+                _update_step(db, job_id, "synopsis", "failed", error_msg=str(e))
                 raise
-        else:
-            _update_step(db, job_id, "news_search", "skipped",
-                         output_data={"message": "script 직접 제공"})
-            _update_step(db, job_id, "script", "skipped",
-                         output_data={"message": "script 직접 제공"})
 
-        # 이미지 프롬프트 생성 (자동/수동 대본 모두) — 실패해도 Phase A 계속 진행
-        try:
-            slides = script_json.get("slides", [])
-            slide_layout_a = ch_config.get("slide_layout", "full")
-            image_style_a = ch_config.get("image_style", "mixed")
+            synopsis = result.get("synopsis", {})
+            visual_plan = result.get("visual_plan", [])
+            script_json = result.get("script", {})
 
-            _existing_a = [
-                {"ko": s.get("image_prompt_ko", ""), "en": s.get("image_prompt_en", "")}
-                for s in slides if s.get("bg_type") != "closing"
-            ]
-            if all(p.get("en") for p in _existing_a):
-                image_prompts = _existing_a
-                print(f"[runner] image_prompt exists in slides ({len(_existing_a)})")
-            else:
-                bg_display_mode_a = ch_config.get("bg_display_mode", "zone")
-                image_prompts = generate_image_prompts(topic, slides, prompt_style=image_prompt_style, layout=slide_layout_a, image_style=image_style_a, scene_references=image_scene_references, bg_display_mode=bg_display_mode_a, sentences=script_json.get("sentences", []), bg_media_type=ch_config.get("bg_media_type", "auto"), auto_bg_source=ch_config.get("auto_bg_source", ""), first_slide_single_bg=ch_config.get("first_slide_single_bg", False))
-        except Exception as e:
-            print(f"[runner] image prompt generation failed (non-fatal): {e}")
-            image_prompts = None
+            # 3개 step 모두 완료 처리
+            _update_step(db, job_id, "synopsis", "completed",
+                         output_data={
+                             "scenes": len(synopsis.get("scenes", [])),
+                             "facts": len(synopsis.get("news_facts", [])),
+                         })
+            _update_step(db, job_id, "visual_plan", "completed",
+                         output_data={"scenes": len(visual_plan)})
+            _update_step(db, job_id, "script", "completed",
+                         output_data={
+                             "sentences": len(script_json.get("sentences", [])),
+                             "slides": len(script_json.get("slides", [])),
+                         })
 
-        if image_prompts:
+            # topic을 youtube_title로 업데이트
+            _yt_title = script_json.get("youtube_title", "").strip()
+            _real_topic = _yt_title or synopsis.get("youtube_title", "").strip() or topic
+            db.execute(
+                "UPDATE jobs SET script_json = ?, topic = ?, updated_at = ? WHERE id = ?",
+                [json.dumps(script_json, ensure_ascii=False), _real_topic, _now(), job_id]
+            )
+
+            # ── meta_json에 synopsis + visual_plan + image_prompts 저장 ──
             meta = {}
             existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
             if existing and existing.get("meta_json"):
@@ -265,11 +267,35 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
                     meta = json.loads(existing["meta_json"])
                 except (json.JSONDecodeError, TypeError):
                     pass
+
+            meta["synopsis"] = synopsis
+            meta["visual_plan"] = visual_plan
+
+            # visual_plan → image_prompts 변환 (Phase B 호환)
+            image_prompts = []
+            for vp in visual_plan:
+                image_prompts.append({
+                    "ko": vp.get("ko", ""),
+                    "en": vp.get("en", ""),
+                    "motion": vp.get("motion", ""),
+                    "media": vp.get("media", "image"),
+                    "slide": vp.get("scene", 1),
+                })
             meta["image_prompts"] = image_prompts
+
             db.execute(
                 "UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
                 [json.dumps(meta, ensure_ascii=False), _now(), job_id]
             )
+
+        else:
+            # script_json 직접 제공 (수동 대본)
+            _update_step(db, job_id, "synopsis", "skipped",
+                         output_data={"message": "script 직접 제공"})
+            _update_step(db, job_id, "visual_plan", "skipped",
+                         output_data={"message": "script 직접 제공"})
+            _update_step(db, job_id, "script", "skipped",
+                         output_data={"message": "script 직접 제공"})
 
         # Phase A 완료 → waiting_slides
         db.execute(
@@ -595,6 +621,10 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
             except Exception:
                 pass
 
+            _ch_format_b = ch_config_pb.get("format", "single")
+            _show_badge_b = ch_config_pb.get("show_badge", True)
+            if isinstance(_show_badge_b, str):
+                _show_badge_b = _show_badge_b.lower() != "false"
             slide_paths = generate_slides(slides_data, dirs["image"],
                                           date=date_str, brand=brand,
                                           backgrounds=bg_results,
@@ -608,7 +638,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                           hl_color=ch_config_pb.get("slide_hl_color", ""),
                                           bg_gradient=ch_config_pb.get("slide_bg_gradient", ""),
                                           main_text_size=ch_config_pb.get("slide_main_text_size", 0),
-                                          badge_size=ch_config_pb.get("slide_badge_size", 0))
+                                          badge_size=ch_config_pb.get("slide_badge_size", 0),
+                                          show_badge=_show_badge_b,
+                                          channel_format=_ch_format_b)
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,
@@ -766,6 +798,13 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                     if sfx_cfg is None:
                         sfx_cfg = dict(_ch_cfg_render)
                     sfx_cfg["narr_volume"] = _cd["narr_volume"]
+
+                # compose_data에서 전환 효과 오버라이드
+                _tr = _cd.get("transition", {})
+                if _tr.get("effect"):
+                    _ch_cfg_render["crossfade_transition"] = _tr["effect"]
+                if _tr.get("duration") is not None:
+                    _ch_cfg_render["crossfade_duration"] = _tr["duration"]
 
                 # SFX/BGM은 인트로 wrap 후 별도 적용 (타이밍 오프셋 보정)
                 concat_cfg = dict(_ch_cfg_render)
@@ -1605,6 +1644,10 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
             # 업로드/생성된 배경 로드 → 슬라이드 렌더
             bg_results = _load_uploaded_backgrounds(dirs["bg"], len(slides_data),
                                                     source=auto_bg_source)
+            _ch_format_fp = ch_config_fp.get("format", "single")
+            _show_badge_fp = ch_config_fp.get("show_badge", True)
+            if isinstance(_show_badge_fp, str):
+                _show_badge_fp = _show_badge_fp.lower() != "false"
             slide_paths = generate_slides(slides_data, dirs["image"],
                                           date=date_str, brand=brand,
                                           backgrounds=bg_results,
@@ -1618,7 +1661,9 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                           hl_color=ch_config_fp.get("slide_hl_color", ""),
                                           bg_gradient=ch_config_fp.get("slide_bg_gradient", ""),
                                           main_text_size=ch_config_fp.get("slide_main_text_size", 0),
-                                          badge_size=ch_config_fp.get("slide_badge_size", 0))
+                                          badge_size=ch_config_fp.get("slide_badge_size", 0),
+                                          show_badge=_show_badge_fp,
+                                          channel_format=_ch_format_fp)
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,
@@ -1886,13 +1931,18 @@ class JobQueue:
 # 전역 큐 인스턴스
 _job_queue = JobQueue()
 
+# Phase A 동시 실행 제한 (Claude API 부하 방지)
+_phase_a_semaphore = threading.Semaphore(2)
+
 
 # ─── Public API ───
 
 def start_pipeline(db_ch, db, job_id: str, script_json: dict = None):
-    """Phase A 실행 (대본까지 → waiting_slides). 병렬 OK."""
-    t = threading.Thread(target=_run_phase_a, args=(db_ch, db, job_id, script_json),
-                         daemon=True)
+    """Phase A 실행 (대본까지 → waiting_slides). 동시 최대 2개."""
+    def _run_with_limit():
+        with _phase_a_semaphore:
+            _run_phase_a(db_ch, db, job_id, script_json)
+    t = threading.Thread(target=_run_with_limit, daemon=True)
     t.start()
     return t
 

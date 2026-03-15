@@ -7,6 +7,99 @@ import subprocess
 from pipeline import config
 
 
+# ── 지원하는 xfade 전환 효과 목록 ──
+XFADE_TRANSITIONS = [
+    {"id": "fade", "label": "페이드", "desc": "부드러운 밝기 전환"},
+    {"id": "dissolve", "label": "디졸브", "desc": "녹아드는 전환"},
+    {"id": "wipeleft", "label": "왼쪽 와이프", "desc": "왼쪽으로 밀기"},
+    {"id": "wiperight", "label": "오른쪽 와이프", "desc": "오른쪽으로 밀기"},
+    {"id": "slideup", "label": "위로 슬라이드", "desc": "위로 밀어올리기"},
+    {"id": "slidedown", "label": "아래로 슬라이드", "desc": "아래로 내리기"},
+    {"id": "slideleft", "label": "왼쪽 슬라이드", "desc": "왼쪽으로 밀기 (겹침)"},
+    {"id": "slideright", "label": "오른쪽 슬라이드", "desc": "오른쪽으로 밀기 (겹침)"},
+    {"id": "circlecrop", "label": "원형", "desc": "원형으로 확대"},
+    {"id": "radial", "label": "시계방향", "desc": "시계 방향 회전"},
+    {"id": "smoothleft", "label": "부드러운 좌측", "desc": "부드럽게 좌측 이동"},
+    {"id": "smoothright", "label": "부드러운 우측", "desc": "부드럽게 우측 이동"},
+    {"id": "smoothup", "label": "부드러운 상단", "desc": "부드럽게 위로 이동"},
+    {"id": "smoothdown", "label": "부드러운 하단", "desc": "부드럽게 아래로 이동"},
+]
+
+XFADE_IDS = [t["id"] for t in XFADE_TRANSITIONS]
+
+
+def generate_transition_preview(transition: str, output_dir: str,
+                                duration: float = 0.5,
+                                img_from: str = "", img_to: str = "") -> str:
+    """전환 효과 샘플 영상 생성.
+
+    img_from/img_to가 있으면 실제 이미지로, 없으면 컬러 블록으로 생성.
+    캐시: output_dir/{hash}.mp4
+    """
+    import hashlib
+    if transition not in XFADE_IDS:
+        transition = "fade"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 캐시 키: 이미지 경로 포함
+    cache_key = f"{transition}_{duration:.1f}_{img_from}_{img_to}"
+    cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
+    out_path = os.path.join(output_dir, f"tr_{cache_hash}.mp4")
+    if os.path.exists(out_path):
+        return out_path
+
+    seg_dur = 1.5
+    xd = min(duration, seg_dur * 0.8)
+    use_images = img_from and img_to and os.path.exists(img_from) and os.path.exists(img_to)
+
+    if use_images:
+        # 실제 이미지 → 360x640 리사이즈 → xfade
+        filter_complex = (
+            f"[0:v]scale=360:640:force_original_aspect_ratio=decrease,"
+            f"pad=360:640:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop={int(seg_dur*24)}:size=1,"
+            f"fps=24,format=yuv420p,trim=duration={seg_dur}[v0];"
+            f"[1:v]scale=360:640:force_original_aspect_ratio=decrease,"
+            f"pad=360:640:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop={int(seg_dur*24)}:size=1,"
+            f"fps=24,format=yuv420p,trim=duration={seg_dur}[v1];"
+            f"[v0][v1]xfade=transition={transition}:duration={xd:.3f}"
+            f":offset={seg_dur - xd:.3f},format=yuv420p[vout]"
+        )
+        cmd = [
+            config.ffmpeg(), "-y",
+            "-i", img_from, "-i", img_to,
+            "-filter_complex", filter_complex,
+            "-map", "[vout]",
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-an", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            out_path
+        ]
+    else:
+        # 컬러 블록 폴백
+        filter_complex = (
+            f"color=c=#1a2238:s=360x640:d={seg_dur}:r=24,format=yuv420p[v0];"
+            f"color=c=#ff6b35:s=360x640:d={seg_dur}:r=24,format=yuv420p[v1];"
+            f"[v0][v1]xfade=transition={transition}:duration={xd:.3f}"
+            f":offset={seg_dur - xd:.3f},format=yuv420p[vout]"
+        )
+        cmd = [
+            config.ffmpeg(), "-y",
+            "-filter_complex", filter_complex,
+            "-map", "[vout]",
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-an", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            out_path
+        ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"transition preview failed: {result.stderr[:300]}")
+
+    return out_path
+
+
 # Ken Burns 효과 프리셋 (zoompan 필터용)
 # 각 프리셋: (zoom_expr, x_expr, y_expr, 설명)
 # 출력 해상도 1080x1920, 입력은 여유 있게 스케일 (1.15배)
@@ -407,16 +500,19 @@ def concat_segments(segment_files: list[str], output_path: str,
 
     # 크로스페이드 적용 여부
     xfade_dur = 0.5  # 기본 0.5초
+    xfade_transition = "fade"
     if sfx_cfg:
         xfade_dur = sfx_cfg.get("crossfade_duration", 0.5) or 0.5
+        xfade_transition = sfx_cfg.get("crossfade_transition", "fade") or "fade"
 
     print(f"[video_renderer] concat_segments: {len(segment_files)} files, "
-          f"xfade={xfade_dur}s, sfx={bool(needs_sfx)}, bgm={bool(needs_bgm)}")
+          f"xfade={xfade_dur}s/{xfade_transition}, sfx={bool(needs_sfx)}, bgm={bool(needs_bgm)}")
 
     actual_xfade = 0  # 실제 적용된 xfade 시간 (fallback 시 0)
     if len(segment_files) >= 2 and xfade_dur > 0:
         try:
-            _concat_with_xfade(segment_files, concat_out, slide_durations, xfade_dur)
+            _concat_with_xfade(segment_files, concat_out, slide_durations, xfade_dur,
+                               transition=xfade_transition)
             actual_xfade = xfade_dur
         except Exception as e:
             print(f"[video_renderer] xfade failed, falling back to simple concat: {e}")
@@ -481,10 +577,11 @@ def _get_segment_duration(seg_path: str) -> float:
 
 
 def _concat_with_xfade(segment_files: list[str], output_path: str,
-                       slide_durations: dict | None, xfade_dur: float):
+                       slide_durations: dict | None, xfade_dur: float,
+                       transition: str = "fade"):
     """xfade 크로스페이드로 세그먼트 합성.
 
-    영상: xfade=transition=fade (모든 입력을 1080x1920/24fps로 정규화)
+    영상: xfade=transition={transition} (모든 입력을 1080x1920/24fps로 정규화)
     오디오: 앞 패딩 atrim + hard-cut concat (44100Hz/stereo, 블렌딩 없음)
     """
     n = len(segment_files)
@@ -535,7 +632,7 @@ def _concat_with_xfade(segment_files: list[str], output_path: str,
         vin = f"[xv{i-2}]" if i >= 2 else f"[nv0]"
         vout = f"[xv{i-1}]" if i < n - 1 else "[vout]"
         vfilters.append(
-            f"{vin}[nv{i}]xfade=transition=fade:duration={xd:.3f}:offset={offset:.3f}{vout}"
+            f"{vin}[nv{i}]xfade=transition={transition}:duration={xd:.3f}:offset={offset:.3f}{vout}"
         )
 
         if i < n - 1:

@@ -6,7 +6,7 @@
   <title>YouTube Shorts Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/style.css?v=20260309s">
+  <link rel="stylesheet" href="/static/style.css?v=20260315b">
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen">
 
@@ -500,7 +500,15 @@
             </div>
             <audio id="cs-sfx-preview" class="hidden w-full mt-2" controls style="height:28px"></audio>
             <div class="mt-2 pt-2 border-t border-gray-700">
-              <label class="block text-xs text-gray-500 mb-1">슬라이드 전환 크로스페이드 <span id="cs-crossfade-label">0.5</span>초</label>
+              <label class="block text-xs text-gray-500 mb-1">전환 효과</label>
+              <div class="flex gap-2 items-center mb-1">
+                <select id="cs-crossfade-transition" class="flex-1 px-2 py-1 rounded bg-gray-800 border border-gray-600 text-sm text-gray-200">
+                  <option value="fade">페이드</option>
+                </select>
+                <button onclick="previewTransition()" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs whitespace-nowrap">미리보기</button>
+              </div>
+              <video id="cs-transition-preview" class="hidden w-full rounded mt-1" style="max-height:120px" loop muted playsinline></video>
+              <label class="block text-xs text-gray-500 mb-1 mt-2">크로스페이드 길이 <span id="cs-crossfade-label">0.5</span>초</label>
               <input id="cs-crossfade-duration" type="range" min="0" max="1.5" value="0.5" step="0.1"
                      oninput="document.getElementById('cs-crossfade-label').textContent=this.value"
                      class="w-full accent-orange-500">
@@ -652,6 +660,7 @@
         <div class="flex gap-3">
           <button onclick="deleteCurrentChannel()" class="text-xs text-gray-600 hover:text-red-400 transition">채널 삭제</button>
           <button id="btn-clone-channel" onclick="cloneCurrentChannel()" class="text-xs text-gray-600 hover:text-blue-400 transition hidden">채널 복사</button>
+          <button onclick="deleteChannelJobs(_settingsChannelId)" class="text-xs text-gray-600 hover:text-red-400 transition">작업 초기화</button>
         </div>
         <div class="flex gap-3">
           <button onclick="closeModal('channel-settings-modal')" class="px-4 py-2 text-sm text-gray-400 hover:text-white transition">취소</button>
@@ -700,6 +709,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260315"></script>
+  <script src="/static/app.js?v=20260315b"></script>
 </body>
 </html>

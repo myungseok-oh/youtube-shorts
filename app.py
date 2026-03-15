@@ -34,6 +34,7 @@ from pipeline.sd_generator import (
 from pipeline.slide_generator import generate_slides, generate_chart, generate_infographic
 from pipeline.gemini_generator import generate_image as gemini_generate_image
 from pipeline.gemini_generator import image_to_video as gemini_image_to_video
+from pipeline.video_renderer import XFADE_TRANSITIONS, generate_transition_preview
 
 db = Database(config.db_path())
 db_ch = Database(config.channels_db_path())
@@ -149,8 +150,8 @@ def _recover_orphan_jobs():
 
         print(f"[복구] {job_id}: {step_name} 단계에서 중단됨 → 재시작")
 
-        # Phase A (news_search, script) → Phase A 재시작
-        if step_name in ("news_search", "script"):
+        # Phase A (synopsis, visual_plan, script) → Phase A 재시작
+        if step_name in ("synopsis", "visual_plan", "script", "news_search"):
             # 대본 없으면 처음부터, 있으면 Phase B
             job_row = db.fetchone("SELECT script_json FROM jobs WHERE id = ?", [job_id])
             if job_row and job_row.get("script_json"):
@@ -651,7 +652,7 @@ async def api_create_manual_job(request: Request):
     # Phase A 스킵 → 바로 waiting_slides
     db.execute("UPDATE jobs SET status = 'waiting_slides' WHERE id = ?", [job["id"]])
     db.execute(
-        "UPDATE job_steps SET status = 'skipped' WHERE job_id = ? AND step_name IN ('news_search', 'script')",
+        "UPDATE job_steps SET status = 'skipped' WHERE job_id = ? AND step_name IN ('synopsis', 'visual_plan', 'script')",
         [job["id"]],
     )
 
@@ -1612,9 +1613,13 @@ async def api_sd_generate_single(job_id: str, index: int, request: Request):
             os.remove(old_thumb)
 
     if auto_bg_source == "gemini" and gemini_key:
-        # Gemini 이미지 생성 — 레이아웃에 따라 비율 결정
+        # Gemini 이미지 생성 — 레이아웃+display모드에 따라 비율 결정
         slide_layout = ch_cfg.get("slide_layout", "full")
-        _ar = "1:1" if slide_layout in ("center", "top", "bottom") else "9:16"
+        _bg_display = ch_cfg.get("bg_display_mode", "zone")
+        if _bg_display == "fullscreen" or slide_layout == "full":
+            _ar = "9:16"
+        else:
+            _ar = "1:1" if slide_layout in ("center", "top", "bottom") else "9:16"
         output_path = os.path.join(bg_dir, f"bg_{index}.png")
         ok = await asyncio.to_thread(
             gemini_generate_image, prompt, output_path, gemini_key, _ar
@@ -1840,13 +1845,17 @@ async def api_sd_generate_auto(job_id: str):
                 continue
 
             elif auto_bg_source == "gemini":
-                # Gemini 이미지 생성 — 레이아웃에 따라 비율 결정
+                # Gemini 이미지 생성 — 레이아웃+display모드에 따라 비율 결정
                 if not en_prompt:
                     results.append({"index": idx, "ok": True, "skipped": True, "bg_type": bg_type})
                     continue
                 if gemini_count > 0:
                     await asyncio.sleep(5)  # Gemini 분당 요청 제한 대응
-                _ar = "1:1" if slide_layout in ("center", "top", "bottom") else "9:16"
+                _bg_display = ch_cfg.get("bg_display_mode", "zone")
+                if _bg_display == "fullscreen" or slide_layout == "full":
+                    _ar = "9:16"
+                else:
+                    _ar = "1:1" if slide_layout in ("center", "top", "bottom") else "9:16"
                 output_path = os.path.join(bg_dir, f"bg_{idx}.png")
                 await asyncio.to_thread(
                     gemini_generate_image, en_prompt, output_path, gemini_key,
@@ -1916,6 +1925,8 @@ async def api_rerender_slides(job_id: str):
         bg_gradient=ch_cfg.get("slide_bg_gradient", ""),
         main_text_size=ch_cfg.get("slide_main_text_size", 0),
         badge_size=ch_cfg.get("slide_badge_size", 0),
+        show_badge=ch_cfg.get("show_badge", True),
+        channel_format=ch_cfg.get("format", "single"),
     )
 
     return {"ok": True, "layout": slide_layout, "slides": len(slide_paths)}
@@ -1986,12 +1997,12 @@ async def api_retry_job(job_id: str):
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    if failed_name in ("news_search", "script") or not job.get("script_json"):
+    if failed_name in ("synopsis", "visual_plan", "script", "news_search") or not job.get("script_json"):
         # Phase A 실패 또는 script_json 없음 → Phase A 재실행
         db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
                    ["pending", now, job_id])
         db.execute(
-            "UPDATE job_steps SET status = 'pending', error_msg = NULL, output_data = NULL, started_at = NULL, completed_at = NULL WHERE job_id = ? AND step_name IN ('news_search', 'script')",
+            "UPDATE job_steps SET status = 'pending', error_msg = NULL, output_data = NULL, started_at = NULL, completed_at = NULL WHERE job_id = ? AND step_name IN ('synopsis', 'visual_plan', 'script')",
             [job_id])
         start_pipeline(db_ch, db, job_id)
         return {"ok": True, "message": "Phase A retry started"}
@@ -2191,6 +2202,50 @@ async def api_list_sfx():
         if fname.lower().endswith((".mp3", ".wav", ".ogg", ".m4a")):
             files.append(fname)
     return files
+
+
+@app.get("/api/transitions")
+async def api_list_transitions():
+    """지원하는 전환 효과 목록"""
+    return XFADE_TRANSITIONS
+
+
+@app.get("/api/transitions/{effect}/preview")
+async def api_transition_preview(effect: str, duration: float = 0.5):
+    """전환 효과 샘플 미리보기 영상 (컬러 블록)"""
+    preview_dir = os.path.join(config.root_dir(), "data", "transitions")
+    try:
+        path = generate_transition_preview(effect, preview_dir, duration=duration)
+        return FileResponse(path, media_type="video/mp4")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/jobs/{job_id}/transition-preview")
+async def api_job_transition_preview(job_id: str, effect: str = "fade",
+                                     duration: float = 0.5,
+                                     slide_from: int = 1, slide_to: int = 2):
+    """작업의 실제 배경 이미지로 전환 효과 미리보기"""
+    bg_dir = os.path.join(config.output_dir(), job_id, "backgrounds")
+    preview_dir = os.path.join(config.output_dir(), job_id, "transitions")
+
+    def _find_bg(idx):
+        for ext in ["mp4", "jpg", "jpeg", "png", "webp"]:
+            p = os.path.join(bg_dir, f"bg_{idx}.{ext}")
+            if os.path.exists(p):
+                return p
+        return ""
+
+    img_from = _find_bg(slide_from)
+    img_to = _find_bg(slide_to)
+
+    try:
+        path = await asyncio.to_thread(
+            generate_transition_preview, effect, preview_dir,
+            duration=duration, img_from=img_from, img_to=img_to)
+        return FileResponse(path, media_type="video/mp4")
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 @app.get("/api/ref-voices")
@@ -2881,11 +2936,16 @@ async def api_serve_job_audio(job_id: str, filename: str):
 if __name__ == "__main__":
     # Windows: ProactorEventLoop의 ConnectionResetError 방지
     # SelectorEventLoop는 소켓 종료를 깔끔하게 처리함
-    import sys, asyncio
+    import sys, asyncio, logging
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    # ConnectionResetError 로그 억제 (Windows 폴링 환경에서 빈번)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
 
     cfg = config.load()
     uvicorn.run(app,
                 host=cfg["server"]["host"],
-                port=cfg["server"]["port"])
+                port=cfg["server"]["port"],
+                timeout_keep_alive=5,
+                log_level="warning")

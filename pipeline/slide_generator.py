@@ -42,7 +42,9 @@ def generate_slides(slides_data: list[dict], output_dir: str,
                     hl_color: str = "",
                     bg_gradient: str = "",
                     main_text_size: int = 0,
-                    badge_size: int = 0) -> list[str]:
+                    badge_size: int = 0,
+                    show_badge: bool = True,
+                    channel_format: str = "single") -> list[str]:
     """슬라이드 데이터를 받아 PNG 이미지 생성.
 
     Args:
@@ -81,6 +83,8 @@ def generate_slides(slides_data: list[dict], output_dir: str,
         "bgGradient": bg_gradient,
         "mainTextSize": main_text_size,
         "badgeSize": badge_size,
+        "showBadge": show_badge if show_badge is not True else (channel_format == "roundup"),
+        "showSlideNum": channel_format == "roundup",
         "slideOverrides": slide_overrides or {},
     }
 

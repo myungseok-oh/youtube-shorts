@@ -11,9 +11,12 @@ let _selectedJobs = new Set();
 let _wizardStep = 1;
 let _lastScriptData = null;
 let _lastStepsData = null;
+let _pollAbort = null;  // 폴링 요청 취소용
+const _collapsedChannels = new Set(JSON.parse(localStorage.getItem('collapsedChannels') || '[]'));
 
 const STEP_ICONS = {
-  news_search: "\uD83D\uDD0D",
+  synopsis:    "\uD83D\uDD0D",
+  visual_plan: "\uD83C\uDFA8",
   script:      "\uD83D\uDCDD",
   slides:      "\uD83D\uDDBC\uFE0F",
   tts:         "\uD83D\uDD0A",
@@ -22,7 +25,8 @@ const STEP_ICONS = {
 };
 
 const STEP_LABELS = {
-  news_search: "검색",
+  synopsis:    "시놉시스",
+  visual_plan: "비주얼",
   script:      "대본",
   slides:      "슬라이드",
   tts:         "TTS",
@@ -30,7 +34,7 @@ const STEP_LABELS = {
   upload:      "업로드",
 };
 
-const STEP_ORDER = ["news_search", "script", "slides", "tts", "render", "upload"];
+const STEP_ORDER = ["synopsis", "visual_plan", "script", "slides", "tts", "render", "upload"];
 
 const _CHANNEL_COLORS = [
   "rgba(234,88,12,0.25)",   // orange
@@ -92,7 +96,16 @@ document.addEventListener("DOMContentLoaded", () => {
 let _prevDashboardHash = "";
 
 async function loadAll() {
-  const res = await fetch("/api/dashboard");
+  // 이전 폴링 요청이 아직 진행 중이면 취소 (ConnectionReset 방지)
+  if (_pollAbort) _pollAbort.abort();
+  _pollAbort = new AbortController();
+  let res;
+  try {
+    res = await fetch("/api/dashboard", { signal: _pollAbort.signal });
+  } catch (e) {
+    if (e.name === "AbortError") return; // 정상 취소
+    throw e;
+  }
   const raw = await res.json();
   const data = raw.channels || raw;   // {channels, claude_active}
 
@@ -173,6 +186,7 @@ function renderChannels(channels) {
       }
     } catch {}
 
+    const collapsed = _collapsedChannels.has(ch.id);
     return `
       <div class="channel-item ${isSelected ? 'selected' : ''}" draggable="true" data-channel-id="${ch.id}" onclick="selectChannel('${ch.id}')">
         <div class="flex items-center gap-2">
@@ -182,19 +196,22 @@ function renderChannels(channels) {
             <div class="font-medium text-sm"><span class="text-gray-500 text-xs mr-1">${ch.id}</span>${esc(ch.name)}${scheduleTag}</div>
             <div class="text-xs text-gray-500 mt-0.5">${statusText}</div>
           </div>
-          <button class="ch-settings-btn" onclick="event.stopPropagation(); openChannelSettings('${ch.id}')" title="채널 설정">⚙</button>
+          <div class="flex items-center gap-1">
+            <button class="ch-toolbar-btn" onclick="event.stopPropagation(); toggleChannelCollapse('${ch.id}')" title="${collapsed ? '펼치기' : '접기'}">${collapsed ? '▸' : '▾'}</button>
+          </div>
         </div>
-        <div class="mt-2">
+        <div class="mt-2 ${collapsed ? 'hidden' : ''}">
           <textarea id="req-${ch.id}" rows="2" placeholder="${esc(ch.default_topics || '요청 입력...')}"
                  onclick="event.stopPropagation()" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();event.stopPropagation();runChannel('${ch.id}',document.getElementById('run-btn-${ch.id}'))}"
                  class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-xs text-gray-300 placeholder-gray-600 mb-2 focus:border-orange-500 focus:outline-none resize-none leading-relaxed"></textarea>
-          <div class="flex justify-end gap-2">
-            <button onclick="event.stopPropagation(); deleteChannelJobs('${ch.id}')"
-                    class="px-2 py-1 text-gray-600 hover:text-red-400 rounded text-xs transition" title="작업 삭제">초기화</button>
-            <button onclick="event.stopPropagation(); openManualModal('${ch.id}')"
-                    class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">수동</button>
-            <button id="run-btn-${ch.id}" onclick="event.stopPropagation(); runChannel('${ch.id}', this)"
-                    class="px-3 py-1 bg-orange-600 hover:bg-orange-500 rounded text-xs font-medium transition">자동</button>
+          <div class="flex justify-between items-center">
+            <button class="ch-settings-link" onclick="event.stopPropagation(); openChannelSettings('${ch.id}')">⚙ 설정</button>
+            <div class="flex gap-2">
+              <button onclick="event.stopPropagation(); openManualModal('${ch.id}')"
+                      class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">수동</button>
+              <button id="run-btn-${ch.id}" onclick="event.stopPropagation(); runChannel('${ch.id}', this)"
+                      class="px-3 py-1 bg-orange-600 hover:bg-orange-500 rounded text-xs font-medium transition">자동</button>
+            </div>
           </div>
         </div>
       </div>
@@ -215,6 +232,16 @@ function renderChannels(channels) {
   }
   // 드래그앤드롭 설정
   _initChannelDragDrop();
+}
+
+function toggleChannelCollapse(channelId) {
+  if (_collapsedChannels.has(channelId)) {
+    _collapsedChannels.delete(channelId);
+  } else {
+    _collapsedChannels.add(channelId);
+  }
+  localStorage.setItem('collapsedChannels', JSON.stringify([..._collapsedChannels]));
+  renderChannels(channelsCache);
 }
 
 // ─── Main: 주제별 카드 ───
@@ -371,8 +398,8 @@ function renderJobCard(job, isCompleted = false) {
     : job.status === "queued" ? "border-l-queued" : "";
 
   // 단계 아이콘 시퀀스
-  const CARD_STEPS = ["news_search", "script", "slides", "tts", "render", "upload"];
-  const CARD_ICONS = { news_search: "\uD83D\uDD0D", script: "\uD83D\uDCDD", slides: "\uD83D\uDDBC\uFE0F", tts: "\uD83D\uDD0A", render: "\uD83C\uDFAC", upload: "\uD83D\uDCE4" };
+  const CARD_STEPS = ["synopsis", "visual_plan", "script", "slides", "tts", "render", "upload"];
+  const CARD_ICONS = { synopsis: "\uD83D\uDD0D", visual_plan: "\uD83C\uDFA8", script: "\uD83D\uDCDD", slides: "\uD83D\uDDBC\uFE0F", tts: "\uD83D\uDD0A", render: "\uD83C\uDFAC", upload: "\uD83D\uDCE4" };
   let stepSeqHtml = CARD_STEPS.map((s, i) => {
     const st = job.steps[s];
     let cls = "seq-pending";
@@ -565,7 +592,7 @@ function determineWizardStep(scriptData, stepsData) {
   if (status === "failed") {
     const failedStep = steps.find(s => s.status === "failed");
     const fn = failedStep ? failedStep.step_name : "";
-    if (["news_search", "script"].includes(fn)) return 1;
+    if (["synopsis", "visual_plan", "script"].includes(fn)) return 1;
     if (["slides", "tts"].includes(fn)) return 2;
     return 3;
   }
@@ -1242,7 +1269,7 @@ function renderWizardFooter(step, jobId, scriptData, stepsData) {
     } else if (status === "failed") {
       const failedStep = (stepsData.steps || []).find(s => s.status === "failed");
       const fn = failedStep ? failedStep.step_name : "";
-      const isPhaseA = ["news_search", "script"].includes(fn);
+      const isPhaseA = ["synopsis", "visual_plan", "script"].includes(fn);
       rightBtn = `<div class="flex gap-2">
         <button onclick="retryJob('${jobId}')" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">재시도</button>
         ${!isPhaseA ? `<button onclick="resetToWaiting('${jobId}')" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition">이미지 대기로</button>` : ''}
@@ -1430,35 +1457,61 @@ function copyPrompt(btn) {
   });
 }
 
+const _veoInProgress = new Set();  // 진행 중인 Veo 변환 슬롯 번호
 async function bgToVideo(jobId, bgIdx, btn) {
   if (!confirm(`bg_${bgIdx}을 Veo 3.1 Fast로 영상화합니다.\n비용: ~$0.60 (6초)\n진행할까요?`)) return;
   if (btn.disabled) return;
   const origText = btn.innerHTML;
   btn.innerHTML = "⏳";
   btn.disabled = true;
+  _veoInProgress.add(bgIdx);
 
-  // 로딩 표시
+  // 슬롯별 로딩 표시
+  const slotWrap = document.getElementById(`slot-wrap-${bgIdx}`);
+  if (slotWrap) slotWrap.classList.add("veo-converting");
   const statusEl = document.getElementById("sd-status");
-  if (statusEl) statusEl.innerHTML = `<div class="text-xs text-purple-400 mb-2 flex items-center gap-2"><span class="veo-spinner"></span> bg_${bgIdx} Image-to-Video 변환 중... (약 1~2분)</div>`;
+  _updateVeoStatus(statusEl);
 
   try {
     const resp = await fetch(`/api/jobs/${jobId}/bg/${bgIdx}/to-video`, { method: "POST" });
     const data = await resp.json();
+    _veoInProgress.delete(bgIdx);
+    if (slotWrap) slotWrap.classList.remove("veo-converting");
     if (resp.ok) {
       btn.innerHTML = "✅";
-      if (statusEl) statusEl.innerHTML = `<div class="text-xs text-green-400 mb-2">bg_${bgIdx} 영상 변환 완료</div>`;
       setTimeout(() => { btn.innerHTML = "🎬"; }, 3000);
-      _lastDetailStatus = null;
-      await refreshJobDetail(jobId);
+      // 다른 변환이 아직 진행 중이면 전체 리렌더 스킵
+      if (_veoInProgress.size === 0) {
+        _lastDetailStatus = null;
+        await refreshJobDetail(jobId);
+      } else {
+        // 완료된 슬롯만 MP4 뱃지로 교체
+        const slot = document.getElementById(`slot-${bgIdx}`);
+        if (slot && data.path) {
+          const img = slot.querySelector("img");
+          if (img) img.src = data.path + "?t=" + Date.now();
+        }
+      }
     } else {
       alert(`영상화 실패: ${data.detail || "unknown error"}`);
       btn.innerHTML = origText;
-      if (statusEl) statusEl.innerHTML = `<div class="text-xs text-red-400 mb-2">bg_${bgIdx} 영상화 실패</div>`;
     }
+    _updateVeoStatus(statusEl);
   } catch (e) {
+    _veoInProgress.delete(bgIdx);
+    if (slotWrap) slotWrap.classList.remove("veo-converting");
     alert(`영상화 요청 실패: ${e.message}`);
     btn.innerHTML = origText;
-    if (statusEl) statusEl.innerHTML = "";
+    _updateVeoStatus(statusEl);
+  }
+}
+function _updateVeoStatus(statusEl) {
+  if (!statusEl) return;
+  if (_veoInProgress.size > 0) {
+    const slots = [..._veoInProgress].sort((a,b) => a-b).join(", ");
+    statusEl.innerHTML = `<div class="text-xs text-purple-400 mb-2 flex items-center gap-2"><span class="veo-spinner"></span> bg_${slots} 영상 변환 중... (${_veoInProgress.size}개)</div>`;
+  } else {
+    statusEl.innerHTML = "";
   }
   btn.disabled = false;
 }
@@ -1787,6 +1840,34 @@ function previewBgm(filename) {
   el.classList.remove("hidden");
   el.play();
   _bgmAudio = el;
+}
+
+let _transitionsCache = null;
+async function loadTransitionOptions(selected) {
+  const sel = document.getElementById("cs-crossfade-transition");
+  if (!sel) return;
+  try {
+    if (!_transitionsCache) {
+      const res = await fetch("/api/transitions");
+      _transitionsCache = await res.json();
+    }
+    sel.innerHTML = _transitionsCache.map(t =>
+      `<option value="${t.id}" ${t.id === selected ? "selected" : ""}>${t.label} — ${t.desc}</option>`
+    ).join("");
+  } catch (e) {
+    console.warn("transition list load failed", e);
+  }
+}
+
+async function previewTransition() {
+  const effect = document.getElementById("cs-crossfade-transition").value || "fade";
+  const dur = document.getElementById("cs-crossfade-duration").value || 0.5;
+  const video = document.getElementById("cs-transition-preview");
+  if (!video) return;
+  video.classList.remove("hidden");
+  video.src = `/api/transitions/${effect}/preview?duration=${dur}&t=${Date.now()}`;
+  video.load();
+  video.play();
 }
 
 async function loadSfxFiles(cfg) {
@@ -3089,7 +3170,9 @@ async function submitAddChannel() {
 
 // ─── Channel Settings ───
 
+let _settingsChannelId = null;
 async function openChannelSettings(channelId) {
+  _settingsChannelId = channelId;
   console.log("openChannelSettings called:", channelId, "cache:", channelsCache.length);
   const ch = channelsCache.find(c => c.id === channelId);
   if (!ch) { console.error("Channel not found:", channelId); return; }
@@ -3164,6 +3247,7 @@ async function openChannelSettings(channelId) {
   const xfDur = cfg.crossfade_duration ?? 0.5;
   document.getElementById("cs-crossfade-duration").value = xfDur;
   document.getElementById("cs-crossfade-label").textContent = xfDur;
+  loadTransitionOptions(cfg.crossfade_transition || "fade");
   loadSfxFiles(cfg);
 
   // 채널 고정 배경 이미지
@@ -3263,6 +3347,7 @@ async function saveChannelSettings() {
   cfg.sfx_outro = document.getElementById("cs-sfx-outro").value;
   cfg.sfx_highlight = document.getElementById("cs-sfx-highlight").value;
   cfg.crossfade_duration = parseFloat(document.getElementById("cs-crossfade-duration").value) || 0;
+  cfg.crossfade_transition = document.getElementById("cs-crossfade-transition").value || "fade";
 
   // 인트로/아웃트로 duration + 나레이션
   cfg.intro_duration = parseFloat(document.getElementById("cs-intro-duration").value) || 3;

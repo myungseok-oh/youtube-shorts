@@ -1025,6 +1025,22 @@
   background: transparent;
 }
 
+/* 채널 툴바 버튼 (접기/수동/추가) */
+.ch-toolbar-btn {
+  background: none; border: 1px solid #374151; cursor: pointer;
+  color: #6b7280; font-size: 11px; padding: 1px 6px;
+  border-radius: 4px; transition: all 0.2s; line-height: 1.4;
+}
+.ch-toolbar-btn:hover { color: #d1d5db; border-color: #6b7280; }
+
+/* 채널 설정 링크 (좌하단) */
+.ch-settings-link {
+  background: none; border: none; cursor: pointer;
+  color: #4b5563; font-size: 11px; padding: 2px 0;
+  transition: color 0.2s;
+}
+.ch-settings-link:hover { color: #9ca3af; }
+
 /* Veo 변환 스피너 */
 .veo-spinner {
   display: inline-block;
@@ -1036,4 +1052,41 @@
 }
 @keyframes veo-spin {
   to { transform: rotate(360deg); }
+}
+/* Rich Text Edit (Composer 텍스트 컬러 편집) */
+.rich-text-edit {
+  background: #1a1c24;
+  border: 1px solid #3a3d48;
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: #e5e7eb;
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 24px;
+  outline: none;
+  word-break: keep-all;
+}
+.rich-text-edit:focus {
+  border-color: #6366f1;
+}
+.rich-text-edit::selection,
+.rich-text-edit *::selection {
+  background: rgba(99,102,241,0.4);
+}
+
+/* Zone 가이드라인 (Composer 미리보기) */
+.zone-guide { position:absolute; left:0; right:0; pointer-events:none; z-index:5; }
+.zone-guide.zone-top { border-bottom:1px dashed rgba(255,200,0,0.7); }
+.zone-guide.zone-mid { border-bottom:1px dashed rgba(255,200,0,0.7); }
+.zone-guide.zone-bot { }
+.zone-guide-center { position:absolute; top:0; bottom:0; left:50%; width:0; border-left:1px dashed rgba(255,200,0,0.5); pointer-events:none; z-index:5; }
+
+.veo-converting .upload-slot {
+  outline: 2px solid #a855f7;
+  outline-offset: -2px;
+  animation: veo-pulse 1.5s ease-in-out infinite;
+}
+@keyframes veo-pulse {
+  0%, 100% { outline-color: rgba(168,85,247,0.4); }
+  50% { outline-color: rgba(168,85,247,1); }
 }

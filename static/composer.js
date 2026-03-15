@@ -257,14 +257,60 @@ function renderPreview() {
   // 텍스트 오버레이 (드래그 가능) — 강조 적용
   const rawMain = (ovr.main !== undefined ? ovr.main : sl.main || "").replace(/<[^>]*>/g, "");
   const rawSub = (ovr.sub !== undefined ? ovr.sub : sl.sub || "").replace(/<[^>]*>/g, "");
-  const mainText = _applyHighlights(rawMain, ovr.highlights);
-  const subText = _applyHighlights(rawSub, ovr.highlights);
+  // 리치 텍스트(HTML 컬러)가 있으면 사용, 없으면 레거시 하이라이트
+  const mainText = ovr.richMain || _applyHighlights(rawMain, ovr.mainHighlights || ovr.highlights);
+  const subText = ovr.richSub || _applyHighlights(rawSub, ovr.subHighlights);
   const mainSize = (ovr.mainSize || 100) * SCALE;
   const subSize = (ovr.subSize || 52) * SCALE;
 
-  // 위치: 실제 좌표를 캔버스 좌표로 변환
-  const posX = (ovr.x !== undefined ? ovr.x : REAL_W / 2) * SCALE;
-  const posY = (ovr.y !== undefined ? ovr.y : REAL_H / 2) * SCALE;
+  // 채널 레이아웃에 따른 텍스트 위치 결정
+  const chCfg = composerData.channel_config || {};
+  const slideLayout = chCfg.slide_layout || "full";
+  const zoneRatio = (chCfg.slide_zone_ratio || "3:4:3").split(":").map(Number);
+  const zoneTotal = zoneRatio[0] + zoneRatio[1] + zoneRatio[2];
+  const topZonePct = zoneRatio[0] / zoneTotal;
+  const midZonePct = zoneRatio[1] / zoneTotal;
+
+  let posX, posY, subPosX, subPosY, useZoned = false;
+  const isZonedLayout = (slideLayout === "center" || slideLayout === "top" || slideLayout === "bottom");
+  console.log("[renderPreview] layout:", slideLayout, "zoneRatio:", zoneRatio, "isZoned:", isZonedLayout, "ovr:", JSON.stringify({x:ovr.x, y:ovr.y}));
+  if (isZonedLayout) {
+    // Zoned 레이아웃: 메인 상단, 서브 하단 분리 배치
+    useZoned = true;
+    const botZonePct = zoneRatio[2] / zoneTotal;
+    // 실제 캔버스 높이 기반 계산 (CSS aspect-ratio로 동적)
+    const canvasEl = document.querySelector(".preview-canvas") || container;
+    const realCanvasH = canvasEl.clientHeight || (REAL_H * SCALE);
+    const realCanvasW = canvasEl.clientWidth || (REAL_W * SCALE);
+    const scaleY = realCanvasH / REAL_H;
+    const scaleX = realCanvasW / REAL_W;
+
+    // 메인 텍스트: 수동 위치 우선
+    posX = (ovr.x !== undefined ? ovr.x : REAL_W / 2) * scaleX;
+
+    // 서브 텍스트: 수동 위치(subX/subY) 우선
+    subPosX = (ovr.subX !== undefined ? ovr.subX : REAL_W / 2) * scaleX;
+
+    const topZoneEndPx = realCanvasH * topZonePct;
+    const midZoneEndPx = realCanvasH * (topZonePct + midZonePct);
+
+    if (slideLayout === "center") {
+      posY = ovr.y !== undefined ? ovr.y * scaleY : topZoneEndPx * 0.5;
+      subPosY = ovr.subY !== undefined ? ovr.subY * scaleY : midZoneEndPx;
+    } else if (slideLayout === "top") {
+      const botStart = midZoneEndPx;
+      const botH = realCanvasH * botZonePct;
+      posY = ovr.y !== undefined ? ovr.y * scaleY : botStart + botH * 0.3;
+      subPosY = ovr.subY !== undefined ? ovr.subY * scaleY : botStart + botH * 0.65;
+    } else { // bottom
+      posY = ovr.y !== undefined ? ovr.y * scaleY : topZoneEndPx * 0.3;
+      subPosY = ovr.subY !== undefined ? ovr.subY * scaleY : topZoneEndPx * 0.65;
+    }
+  } else {
+    // full 레이아웃: 기존 동작
+    posX = (ovr.x !== undefined ? ovr.x : REAL_W / 2) * SCALE;
+    posY = (ovr.y !== undefined ? ovr.y : REAL_H / 2) * SCALE;
+  }
 
   const overlayOpacity = isHidden ? 0.2 : 1;
   const maxW = (ovr.maxWidth || 1000) * SCALE;
@@ -274,21 +320,42 @@ function renderPreview() {
   const bgOpacity = ovr.bgOpacity !== undefined ? ovr.bgOpacity / 100 : 0.4;
 
   const ovrRot = ovr.rotation || 0;
-  const overlayHtml = `
-    <div id="text-overlay-drag" class="comp-element-box ${isHidden ? 'overlay-hidden' : ''}"
-         style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif; z-index:20; transform:translate(-50%,-50%) rotate(${ovrRot}deg); text-align:center;"
-         onmousedown="startOverlayDrag(event)">
-      <div class="overlay-main" style="font-size:${mainSize}px; color:${mainColor};">${mainText}</div>
-      ${subText ? `<div class="overlay-sub" style="font-size:${subSize}px; color:${subColor};">${subText}</div>` : ""}
-      ${!isHidden ? `
+  const resizeHandles = !isHidden ? `
         <div class="el-rotate" onmousedown="startOverlayRotate(event)">↻</div>
         <div class="el-resize el-r-tl" onmousedown="startOverlayResize(event, 'tl')"></div>
         <div class="el-resize el-r-tr" onmousedown="startOverlayResize(event, 'tr')"></div>
         <div class="el-resize el-r-bl" onmousedown="startOverlayResize(event, 'bl')"></div>
         <div class="el-resize el-r-br" onmousedown="startOverlayResize(event, 'br')"></div>
-      ` : ''}
-    </div>
-  `;
+  ` : '';
+
+  let overlayHtml;
+  if (useZoned && subText) {
+    // Zoned 레이아웃: 메인/서브 분리 배치
+    overlayHtml = `
+      <div id="text-overlay-drag" class="comp-element-box ${isHidden ? 'overlay-hidden' : ''}"
+           style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif; z-index:20; transform:translate(-50%,-50%) rotate(${ovrRot}deg); text-align:center; padding:8px 12px;"
+           onmousedown="startOverlayDrag(event)">
+        <div class="overlay-main" style="font-size:${mainSize}px; color:${mainColor};">${mainText}</div>
+        ${resizeHandles}
+      </div>
+      <div id="sub-overlay-drag" class="comp-element-box ${isHidden ? 'overlay-hidden' : ''}"
+           style="left:${subPosX}px; top:${subPosY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity * 0.7}); font-family:'${fontFamily}',sans-serif; z-index:19; transform:translate(-50%,0); text-align:center; padding:6px 10px;"
+           onmousedown="startSubOverlayDrag(event)">
+        <div class="overlay-sub" style="font-size:${subSize}px; color:${subColor};">${subText}</div>
+      </div>
+    `;
+  } else {
+    // full 레이아웃 또는 서브 텍스트 없음: 기존 동작
+    overlayHtml = `
+      <div id="text-overlay-drag" class="comp-element-box ${isHidden ? 'overlay-hidden' : ''}"
+           style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif; z-index:20; transform:translate(-50%,-50%) rotate(${ovrRot}deg); text-align:center;"
+           onmousedown="startOverlayDrag(event)">
+        <div class="overlay-main" style="font-size:${mainSize}px; color:${mainColor};">${mainText}</div>
+        ${subText ? `<div class="overlay-sub" style="font-size:${subSize}px; color:${subColor};">${subText}</div>` : ""}
+        ${resizeHandles}
+      </div>
+    `;
+  }
 
   // 자유 텍스트 (회전 + 4코너 리사이즈)
   const freeTexts = (composeState.freeTexts || []).filter(ft => ft.slideNum === sl.num);
@@ -346,9 +413,25 @@ function renderPreview() {
     </div>`;
   });
 
+  // Zone 가이드라인 (center/top/bottom 레이아웃) — % 단위로 정확한 비율
+  let zoneGuideHtml = "";
+  // 세로 중앙 가이드 (항상 표시)
+  zoneGuideHtml = `<div class="zone-guide-center"></div>`;
+  if (isZonedLayout) {
+    const topPct = (topZonePct * 100).toFixed(1);
+    const midPct = (midZonePct * 100).toFixed(1);
+    const botPct = ((zoneRatio[2] / zoneTotal) * 100).toFixed(1);
+    zoneGuideHtml += `
+      <div class="zone-guide zone-top" style="height:${topPct}%;" title="상단 텍스트 영역 (${zoneRatio[0]})"></div>
+      <div class="zone-guide zone-mid" style="top:${topPct}%;height:${midPct}%;" title="이미지 영역 (${zoneRatio[1]})"></div>
+      <div class="zone-guide zone-bot" style="top:${(parseFloat(topPct)+parseFloat(midPct)).toFixed(1)}%;height:${botPct}%;" title="하단 텍스트 영역 (${zoneRatio[2]})"></div>
+    `;
+  }
+
   container.innerHTML = `
     <div class="preview-canvas">
       ${bgHtml || '<div class="preview-bg-fallback"></div>'}
+      ${zoneGuideHtml}
       ${elemHtml}
       ${freeTextHtml}
       ${overlayHtml}
@@ -392,6 +475,37 @@ function startOverlayDrag(e) {
     document.removeEventListener("mouseup", onUp);
   }
 
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
+function startSubOverlayDrag(e) {
+  e.preventDefault();
+  const sl = getSelectedSlide();
+  if (!sl) return;
+  const ovr = getOverride(sl.num);
+  if (ovr.hidden) return;
+
+  const subEl = document.getElementById("sub-overlay-drag");
+  if (!subEl) return;
+
+  const startX = e.clientX, startY = e.clientY;
+  const origLeft = parseFloat(subEl.style.left) || 0;
+  const origTop = parseFloat(subEl.style.top) || 0;
+
+  function onMove(e2) {
+    const dx = e2.clientX - startX;
+    const dy = e2.clientY - startY;
+    subEl.style.left = `${origLeft + dx}px`;
+    subEl.style.top = `${origTop + dy}px`;
+    // 서브 위치는 subX/subY로 별도 저장
+    setOverride(sl.num, "subX", Math.round((origLeft + dx) / SCALE));
+    setOverride(sl.num, "subY", Math.round((origTop + dy) / SCALE));
+  }
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  }
   document.addEventListener("mousemove", onMove);
   document.addEventListener("mouseup", onUp);
 }
@@ -1049,6 +1163,7 @@ function switchTab(tab) {
   if (tab === 'sfx') renderTabSfx();
   if (tab === 'media') renderTabMedia();
   if (tab === 'elements') renderTabElements();
+  if (tab === 'transition') renderTabTransition();
 }
 
 // ─── Tab: Media ───
@@ -1342,13 +1457,40 @@ function renderTabText() {
   </div>`;
 
   html += `<div style="${isHidden ? 'opacity:0.3;pointer-events:none;' : ''}">`;
+  // 제목/부제: richMain/richSub에 HTML(색상 span 포함) 저장, 없으면 plain text
+  const richMain = ovr.richMain || _esc(ovrMain);
+  const richSub = ovr.richSub || _esc(ovrSub);
   html += `<div class="ctrl-section">
-    <div class="ctrl-row"><span class="ctrl-label">제목</span>
-      <input class="ctrl-input" value="${_esc(ovrMain)}" onchange="updateOverride(${sl.num}, 'main', this.value)">
+    <div style="font-size:9px;color:#6b7280;margin-bottom:4px;">텍스트 선택 후 서식 적용</div>
+    <div class="rich-toolbar" style="display:flex;gap:4px;margin-bottom:6px;align-items:center;flex-wrap:wrap;">
+      <div style="display:flex;gap:2px;">
+        ${['#ffffff','#ffd700','#ff6b35','#ff4444','#4fc3f7','#66bb6a','#c084fc'].map(c =>
+          `<div onmousedown="event.preventDefault()" onclick="applyTextColor('${c}')" style="width:16px;height:16px;border-radius:2px;background:${c};cursor:pointer;border:1px solid #444;" title="${c}"></div>`
+        ).join('')}
+        <input type="color" id="custom-text-color" style="width:16px;height:16px;border:none;background:none;cursor:pointer;padding:0;" onmousedown="event.preventDefault()" onchange="applyTextColor(this.value)" title="커스텀">
+        <div onmousedown="event.preventDefault()" onclick="removeTextStyle()" style="width:16px;height:16px;border-radius:2px;background:linear-gradient(135deg,#333 45%,#f44 50%,#333 55%);cursor:pointer;border:1px solid #444;" title="서식 초기화"></div>
+      </div>
+      <span style="color:#3a3d48;">|</span>
+      <select id="rich-font-sel" onmousedown="event.preventDefault()" onchange="applyTextFont(this.value)" style="font-size:9px;background:#2a2d38;color:#ccc;border:1px solid #3a3d48;border-radius:3px;padding:1px 2px;max-width:90px;">
+        <option value="">폰트</option>
+        ${['Noto Sans KR','Black Han Sans','Jua','Do Hyeon','Gothic A1','Nanum Gothic','Gaegu'].map(f =>
+          `<option value="${f}">${f}</option>`
+        ).join('')}
+      </select>
+      <select id="rich-size-sel" onmousedown="event.preventDefault()" onchange="applyTextSize(this.value)" style="font-size:9px;background:#2a2d38;color:#ccc;border:1px solid #3a3d48;border-radius:3px;padding:1px 2px;width:42px;">
+        <option value="">크기</option>
+        ${[60,70,80,90,100,110,120,140,160].map(s => `<option value="${s}%">${s}%</option>`).join('')}
+      </select>
+      <span onmousedown="event.preventDefault()" onclick="applyTextBold()" style="cursor:pointer;font-weight:900;color:#ccc;font-size:12px;padding:0 3px;" title="굵게">B</span>
     </div>
-    <div class="ctrl-row"><span class="ctrl-label">부제</span>
-      <input class="ctrl-input" value="${_esc(ovrSub)}" onchange="updateOverride(${sl.num}, 'sub', this.value)">
-    </div>
+    <div style="font-size:9px;color:#f59e0b;margin-bottom:2px;">제목</div>
+    <div id="rich-main-edit" class="rich-text-edit" contenteditable="true"
+         data-slide="${sl.num}" data-field="main"
+         oninput="onRichTextInput(${sl.num}, 'main')">${richMain}</div>
+    <div style="font-size:9px;color:#60a5fa;margin-top:6px;margin-bottom:2px;">부제</div>
+    <div id="rich-sub-edit" class="rich-text-edit" contenteditable="true"
+         data-slide="${sl.num}" data-field="sub"
+         oninput="onRichTextInput(${sl.num}, 'sub')">${richSub}</div>
   </div>`;
 
   html += `<div class="ctrl-section">
@@ -1389,22 +1531,7 @@ function renderTabText() {
   html += `<button onclick="resetOverride(${sl.num})" style="width:100%;padding:5px;background:#2a2d38;color:#9ca3af;border:none;border-radius:5px;font-size:10px;cursor:pointer;">초기화</button>`;
   html += `</div>`;
 
-  // ── 텍스트 강조 (부분 컬러) ──
-  const highlights = ovr.highlights || [];
-  html += `<div class="ctrl-section" style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2d38;">
-    <div class="comp-tab-subtitle">텍스트 강조</div>
-    <div style="font-size:9px;color:#6b7280;margin-bottom:6px;">특정 단어에 색상을 적용합니다</div>`;
-  highlights.forEach((h, hi) => {
-    html += `<div class="ctrl-row" style="margin-bottom:6px;">
-      <input class="ctrl-input" value="${_esc(h.text)}" placeholder="강조할 텍스트"
-             onchange="updateHighlight(${sl.num}, ${hi}, 'text', this.value)" style="flex:2;">
-      <input type="color" value="${h.color || '#ff6b35'}" style="width:24px;height:20px;border:none;background:none;cursor:pointer;padding:0;"
-             onchange="updateHighlight(${sl.num}, ${hi}, 'color', this.value)">
-      <button onclick="removeHighlight(${sl.num}, ${hi})" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:14px;">&times;</button>
-    </div>`;
-  });
-  html += `<button onclick="addHighlight(${sl.num})" style="width:100%;padding:4px;background:#2a2d38;color:#818cf8;border:1px dashed #3a3d48;border-radius:4px;font-size:10px;cursor:pointer;">+ 강조 추가</button>
-  </div>`;
+  // 텍스트 컬러: 새 방식 (리치 텍스트)으로 대체됨 — 위 contenteditable 섹션에서 처리
 
   // ── 자유 텍스트 ──
   const freeTexts = (composeState.freeTexts || []).filter(ft => ft.slideNum === sl.num);
@@ -1442,6 +1569,124 @@ function renderTabText() {
 
   el.innerHTML = html;
 }
+
+// ─── Tab: Transition (전환 효과) ───
+
+let _transitionList = null;  // 캐시
+async function renderTabTransition() {
+  const el = document.getElementById("tab-transition");
+  if (!el) return;
+
+  // 전환 효과 목록 로드
+  if (!_transitionList) {
+    try {
+      const res = await fetch("/api/transitions");
+      _transitionList = await res.json();
+    } catch (e) {
+      el.innerHTML = `<div class="text-xs text-red-400">전환 효과 목록 로드 실패</div>`;
+      return;
+    }
+  }
+
+  const chCfg = composerData.channel_config || {};
+  // compose_data에서 전환 설정 로드 (채널 기본값 폴백)
+  const tr = composeState.transition || {};
+  const currentEffect = tr.effect || chCfg.crossfade_transition || "fade";
+  const currentDur = tr.duration !== undefined ? tr.duration : (chCfg.crossfade_duration ?? 0.5);
+
+  let html = `<div class="comp-tab-subtitle" style="margin-bottom:8px;">슬라이드 전환 효과</div>`;
+
+  // 미리보기 영상
+  html += `<video id="transition-preview-video" class="w-full rounded mb-3" style="max-height:100px;background:#000;" loop muted playsinline></video>`;
+
+  // 효과 그리드
+  html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px;">`;
+  _transitionList.forEach(t => {
+    const isActive = t.id === currentEffect;
+    html += `<button onclick="selectTransition('${t.id}')"
+      class="text-left px-2 py-1.5 rounded text-xs transition-all ${isActive ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}"
+      style="border:1px solid ${isActive ? '#6366f1' : '#333'};">
+      <div class="font-medium">${t.label}</div>
+      <div style="font-size:9px;opacity:0.7;">${t.desc}</div>
+    </button>`;
+  });
+  html += `</div>`;
+
+  // 크로스페이드 길이
+  html += `<div class="ctrl-section">
+    <div class="ctrl-row">
+      <span class="ctrl-label">길이</span>
+      <input type="range" min="0" max="1.5" step="0.1" value="${currentDur}"
+             oninput="updateTransitionDur(+this.value); this.nextElementSibling.textContent=this.value+'초';"
+             style="flex:1;accent-color:#6366f1;">
+      <span style="font-size:10px;color:#9ca3af;width:30px;text-align:right;">${currentDur}초</span>
+    </div>
+    <div style="font-size:9px;color:#6b7280;margin-top:2px;">0 = 하드컷, 0.3~0.7 권장</div>
+  </div>`;
+
+  // 적용 범위
+  html += `<div class="ctrl-section" style="margin-top:8px;">
+    <div style="font-size:9px;color:#6b7280;">이 설정은 영상 렌더링 시 적용됩니다.</div>
+  </div>`;
+
+  el.innerHTML = html;
+
+  // 현재 효과 미리보기 자동 재생
+  _playTransitionPreview(currentEffect, currentDur);
+}
+
+function selectTransition(effect) {
+  if (!composeState.transition) composeState.transition = {};
+  composeState.transition.effect = effect;
+  _dirty = true;
+  renderTabTransition();
+}
+
+function updateTransitionDur(dur) {
+  if (!composeState.transition) composeState.transition = {};
+  composeState.transition.duration = dur;
+  _dirty = true;
+  // 미리보기 갱신
+  const effect = composeState.transition.effect || (composerData.channel_config || {}).crossfade_transition || "fade";
+  _playTransitionPreview(effect, dur);
+}
+
+function _playTransitionPreview(effect, dur) {
+  const video = document.getElementById("transition-preview-video");
+  if (!video) return;
+  if (dur <= 0) {
+    video.style.display = "none";
+    return;
+  }
+  video.style.display = "";
+
+  // 선택된 슬라이드와 다음 슬라이드 인덱스
+  const sl = getSelectedSlide();
+  const allSlides = composerData.slides || [];
+  const order = composeState.slide_order && composeState.slide_order.length > 0
+    ? composeState.slide_order : allSlides.map(s => s.num);
+  let fromIdx = 1, toIdx = 2;
+  if (sl) {
+    const pos = order.indexOf(sl.num);
+    fromIdx = sl.num;
+    // 다음 슬라이드 (마지막이면 이전 슬라이드)
+    if (pos >= 0 && pos < order.length - 1) {
+      toIdx = order[pos + 1];
+    } else if (pos > 0) {
+      toIdx = order[pos - 1];
+    } else {
+      toIdx = fromIdx;
+    }
+  }
+
+  // 항상 작업별 API 사용 (이미지 없으면 서버에서 컬러 블록 폴백)
+  const src = `/api/jobs/${JOB_ID}/transition-preview?effect=${effect}&duration=${dur}&slide_from=${fromIdx}&slide_to=${toIdx}&t=${Date.now()}`;
+
+  video.src = src;
+  video.load();
+  video.play().catch(() => {});
+}
+
 
 // ─── Tab: Narration ───
 
@@ -1904,30 +2149,169 @@ async function startRender() {
   }
 }
 
-// ─── Highlight (부분 텍스트 컬러) ───
+// ─── Rich Text Color (텍스트 선택 → 컬러 적용) ───
 
-function addHighlight(slideNum) {
+let _lastRichTarget = null;  // 마지막으로 선택한 contenteditable 요소
+
+function applyTextColor(color) {
+  // contenteditable 안에서 선택된 텍스트에 컬러 적용
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+
+  const range = sel.getRangeAt(0);
+  // 선택이 rich-text-edit 안에 있는지 확인
+  const editEl = range.startContainer.parentElement?.closest(".rich-text-edit")
+              || range.startContainer.closest?.(".rich-text-edit");
+  if (!editEl) return;
+
+  const span = document.createElement("span");
+  span.style.color = color;
+  range.surroundContents(span);
+  sel.removeAllRanges();
+
+  // 저장
+  const slideNum = +editEl.dataset.slide;
+  const field = editEl.dataset.field;
+  _saveRichText(slideNum, field, editEl);
+}
+
+function applyTextFont(fontFamily) {
+  if (!fontFamily) return;
+  _wrapSelection(span => { span.style.fontFamily = `'${fontFamily}', sans-serif`; });
+  document.getElementById("rich-font-sel").value = "";
+}
+
+function applyTextSize(size) {
+  if (!size) return;
+  _wrapSelection(span => { span.style.fontSize = size; });
+  document.getElementById("rich-size-sel").value = "";
+}
+
+function applyTextBold() {
+  _wrapSelection(span => {
+    span.style.fontWeight = span.style.fontWeight === "900" ? "normal" : "900";
+  });
+}
+
+function removeTextStyle() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+
+  const range = sel.getRangeAt(0);
+  const editEl = _findRichEdit(range);
+  if (!editEl) return;
+
+  // 선택 범위 내 모든 span 제거 (plain text로)
+  const fragment = range.extractContents();
+  const text = fragment.textContent;
+  range.insertNode(document.createTextNode(text));
+  sel.removeAllRanges();
+
+  const slideNum = +editEl.dataset.slide;
+  _saveRichText(slideNum, editEl.dataset.field, editEl);
+}
+
+function _findRichEdit(range) {
+  let node = range.startContainer;
+  if (node.nodeType === 3) node = node.parentElement;
+  return node?.closest?.(".rich-text-edit");
+}
+
+function _wrapSelection(styleFn) {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+
+  const range = sel.getRangeAt(0);
+  const editEl = _findRichEdit(range);
+  if (!editEl) return;
+
+  // 이미 span 안에 있으면 기존 span에 스타일 적용
+  let node = range.startContainer;
+  if (node.nodeType === 3) node = node.parentElement;
+  const existingSpan = (node.tagName === "SPAN" && node.parentElement?.classList?.contains("rich-text-edit"))
+    ? node : null;
+
+  if (existingSpan && range.toString() === existingSpan.textContent) {
+    // 전체 span이 선택된 경우 — 기존 span에 스타일 추가
+    styleFn(existingSpan);
+  } else {
+    // 새 span으로 감싸기
+    const span = document.createElement("span");
+    styleFn(span);
+    try {
+      range.surroundContents(span);
+    } catch (e) {
+      // 복잡한 선택 (여러 노드 걸침) — extractContents 방식
+      const fragment = range.extractContents();
+      span.appendChild(fragment);
+      range.insertNode(span);
+    }
+  }
+  sel.removeAllRanges();
+
+  const slideNum = +editEl.dataset.slide;
+  _saveRichText(slideNum, editEl.dataset.field, editEl);
+}
+
+function onRichTextInput(slideNum, field) {
+  const editEl = document.getElementById(field === 'sub' ? 'rich-sub-edit' : 'rich-main-edit');
+  if (!editEl) return;
+  _saveRichText(slideNum, field, editEl);
+}
+
+function _saveRichText(slideNum, field, editEl) {
+  const html = editEl.innerHTML;
+  const plainText = editEl.textContent;
+
+  if (field === 'main') {
+    setOverride(slideNum, 'richMain', html);
+    setOverride(slideNum, 'main', plainText);
+  } else {
+    setOverride(slideNum, 'richSub', html);
+    setOverride(slideNum, 'sub', plainText);
+  }
+  _dirty = true;
+  renderPreview();
+}
+
+
+// ─── Legacy Highlight (하위 호환) ───
+
+function addHighlight(slideNum, target = 'main') {
   const ovr = getOverride(slideNum);
-  if (!ovr.highlights) setOverride(slideNum, 'highlights', []);
-  composeState.slide_overrides[slideNum].highlights.push({ text: "", color: "#ff6b35" });
+  const field = target === 'sub' ? 'subHighlights' : 'mainHighlights';
+  if (!ovr[field]) setOverride(slideNum, field, []);
+  const defaultColor = target === 'sub' ? '#4fc3f7' : '#ff6b35';
+  composeState.slide_overrides[slideNum][field].push({ text: "", color: defaultColor });
   _dirty = true;
   renderTabText();
 }
 
-function updateHighlight(slideNum, idx, key, val) {
+function updateHighlight(slideNum, idx, key, val, target = 'main') {
   const ovr = getOverride(slideNum);
-  if (ovr.highlights && ovr.highlights[idx]) {
-    ovr.highlights[idx][key] = val;
+  const field = target === 'sub' ? 'subHighlights' : 'mainHighlights';
+  // 하위 호환: 기존 highlights → mainHighlights로 마이그레이션
+  if (!ovr[field] && ovr.highlights && target === 'main') {
+    ovr.mainHighlights = ovr.highlights;
+    delete ovr.highlights;
+  }
+  if (ovr[field] && ovr[field][idx]) {
+    ovr[field][idx][key] = val;
     _dirty = true;
     renderPreview();
     renderTabText();
   }
 }
 
-function removeHighlight(slideNum, idx) {
+function removeHighlight(slideNum, idx, target = 'main') {
   const ovr = getOverride(slideNum);
-  if (ovr.highlights) {
-    ovr.highlights.splice(idx, 1);
+  const field = target === 'sub' ? 'subHighlights' : 'mainHighlights';
+  if (!ovr[field] && ovr.highlights && target === 'main') {
+    ovr.mainHighlights = ovr.highlights;
+    delete ovr.highlights;
+  }
+  if (ovr[field]) {
+    ovr[field].splice(idx, 1);
     _dirty = true;
     renderPreview();
     renderTabText();
