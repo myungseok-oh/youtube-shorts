@@ -1138,45 +1138,58 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
     else:
         media_instruction = f"- bg_media_type: {bg_media_type}"
 
+    # all-in-one용 비주얼 지침 (경량화)
+    _compact_style = style_rules
+    # 채널 커스텀이 없으면 축약 버전 사용 (DEFAULT_IMAGE_PROMPT_STYLE 대체)
+    if not (prompt_style and prompt_style.strip()):
+        _compact_style = (
+            "ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera, style\n"
+            "- 추상 개념 금지 → 카메라맨이 촬영할 수 있는 구체적 장소/사물\n"
+            "- wide→medium→close-up→wide 스케일 변화, 같은 구도 연속 금지\n"
+            "- photo/broll/logo: realistic, sharp focus, 8k, photojournalism\n"
+            "- graph: flat illustration, vector art, infographic (실사 금지)\n"
+            "- overview: modern news studio, broadcast newsroom\n"
+            "- closing: 빈 문자열\n"
+            "- BANNED: text/numbers in image, dark/moody themes, same scene repeated"
+        )
+
     prompt = f"""{instructions}
 
 ---
 
-## 오늘의 작업
+## 작업
 
-**현재 시각: {now_str} (한국시간)**
+**{now_str} (한국시간)** | {topic_section}
 
-{topic_section}
+3단계를 순서대로 사고한 뒤 최종 JSON을 출력해.
 
-너는 아래 3단계를 **머릿속에서 순서대로 사고**한 뒤, 최종 결과를 JSON으로 출력해.
+## STEP 1: 시놉시스
 
----
+웹 검색으로 최신 팩트를 수집하고 스토리 구조를 설계해.
 
-## STEP 1: 시놉시스 (웹 검색 + 스토리 구조)
-
-주제에 대해 웹 검색으로 최신 정보/팩트를 수집하고, 영상의 전체 스토리 구조를 설계해.
-
-### 웹 검색 규칙
-- WebSearch 결과의 제목+요약만으로 팩트를 파악할 수 있으면 WebFetch 생략
-- WebFetch는 정확한 수치 확인이 필요할 때만, 최대 1~2회
-- 오늘({date_str}) 또는 어제 기사만 사용 (뉴스 주제인 경우)
+### ★ 웹 검색 규칙 (속도 최우선)
+- WebSearch **1회**로 핵심 팩트 수집 (snippet만으로 충분하면 추가 검색 금지)
+- WebFetch **금지** (snippet에 없는 정확한 수치가 반드시 필요할 때만 최대 1회)
+- 오늘({date_str}) 또는 어제 기사만 사용
 
 ### 시놉시스 규칙
-- ★ 목표 영상 길이: **{target_duration}초**
-- 씬당 평균 5~6초 → {target_duration // 5}~{target_duration // 5 + 2}개 씬
-- 각 씬은 한줄 키워드/요약만 (대본 수준 문장 금지)
-- 씬 간 인과 관계를 명확히{outro_note}
+- 목표: **{target_duration}초**, 씬당 5~6초 → {target_duration // 5}~{target_duration // 5 + 2}개 씬
+- 씬별 한줄 키워드만, 씬 간 인과 관계 명확히{outro_note}
 
----
+## STEP 1.5: 비주얼 스타일 가이드
 
-## STEP 2: 비주얼 플랜 (이미지/영상 프롬프트)
+모든 씬에 걸쳐 **시각적 일관성**을 유지할 스타일 가이드를 먼저 정의하라.
+- art_style: 전체 영상의 그림체/톤 (예: "soft cel-shaded anime, pastel warm tones, clean linework")
+- color_palette: 3~5개 주요 색상 (예: "soft pink, cream, sky blue, warm beige")
+- character_design: 주요 인물의 외형 상세 정의 — 헤어스타일, 눈, 체형, 의상, 소품 등. 모든 씬에서 동일 인물이 같은 외형으로 등장해야 함 (예: "young woman, shoulder-length black hair, large round eyes, white blouse, navy skirt, cheerful expression")
+- consistency_keywords: 모든 프롬프트에 반복 삽입할 키워드 (예: "consistent art style, same character design, same color palette")
+- ★ character_design + consistency_keywords를 STEP 2의 **모든 en 프롬프트에 반드시 포함**시켜라.
+- ★ 일러스트/애니메 스타일에서는 인물 등장 가능 (실사 스타일에서만 인물 금지)
 
-시놉시스의 각 씬에 대해 배경 이미지/영상 프롬프트를 작성해.
+## STEP 2: 비주얼 플랜
 
-### 비주얼 지침
-{style_rules}
-
-{f"### 주제별 현장 레퍼런스{chr(10)}{scene_references.strip()}" if scene_references and scene_references.strip() else ""}
+{_compact_style}
+{f"{chr(10)}### 현장 레퍼런스{chr(10)}{scene_references.strip()}" if scene_references and scene_references.strip() else ""}
 
 ### Image Style
 {_image_style_instruction(image_style)}
@@ -1184,82 +1197,51 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
 ### Image Size
 {_image_size_instruction(layout, bg_display_mode)}
 
-### duration 규칙
-- 모든 씬의 duration 합계 ≈ {target_duration}초
-- image 씬: 5초 기본, 정보량 많은 씬만 10초 (10초는 1~2개 이하)
-- video 씬: 6초 고정
-- 어중간한 6~7초 image 금지
-
-### media 배치
+### duration/media
+- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). ★ video: 반드시 6초 고정 (6초 초과 금지). 6~7초 image 금지
 {media_instruction}
-- graph/overview 타입은 항상 image
-- video의 en 프롬프트에 움직임 키워드 포함
+- graph/overview → 항상 image. video의 en에 움직임 키워드 포함
+- motion: 카메라+피사체+환경 조합 (예: "slow zoom in on factory as smoke rises")
+- bg_type: photo/broll/graph/logo/closing. overview는 라운드업 전용 (단일 형식 사용 금지)
 
-### motion 규칙
-- 단순 카메라 동작만 X → 카메라+피사체+환경 조합
-- 예: "slow zoom in on factory exterior as smoke rises"
+## STEP 3: 대본
 
-### bg_type
-- overview: ★ **라운드업(roundup) 형식에서만 사용** — 단일(single) 형식에서는 절대 사용 금지
-- photo(실제 장소), broll(시네마틱), graph(인포그래픽), logo(기업), closing(빈 프롬프트)
-
----
-
-## STEP 3: 대본 작성 (비주얼 플랜에 맞춤)
-
-비주얼 플랜의 duration에 맞춰 나레이션과 슬라이드 텍스트를 작성해.
-
-### duration → 문장 수 (한국어 TTS 초당 ~4.5음절)
-- IMAGE 5초 → 1~2문장 (20~25자)
-- IMAGE 10초 → 3~4문장 (40~50자)
-- VIDEO 6초 → 2문장 (25~30자)
-
-### ★★★ 나레이션 연결 규칙 (매우 중요) ★★★
-sentences를 처음부터 끝까지 이어 읽으면 **하나의 연속된 내레이션**이 되어야 함.
-슬라이드가 바뀌어도 이야기 흐름은 끊기지 않는다.
-
-**슬라이드 간 인과/논리 연결 필수:**
-- 현상 → 원인: "~했기 때문입니다", "원인은 ~"
-- 원인 → 결과: "그 결과 ~", "이 때문에 ~"
-- 데이터 → 해석: "이게 의미하는 건 ~", "다시 말해 ~"
-
-**금지:** 각 슬라이드가 독립된 내용처럼 시작하는 것
+비주얼 플랜의 duration에 맞춰 나레이션 작성. TTS 초당 ~4.5음절 기준:
+- 5초 → 1~2문장(20~25자), 10초 → 3~4문장(40~50자)
+- ★ video(6초) → 반드시 2문장, 25~30자 이내. video는 6초 고정이므로 대본도 6초 분량만 작성
+- ★ sentences를 이어 읽으면 연속된 내레이션이 되어야 함. 슬라이드 간 인과 연결 필수 (끊김 금지)
 
 ### 대본 규칙
 {rules_text}
 
----
-
-## 출력 형식
-
-다음 JSON을 출력해. 다른 텍스트 없이 JSON만.
+## 출력 (JSON만 출력, 다른 텍스트 금지)
 
 {{
+  "style_guide": {{
+    "art_style": "그림체/톤 키워드",
+    "color_palette": "주요 색상 3~5개",
+    "character_design": "주요 인물 외형 상세 (헤어, 눈, 체형, 의상 등)",
+    "consistency_keywords": "모든 en 프롬프트에 삽입할 스타일 키워드"
+  }},
   "synopsis": {{
-    "synopsis": "전체 스토리 1~2줄 요약",
-    "scenes": [
-      {{"scene": 1, "role": "hook", "message": "씬 키워드/요약", "keywords": ["k1","k2"]}},
-      ...
-    ],
-    "news_facts": ["수집된 팩트 목록"]
+    "synopsis": "1~2줄 요약",
+    "scenes": [{{"scene": 1, "role": "hook", "message": "키워드", "keywords": ["k1"]}}, ...],
+    "news_facts": ["팩트 목록"]
   }},
   "visual_plan": [
     {{"scene": 1, "media": "image", "duration": 5, "bg_type": "photo",
-      "en": "English prompt 30-60 words", "ko": "한국어 설명", "motion": "camera+subject+env"}},
-    ...
+      "en": "★ consistency_keywords 포함 English prompt 30-60 words", "ko": "한국어 설명", "motion": "motion desc"}}, ...
   ],
   "script": {{
     "news_date": "{date_str}",
     "youtube_title": "제목 (100자 이내)",
-    "sentences": [{{"text": "나레이션 문장", "slide": 1}}, ...],
-    "slides": [{{"category": "카테고리", "main": "핵심 <span class=\\"hl\\">강조</span>", "sub": "보조 설명", "bg_type": "photo"}}, ...]
+    "sentences": [{{"text": "나레이션", "slide": 1}}, ...],
+    "slides": [{{"category": "카테고리", "main": "핵심 <span class=\\"hl\\">강조</span>", "sub": "보조", "bg_type": "photo"}}, ...]
   }}
 }}
 
-★ visual_plan과 slides는 1:1 매핑 (같은 순서, 같은 bg_type)
-★ closing 씬: {{"scene":N, "media":"image", "duration":0, "bg_type":"closing", "en":"", "ko":"", "motion":""}}
-★ sentences에 HTML 태그 금지, slides의 main/sub에만 <span class="hl">...</span> 사용
-★ brand: "{brand}"
+★ visual_plan↔slides 1:1 매핑. closing: {{"scene":N,"media":"image","duration":0,"bg_type":"closing","en":"","ko":"","motion":""}}
+★ sentences: HTML 금지. slides main/sub: <span class="hl">...</span>만 허용. brand: "{brand}"
 """
 
     if use_subagent:

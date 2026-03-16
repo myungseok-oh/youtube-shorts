@@ -241,21 +241,66 @@ def _fmt_investor(val) -> str:
     return f"{s}억"
 
 
+def _market_time_label(market: str) -> str:
+    """요일+시간(KST) 기반 시장 시점 표현 반환.
+
+    market: "us" | "kr" | "crypto"
+
+    US 증시 (월~금 23:30~06:00 KST, 서머타임 기준 변동):
+      월/일        → "지난 금요일 마감"
+      화~금        → "간밤 마감"
+      토           → "어젯밤 마감"
+
+    국내 증시 (월~금 09:00~15:30 KST):
+      평일 09~15시  → "오늘 장중"  (장 열려 있음)
+      평일 15시 이후 → "오늘 마감"
+      평일 09시 이전 → "어제 마감" (화~금) / "지난 금요일 마감" (월)
+      토            → "어제 마감"
+      일            → "지난 금요일 마감"
+
+    코인: 항상 "현재"
+    """
+    if market == "crypto":
+        return "현재"
+    now = datetime.now(KST)
+    wd = now.weekday()  # 0=월 ~ 6=일
+    hour = now.hour
+
+    if market == "us":
+        if wd in (0, 6):  # 월/일 → 금요일 데이터
+            return "지난 금요일 마감"
+        elif wd == 5:     # 토 → 어젯밤 금요일 장 마감
+            return "어젯밤 마감"
+        else:             # 화~금
+            return "간밤 마감"
+    else:  # kr
+        if wd == 6:       # 일요일
+            return "지난 금요일 마감"
+        elif wd == 5:     # 토요일
+            return "어제 마감"
+        elif wd == 0 and hour < 9:  # 월요일 장 전
+            return "지난 금요일 마감"
+        elif hour < 9:    # 화~금 장 전
+            return "어제 마감"
+        elif hour < 16:   # 평일 장중 (09~15:30, 여유 두고 16시까지)
+            return "오늘 장중"
+        else:             # 평일 장 마감 후
+            return "오늘 마감"
+
+
 def format_market_context(data: dict) -> str:
     """수집 데이터 → 프롬프트 주입용 마크다운"""
     now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
-    lines = [f"## 📊 오늘 시장 데이터 ({now_kst})", ""]
+    lines = [f"## 오늘 시장 데이터 ({now_kst})", ""]
+
+    us_label = _market_time_label("us")
+    kr_label = _market_time_label("kr")
 
     # 글로벌 증시
     gl = data.get("global_stocks", {})
     if gl and any(gl.get(k) for k in ("dow", "sp500", "nasdaq")):
-        time_ref = ""
-        for k in ("dow", "sp500", "nasdaq"):
-            t = gl.get(k, {}).get("time")
-            if t:
-                time_ref = t
-                break
-        lines.append(f"### 글로벌 증시 ({time_ref} 기준)" if time_ref else "### 글로벌 증시")
+        lines.append(f"### 글로벌 증시 ({us_label})")
+        lines.append(f"★ 나레이션에서 \"{us_label}\" 표현을 사용할 것")
         for key in ("dow", "sp500", "nasdaq"):
             info = gl.get(key, {})
             if info.get("price"):
@@ -268,13 +313,8 @@ def format_market_context(data: dict) -> str:
     # 국내 증시
     kr = data.get("kr_stocks", {})
     if kr and any(kr.get(k) for k in ("kospi", "kosdaq")):
-        time_ref = ""
-        for k in ("kospi", "kosdaq"):
-            t = kr.get(k, {}).get("time")
-            if t:
-                time_ref = t
-                break
-        lines.append(f"### 국내 증시 ({time_ref} 기준)" if time_ref else "### 국내 증시")
+        lines.append(f"### 국내 증시 ({kr_label})")
+        lines.append(f"★ 나레이션에서 \"{kr_label}\" 표현을 사용할 것")
         for key in ("kospi", "kosdaq"):
             info = kr.get(key, {})
             if info.get("price"):
@@ -300,8 +340,7 @@ def format_market_context(data: dict) -> str:
     # 코인
     btc = data.get("crypto", {})
     if btc and btc.get("price_usd"):
-        time_ref = btc.get("time", "")
-        lines.append(f"### 코인 시장 ({time_ref} 기준)" if time_ref else "### 코인 시장")
+        lines.append(f"### 코인 시장 ({_market_time_label('crypto')})")
         usd = _fmt_price(btc["price_usd"])
         krw = _fmt_price(btc.get("price_krw"))
         chg = ""
@@ -333,6 +372,6 @@ def format_market_context(data: dict) -> str:
 
     lines.append("⚠️ 위 시장 데이터는 실시간 크롤링된 정확한 수치입니다.")
     lines.append("- 위 수치를 대본에 그대로 사용할 것 (WebSearch로 별도 시세 검색 금지)")
-    lines.append("- 시간 기준도 위에 표시된 그대로 인용할 것")
+    lines.append("- ★ 각 섹션의 시점 표현(간밤/어제/지난 금요일/현재)을 나레이션에 반드시 반영할 것")
     lines.append("- 위에 없는 추가 정보(핫 코인, 특이 이벤트, 원인 분석 등)만 WebSearch로 보충")
     return "\n".join(lines)

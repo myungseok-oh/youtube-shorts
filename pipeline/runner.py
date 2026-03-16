@@ -270,6 +270,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
 
             meta["synopsis"] = synopsis
             meta["visual_plan"] = visual_plan
+            meta["style_guide"] = result.get("style_guide", {})
 
             # visual_plan → image_prompts 변환 (Phase B 호환)
             image_prompts = []

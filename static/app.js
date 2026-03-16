@@ -145,7 +145,7 @@ async function loadAll() {
 // ─── Sidebar ───
 
 function selectChannel(channelId) {
-  selectedChannelId = channelId;
+  selectedChannelId = selectedChannelId === channelId ? null : channelId;
   renderChannels(channelsCache);
   renderMain(channelsCache);
 }
@@ -3201,6 +3201,8 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-zone-ratio").value = cfg.slide_zone_ratio || "";
   document.getElementById("cs-text-bg").value = cfg.slide_text_bg != null ? cfg.slide_text_bg : 4;
   document.getElementById("cs-text-bg-label").textContent = cfg.slide_text_bg != null ? cfg.slide_text_bg : 4;
+  document.getElementById("cs-sub-text-size").value = cfg.sub_text_size || 0;
+  document.getElementById("cs-sub-text-size-label").textContent = cfg.sub_text_size || 0;
   document.getElementById("cs-production-mode").value = cfg.production_mode || "manual";
   document.getElementById("cs-auto-bg-source").value = cfg.auto_bg_source || "sd_image";
   document.getElementById("cs-gemini-api-key").value = cfg.gemini_api_key || "";
@@ -3315,6 +3317,7 @@ async function saveChannelSettings() {
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.slide_zone_ratio = document.getElementById("cs-zone-ratio").value.trim();
   cfg.slide_text_bg = parseInt(document.getElementById("cs-text-bg").value) || 4;
+  cfg.sub_text_size = parseInt(document.getElementById("cs-sub-text-size").value) || 0;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _setIfPresent("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
@@ -3578,6 +3581,7 @@ async function saveChannelSettingsSilent() {
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.slide_zone_ratio = document.getElementById("cs-zone-ratio").value.trim();
   cfg.slide_text_bg = parseInt(document.getElementById("cs-text-bg").value) || 4;
+  cfg.sub_text_size = parseInt(document.getElementById("cs-sub-text-size").value) || 0;
   cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _set("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());

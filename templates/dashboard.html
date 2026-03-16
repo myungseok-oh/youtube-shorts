@@ -194,6 +194,13 @@
           <p class="text-xs text-gray-500 mt-1">0=투명, 10=완전 검정</p>
         </div>
         <div>
+          <label class="block text-sm text-gray-400 mb-1">서브 텍스트 크기 <span id="cs-sub-text-size-label" class="text-orange-400">0</span>px</label>
+          <input id="cs-sub-text-size" type="range" min="0" max="100" step="2" value="0"
+                 oninput="document.getElementById('cs-sub-text-size-label').textContent=this.value"
+                 class="w-full accent-orange-500">
+          <p class="text-xs text-gray-500 mt-1">0=기본값(56px). 슬라이드 하단 보조 텍스트 크기 조절</p>
+        </div>
+        <div>
           <label class="block text-sm text-gray-400 mb-1">영상 형식</label>
           <select id="cs-format"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">

@@ -11,7 +11,7 @@
   border: 1px solid #333;
   border-radius: 12px;
   padding: 24px;
-  width: 90%; max-width: 560px;
+  width: 90%; max-width: 640px;
   max-height: 90vh;
   overflow-y: auto;
 }
