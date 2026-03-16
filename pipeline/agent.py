@@ -181,6 +181,160 @@ def _run_claude(prompt: str, timeout: int = 120, use_web: bool = True,
     raise subprocess.TimeoutExpired(cmd, timeout) from last_err
 
 
+# ── Gemini Flash 텍스트 생성 ──────────────────────────────
+
+def _run_gemini(prompt: str, api_key: str, model: str = "gemini-2.5-flash",
+                timeout: int = 60) -> str:
+    """Gemini Flash로 텍스트 생성 (Phase A 대본 드래프트용).
+
+    Returns:
+        생성된 텍스트 (JSON 문자열 포함)
+    """
+    from google import genai
+    from google.genai import types
+
+    import time as _time
+    client = genai.Client(api_key=api_key)
+    print(f"[gemini] 요청 시작: model={model}, prompt_len={len(prompt)}")
+    _t0 = _time.time()
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.7,
+        ),
+    )
+    _elapsed = _time.time() - _t0
+    _text = response.text or ""
+    print(f"[gemini] 응답 완료: {_elapsed:.1f}초, response_len={len(_text)}")
+    return _text
+
+
+def _validate_with_claude(draft_json: dict, instructions: str, brand: str,
+                          topic: str, target_duration: int = 60) -> dict:
+    """Claude CLI로 Gemini 드래프트의 script 부분만 검증 및 보정.
+
+    synopsis/visual_plan은 그대로 유지, script만 Claude에 전달하여 프롬프트 최소화.
+    """
+    script = draft_json.get("script", {})
+    script_str = json.dumps(script, ensure_ascii=False)
+
+    _max_slides = target_duration // 5 + 2
+    prompt = f"""대본 검증. 목표={target_duration}초, closing 제외 최대 {_max_slides}개 슬라이드.
+초과 시 병합/삭제. main 20자·sub 25자 넘으면 축약. 문제 없으면 그대로. JSON만 출력.
+
+{script_str}"""
+    raw = _run_claude(prompt, timeout=180, model="claude-sonnet-4-6",
+                      retries=0, use_web=False)
+    validated_script = _parse_response(raw, brand, required_fields=())
+
+    # script만 교체, synopsis/visual_plan은 원본 유지
+    result = dict(draft_json)
+    result["script"] = validated_script
+
+    # slides 수 변경 시 visual_plan도 동기화
+    new_slides = validated_script.get("slides", [])
+    old_vp = result.get("visual_plan", [])
+    if len(new_slides) != len(old_vp):
+        result["visual_plan"] = _sync_visual_plan(old_vp, new_slides)
+
+    return result
+
+
+def _sync_visual_plan(old_vp: list, new_slides: list) -> list:
+    """slides 수에 맞게 visual_plan 동기화."""
+    vp = []
+    for i, s in enumerate(new_slides):
+        if i < len(old_vp):
+            entry = dict(old_vp[i])
+        else:
+            entry = {
+                "media": "image", "duration": 5,
+                "bg_type": s.get("bg_type", "photo"),
+                "en": "", "ko": "", "motion": "",
+            }
+        entry["scene"] = i + 1
+        entry["bg_type"] = s.get("bg_type", entry.get("bg_type", "photo"))
+        if s.get("bg_type") == "closing":
+            entry["duration"] = 0
+            entry["en"] = ""
+        vp.append(entry)
+    return vp
+
+
+def _normalize_gemini_result(data: dict) -> dict:
+    """Gemini 응답 구조를 {synopsis, visual_plan, script} 형태로 보정.
+
+    Gemini가 3단계 구조를 무시하고 script 내용을 최상위에 풀어놓는 경우 대응.
+    visual_plan이 없으면 slides 기반으로 자동 생성.
+    """
+    # Case 1: 이미 올바른 구조
+    if "script" in data and "visual_plan" in data:
+        # visual_plan이 비어있으면 보정
+        if not data["visual_plan"]:
+            data["visual_plan"] = _build_visual_plan_from_slides(
+                data["script"].get("slides", []))
+        if "synopsis" not in data:
+            data["synopsis"] = _build_synopsis_from_script(data["script"])
+        return data
+
+    # Case 2: script 내용이 최상위에 풀려있는 경우 (sentences, slides가 최상위)
+    if "sentences" in data and "slides" in data:
+        script = {
+            "news_date": data.pop("news_date", ""),
+            "youtube_title": data.pop("youtube_title", ""),
+            "sentences": data.pop("sentences", []),
+            "slides": data.pop("slides", []),
+        }
+        vp = data.pop("visual_plan", [])
+        syn = data.pop("synopsis", {})
+        if not vp:
+            vp = _build_visual_plan_from_slides(script["slides"])
+        if not syn:
+            syn = _build_synopsis_from_script(script)
+        return {"synopsis": syn, "visual_plan": vp, "script": script,
+                "style_guide": data.pop("style_guide", {})}
+
+    # Case 3: 알 수 없는 구조 → 에러
+    raise RuntimeError(f"Gemini 응답 구조 인식 불가: {list(data.keys())}")
+
+
+def _build_visual_plan_from_slides(slides: list) -> list:
+    """slides 배열로부터 기본 visual_plan 생성."""
+    vp = []
+    for i, s in enumerate(slides):
+        bg_type = s.get("bg_type", "photo")
+        is_closing = bg_type == "closing"
+        vp.append({
+            "scene": i + 1,
+            "media": "image",
+            "duration": 0 if is_closing else 5,
+            "bg_type": bg_type,
+            "en": "",
+            "ko": s.get("main", "").replace('<span class="hl">', "").replace("</span>", ""),
+            "motion": "",
+        })
+    return vp
+
+
+def _build_synopsis_from_script(script: dict) -> dict:
+    """script에서 간이 synopsis 생성."""
+    slides = script.get("slides", [])
+    scenes = []
+    for i, s in enumerate(slides):
+        scenes.append({
+            "scene": i + 1,
+            "role": "content",
+            "message": s.get("main", "").replace('<span class="hl">', "").replace("</span>", ""),
+            "keywords": [],
+        })
+    return {
+        "synopsis": script.get("youtube_title", ""),
+        "scenes": scenes,
+        "news_facts": [],
+    }
+
 
 # ── 외부화 가능한 기본값 상수 ──────────────────────────────
 # 채널 config에 값이 있으면 해당 값으로 완전 대체. 비어있으면 기본값 사용.
@@ -212,10 +366,9 @@ DEFAULT_ROUNDUP_RULES = """\
 ### 슬라이드 구성 (필수)
 1. **첫 슬라이드 (Overview — 헤드라인)**: 5개 뉴스 헤드라인을 빠르게 나열하며 시작
    - category: "오늘의 뉴스" 또는 날짜 포함
-   - main: "오늘의 핵심 뉴스 <span class="hl">N선</span>"
-   - sub: "① 주제1 헤드라인 ② 주제2 헤드라인 ③ ..." (주제별 5~10자 핵심 키워드)
-   - sentences: 5개 뉴스 헤드라인을 빠르게 나열 + "전해드리겠습니다" (2~3문장)
-     예: "반도체 수출 역대 최고, 환율 급등, AI 규제안까지. 오늘의 핵심 뉴스 전해드리겠습니다"
+   - main: 채널 지침에 맞는 짧은 타이틀 (15자 이내)
+   - sub: "① 주제1 ② 주제2 ③ ..." (주제별 5~10자 핵심 키워드)
+   - sentences: 뉴스 헤드라인을 빠르게 나열하며 시작 (2~3문장)
    - **bg_type: "overview"** (전용 레이아웃: 진한 오버레이 + 번호 리스트)
 
 2. **주제별 슬라이드 (각 1개씩)**: 각 뉴스를 1슬라이드로 요약
@@ -332,8 +485,12 @@ def _is_specific_topic(request: str) -> bool:
 
 
 def parse_request(request: str, instructions: str = "", trend_context: str = "",
-                   recent_topics: list[str] | None = None) -> list[str]:
+                   recent_topics: list[str] | None = None,
+                   skip_web_search: bool = False) -> list[str]:
     """자유 형식 요청을 개별 뉴스 주제 리스트로 변환.
+
+    skip_web_search=True: 교양/상식 채널용 — 웹검색 없이 가이드라인에서 주제 선정.
+    skip_web_search=False(기본): 뉴스 채널용 — 웹검색으로 오늘 뉴스 주제 추출.
 
     예: "오늘 경제 뉴스 3개 만들어줘" → ["원/달러 환율 급등", "코스피 하락", "금리 동결"]
     예: "'반도체 호황' 삼성전자 연봉 역대 최대" → ["'반도체 호황' 삼성전자 연봉 역대 최대"]
@@ -342,19 +499,13 @@ def parse_request(request: str, instructions: str = "", trend_context: str = "",
     if _is_specific_topic(request):
         return [request.strip()]
 
-    trend_section = ""
-    if trend_context:
-        trend_section = f"""
-{trend_context}
-
-"""
-
     recent_section = ""
     if recent_topics:
+        dedup_label = "이미 다룬 주제" if skip_web_search else "최근 24시간 이내에 이미 만든 주제"
         recent_section = f"""
-아래는 최근 24시간 이내에 이미 만든 주제 목록이야. 이 주제들과 겹치지 않는 완전히 다른 뉴스를 선정해.
-같은 사건을 다른 각도로 다루는 것도 안 됨. 완전히 다른 이슈여야 함:
-{chr(10).join(f"- {t}" for t in recent_topics[:15])}
+아래는 {dedup_label} 목록이야. 이 주제들과 겹치지 않는 완전히 다른 주제를 선정해.
+같은 개념을 다른 각도로 다루는 것도 안 됨. 완전히 다른 주제여야 함:
+{chr(10).join(f"- {t}" for t in recent_topics[:30])}
 
 """
 
@@ -362,7 +513,31 @@ def parse_request(request: str, instructions: str = "", trend_context: str = "",
     now_str = now.strftime("%Y년 %m월 %d일 %H시")
     date_str = now.strftime("%Y-%m-%d")
 
-    prompt = f"""유튜브 쇼츠 뉴스 영상 주제를 추출해.
+    if skip_web_search:
+        # ── 교양/상식 채널: 웹검색 없이 가이드라인 기반 주제 생성 ──
+        prompt = f"""유튜브 쇼츠 교양 영상 주제를 선정해.
+
+요청:
+{request}
+
+{f"채널 지침 요약: {instructions[:300]}" if instructions else ""}
+{recent_section}규칙:
+- 요청의 주제 카테고리와 예시를 참고해서 구체적인 주제 1개를 골라라
+- 주제는 구체적인 현상/효과/개념 이름 (예: "더닝크루거 효과", "입면경련", "꿀이 안 상하는 이유")
+- 웹 검색 하지 마라. 일반 지식으로 선정만 하면 됨
+- 기존 주제와 중복 금지
+- "N개" 명시 시 정확히 N개, 없으면 1개
+
+JSON 배열만 출력: ["주제"]"""
+    else:
+        # ── 뉴스 채널: 웹검색으로 오늘 뉴스 주제 추출 ──
+        trend_section = ""
+        if trend_context:
+            trend_section = f"""
+{trend_context}
+
+"""
+        prompt = f"""유튜브 쇼츠 뉴스 영상 주제를 추출해.
 
 현재: {now_str} (한국시간)
 요청: {request}
@@ -378,7 +553,9 @@ def parse_request(request: str, instructions: str = "", trend_context: str = "",
 
 JSON 배열만 출력: ["주제1", "주제2"]"""
 
-    raw = _run_claude(prompt, timeout=300, model="claude-haiku-4-5-20251001")
+    _use_web = not skip_web_search
+    raw = _run_claude(prompt, timeout=300, model="claude-haiku-4-5-20251001",
+                      use_web=_use_web)
     return _parse_topics(raw, request)
 
 
@@ -807,7 +984,7 @@ def generate_visual_plan(topic: str, synopsis: dict,
     # media 타입 전략 결정
     if bg_media_type == "auto":
         media_instruction = (
-            "- 전체 프롬프트 중 25~35%를 'video'로 지정\n"
+            "- 이미지:영상 비율 약 6:4 (전체 프롬프트 중 ~40%를 'video'로 지정)\n"
             "- 나머지는 'image'\n"
             "- 동적 장면(행동/움직임/변화)은 video, 정적 장면(설명/도입/정리)은 image"
         )
@@ -829,6 +1006,15 @@ Synopsis: {synopsis_text}
 ## 씬 구성
 {chr(10).join(scene_descs)}
 
+## STEP 0: 비주얼 스타일 가이드 (먼저 정의)
+모든 씬에 걸쳐 **시각적 일관성**을 유지할 스타일을 먼저 정의하라.
+- art_style: 전체 영상의 그림체/톤
+- color_palette: 3~5개 주요 색상
+- character_design: 주요 인물의 외형 상세 정의 — 헤어스타일, 눈, 체형, 의상, 소품 등. 모든 씬에서 동일 인물이 같은 외형으로 등장해야 함
+- consistency_keywords: 모든 en 프롬프트에 반복 삽입할 키워드
+- ★ character_design + consistency_keywords를 **모든 en 프롬프트에 반드시 포함**시켜라.
+- ★ 일러스트/애니메 스타일에서는 인물 등장 가능 (실사 스타일에서만 인물 금지)
+
 ## 비주얼 플랜 지침 (반드시 따를 것)
 {style_rules}
 
@@ -847,7 +1033,7 @@ Synopsis: {synopsis_text}
 이 비주얼 플랜에 따라 대본이 작성된다. 따라서:
 1. **duration 결정이 핵심**: 모든 씬의 duration 합계가 ~{target_duration}초가 되도록 배분
    - image 씬: 5초 기본. 정보량이 많은 씬만 10초 (10초 씬은 전체의 1~2개 이하)
-   - video 씬: 6초 (Veo 영상 길이 고정)
+   - ★ video 씬: 반드시 6초 고정 (6초 초과 금지)
    - 어중간한 6~7초 image 금지
 2. **시각적 리듬**: wide → medium → close-up → wide 순서로 스케일 변화
 3. **연속 금지**: 같은 앵글/스케일 연속 사용 금지
@@ -1088,7 +1274,9 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
                         bg_display_mode: str = "zone",
                         bg_media_type: str = "auto",
                         script_rules: str = "",
-                        roundup_rules: str = "") -> dict:
+                        roundup_rules: str = "",
+                        skip_web_search: bool = False,
+                        gemini_api_key: str = "") -> dict:
     """Phase A 통합: 시놉시스 + 비주얼 플랜 + 대본을 1회 Claude 호출로 생성. [Sonnet, 웹검색O]
 
     Returns:
@@ -1130,7 +1318,7 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
     # media 타입 전략
     if bg_media_type == "auto":
         media_instruction = (
-            "- 전체 씬 중 25~35%를 'video'로 지정\n"
+            "- 이미지:영상 비율 약 6:4 (전체 씬 중 ~40%를 'video'로 지정)\n"
             "- 동적 장면(행동/움직임/변화)은 video, 정적 장면(설명/도입/정리)은 image"
         )
     elif bg_media_type == "single":
@@ -1153,6 +1341,18 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
             "- BANNED: text/numbers in image, dark/moody themes, same scene repeated"
         )
 
+    # 웹검색 스킵 여부에 따라 시놉시스 지침 분기
+    if skip_web_search:
+        _synopsis_instruction = "위 지침에 제공된 데이터만으로 스토리 구조를 설계해. 웹 검색 금지."
+    else:
+        _synopsis_instruction = (
+            "웹 검색으로 최신 팩트를 수집하고 스토리 구조를 설계해.\n\n"
+            "### ★ 웹 검색 규칙 (속도 최우선)\n"
+            f"- WebSearch **1회**로 핵심 팩트 수집 (snippet만으로 충분하면 추가 검색 금지)\n"
+            f"- WebFetch **금지** (snippet에 없는 정확한 수치가 반드시 필요할 때만 최대 1회)\n"
+            f"- 오늘({date_str}) 또는 어제 기사만 사용"
+        )
+
     prompt = f"""{instructions}
 
 ---
@@ -1165,12 +1365,7 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
 
 ## STEP 1: 시놉시스
 
-웹 검색으로 최신 팩트를 수집하고 스토리 구조를 설계해.
-
-### ★ 웹 검색 규칙 (속도 최우선)
-- WebSearch **1회**로 핵심 팩트 수집 (snippet만으로 충분하면 추가 검색 금지)
-- WebFetch **금지** (snippet에 없는 정확한 수치가 반드시 필요할 때만 최대 1회)
-- 오늘({date_str}) 또는 어제 기사만 사용
+{_synopsis_instruction}
 
 ### 시놉시스 규칙
 - 목표: **{target_duration}초**, 씬당 5~6초 → {target_duration // 5}~{target_duration // 5 + 2}개 씬
@@ -1244,16 +1439,46 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
 ★ sentences: HTML 금지. slides main/sub: <span class="hl">...</span>만 허용. brand: "{brand}"
 """
 
-    if use_subagent:
+    if use_subagent and not skip_web_search:
         prompt += """
 ### ★ 서브에이전트 병렬 처리
 - Agent 도구로 각 주제의 검색을 병렬 수행하라.
 """
 
-    raw = _run_claude(prompt, timeout=900, model="claude-sonnet-4-6",
-                      retries=1, use_subagent=use_subagent)
+    # ── Gemini 1차 생성 + Claude 검증 or 기존 Claude 단독 ──
+    if gemini_api_key:
+        import time as _time
+        print(f"[agent] Gemini+Claude mode 시작: topic={topic[:40]}")
+        _t_total = _time.time()
+        try:
+            # Step 1: Gemini 드래프트
+            raw_gemini = _run_gemini(prompt, api_key=gemini_api_key)
+            draft = _parse_response(raw_gemini, brand, required_fields=())
+            draft = _normalize_gemini_result(draft)
+            _sc = draft.get("script", {})
+            print(f"[gemini] 드래프트 완료: {_time.time()-_t_total:.1f}초, "
+                  f"sentences={len(_sc.get('sentences',[]))}, slides={len(_sc.get('slides',[]))}")
 
-    result = _parse_response(raw, brand, required_fields=("synopsis", "visual_plan", "script"))
+            # Step 2: Claude 검증
+            print("[agent] Claude 검증 시작...")
+            _t_val = _time.time()
+            result = _validate_with_claude(draft, instructions, brand, topic,
+                                             target_duration=target_duration)
+            result = _normalize_gemini_result(result)  # Claude 출력도 구조 보정
+            _sc2 = result.get("script", {})
+            print(f"[agent] Claude 검증 완료: {_time.time()-_t_val:.1f}초, "
+                  f"sentences={len(_sc2.get('sentences',[]))}, slides={len(_sc2.get('slides',[]))}")
+            print(f"[agent] Gemini+Claude 총 소요: {_time.time()-_t_total:.1f}초")
+        except Exception as e:
+            print(f"[agent] Gemini+Claude 실패 ({e}), Claude CLI 폴백")
+            gemini_api_key = ""  # 아래 Claude 폴백으로
+
+    if not gemini_api_key:
+        _timeout = 300 if skip_web_search else 900
+        raw = _run_claude(prompt, timeout=_timeout, model="claude-sonnet-4-6",
+                          retries=1, use_subagent=use_subagent if not skip_web_search else False,
+                          use_web=not skip_web_search)
+        result = _parse_response(raw, brand, required_fields=("synopsis", "visual_plan", "script"))
 
     # script 필수 필드 검증
     script = result.get("script", {})
@@ -1485,6 +1710,15 @@ Topic: {topic}
 Slides:
 {chr(10).join(slide_descs)}
 
+## STEP 0: 비주얼 스타일 가이드 (먼저 정의)
+모든 슬라이드에 걸쳐 **시각적 일관성**을 유지할 스타일을 먼저 정의하라.
+- art_style: 전체 영상의 그림체/톤
+- color_palette: 3~5개 주요 색상
+- character_design: 주요 인물의 외형 상세 정의 — 헤어스타일, 눈, 체형, 의상, 소품 등. 모든 씬에서 동일 인물이 같은 외형으로 등장해야 함
+- consistency_keywords: 모든 en 프롬프트에 반복 삽입할 키워드
+- ★ character_design + consistency_keywords를 **모든 en 프롬프트에 반드시 포함**시켜라.
+- ★ 일러스트/애니메 스타일에서는 인물 등장 가능 (실사 스타일에서만 인물 금지)
+
 ## 이미지 프롬프트 지침 (반드시 따를 것)
 {style_rules}
 
@@ -1529,7 +1763,8 @@ Slides:
 | 정보 → 정보 | image → image |
 
 ### 비율 규칙
-- 전체 프롬프트 중 **25~35%만 "video"** (과하면 비용 ↑, 산만해짐)
+- 이미지:영상 비율 약 6:4 (전체 프롬프트 중 ~40%를 "video"로 지정)
+- ★ video는 반드시 6초 고정 (6초 초과 금지). 대본도 6초 분량(25~30자)만 작성
 - graph/overview 타입은 항상 "image"
 - "video" 프롬프트의 en 필드에 움직임 키워드 추가 (gentle movement, swaying, flowing 등)
 - 같은 슬라이드 안에서 video는 **최대 1개**

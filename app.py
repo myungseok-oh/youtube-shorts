@@ -17,6 +17,7 @@ from db.database import Database
 from db.models import (
     create_channel, list_channels, get_channel, update_channel, delete_channel,
     create_job, list_jobs, get_job, get_job_steps, delete_job,
+    record_topic, get_recent_topics,
 )
 from pipeline import config
 from pipeline.runner import (
@@ -124,6 +125,32 @@ def _migrate_channels_db():
     print(f"[마이그레이션] channels.db로 {len(rows)}개 채널 복사 완료")
 
 
+def _migrate_topic_history():
+    """shorts.db의 기존 jobs → channels.db topic_history 마이그레이션.
+    매 서버 시작마다 shorts.db에서 누락된 주제만 추가 (중복 안전)."""
+    rows = db.fetchall(
+        "SELECT channel_id, topic, created_at FROM jobs WHERE status != 'deleted' ORDER BY created_at"
+    )
+    if not rows:
+        return
+
+    added = 0
+    for r in rows:
+        dup = db_ch.fetchone(
+            "SELECT id FROM topic_history WHERE channel_id=? AND topic=? AND created_at=?",
+            [r["channel_id"], r["topic"], r["created_at"]]
+        )
+        if not dup:
+            db_ch.insert("topic_history", {
+                "channel_id": r["channel_id"],
+                "topic": r["topic"],
+                "created_at": r["created_at"],
+            })
+            added += 1
+    if added:
+        print(f"[마이그레이션] topic_history에 {added}건 추가 (총 {len(rows)}건 중)")
+
+
 def _recover_orphan_jobs():
     """서버 시작 시 running 상태로 남은 고아 작업을 감지하여 재시작"""
     orphans = db.fetchall(
@@ -187,6 +214,7 @@ def _recover_orphan_jobs():
 @asynccontextmanager
 async def lifespan(app):
     _migrate_channels_db()
+    _migrate_topic_history()
     channels = list_channels(db_ch, db)
     if not channels:
         create_channel(db_ch, name="새 채널", handle="",
@@ -307,25 +335,20 @@ async def _run_channel_auto(ch: dict):
         trends = collect_trends(trend_sources, youtube_api_key=yt_api_key)
         trend_context = format_trend_context(trends)
 
-    # 최근 24시간 중복 방지 (연관 채널 포함)
+    # 최근 주제 중복 방지 (channels.db topic_history, 연관 채널)
     dedup_ids_s = [channel_id] + [c for c in cfg.get("dedup_channels", []) if c != channel_id]
-    ph_s = ",".join("?" for _ in dedup_ids_s)
-    recent_jobs_s = db.fetchall(
-        f"SELECT topic FROM jobs WHERE channel_id IN ({ph_s}) "
-        "AND NOT (status = 'deleted' AND id NOT IN "
-        "  (SELECT job_id FROM job_steps WHERE step_name = 'upload' AND status = 'completed')) "
-        "AND created_at >= datetime('now', 'localtime', '-24 hours') ORDER BY created_at DESC LIMIT 30",
-        dedup_ids_s
-    )
-    recent_topics = [j["topic"] for j in recent_jobs_s] if recent_jobs_s else []
+    dedup_hours_s = cfg.get("dedup_hours", 24)  # 0 = 전체 기간
+    recent_topics = get_recent_topics(db_ch, dedup_ids_s, hours=dedup_hours_s, limit=50)
 
     # 고정 주제 또는 파싱
+    _skip_ws = cfg.get("skip_web_search", False)
     if cfg.get("fixed_topic"):
         topics = [request_text]
     else:
         topics = await asyncio.to_thread(
             parse_request, request_text, instructions,
-            trend_context=trend_context, recent_topics=recent_topics
+            trend_context=trend_context, recent_topics=recent_topics,
+            skip_web_search=_skip_ws
         )
         filtered = []
         for topic in topics:
@@ -339,22 +362,29 @@ async def _run_channel_auto(ch: dict):
         topics = filtered
 
     # Job 생성 + 파이프라인 실행
+    # 채널에 gemini_api_key가 있으면 Gemini 드래프트 자동 사용
+    _use_gemini = bool(cfg.get("gemini_api_key", ""))
     jobs_created = []
     if channel_format == "roundup" and len(topics) > 1:
         combined_topic = " / ".join(topics)
         job = create_job(db, channel_id=channel_id, topic=combined_topic)
+        record_topic(db_ch, channel_id, combined_topic)
         jobs_created.append(job)
-        start_pipeline_full(db_ch, db, job["id"])
+        start_pipeline_full(db_ch, db, job["id"],
+                            use_gemini_draft=_use_gemini)
     else:
         for topic in topics:
             job = create_job(db, channel_id=channel_id, topic=topic)
+            record_topic(db_ch, channel_id, topic)
             jobs_created.append(job)
             if production_mode == "auto":
-                start_pipeline_full(db_ch, db, job["id"])
+                start_pipeline_full(db_ch, db, job["id"],
+                                    use_gemini_draft=_use_gemini)
             else:
-                start_pipeline(db_ch, db, job["id"])
+                start_pipeline(db_ch, db, job["id"],
+                               use_gemini_draft=_use_gemini)
 
-    print(f"[scheduler] {channel_id} — {len(jobs_created)}개 작업 생성")
+    print(f"[scheduler] {channel_id} — {len(jobs_created)}개 작업 생성 (gemini={'Y' if _use_gemini else 'N'})")
 
 
 # ─── Dashboard ───
@@ -605,6 +635,7 @@ async def api_create_job(request: Request):
         category=body.get("category", ""),
         script_json=script_json,
     )
+    record_topic(db_ch, channel_id, topic)
 
     # script_json이 있으면 원스탑 파이프라인
     if script_json:
@@ -631,6 +662,7 @@ async def api_create_manual_job(request: Request):
         topic=topic,
         script_json=script_json,
     )
+    record_topic(db_ch, channel_id, topic)
 
     # image_prompts 저장: 프론트에서 보낸 다중 프롬프트 우선, 없으면 슬라이드에서 추출
     ext_prompts = body.get("image_prompts")
@@ -670,9 +702,12 @@ async def api_run_channel(channel_id: str, request: Request):
 
     # body에 request가 있으면 우선 사용, 없으면 채널 기본값
     request_text = ""
+    use_gemini_draft = False
     try:
         body = await request.json()
         request_text = (body.get("request") or "").strip()
+        use_gemini_draft = bool(body.get("use_gemini_draft", False))
+        print(f"[api] run channel: use_gemini_draft={use_gemini_draft}")
     except Exception:
         pass
     if not request_text:
@@ -696,29 +731,24 @@ async def api_run_channel(channel_id: str, request: Request):
             trends = collect_trends(trend_sources, youtube_api_key=yt_api_key)
             trend_context = format_trend_context(trends)
 
-        # 최근 24시간 내 작업 주제 수집 (중복 방지 — 연관 채널 포함)
+        # 최근 주제 중복 방지 (channels.db topic_history, 연관 채널 포함)
         dedup_ids = [channel_id] + [c for c in cfg.get("dedup_channels", []) if c != channel_id]
-        placeholders = ",".join("?" for _ in dedup_ids)
-        recent_jobs = db.fetchall(
-            f"SELECT topic FROM jobs WHERE channel_id IN ({placeholders}) "
-            "AND NOT (status = 'deleted' AND id NOT IN "
-            "  (SELECT job_id FROM job_steps WHERE step_name = 'upload' AND status = 'completed')) "
-            "AND created_at >= datetime('now', 'localtime', '-24 hours') ORDER BY created_at DESC LIMIT 30",
-            dedup_ids
-        )
-        recent_topics = [j["topic"] for j in recent_jobs] if recent_jobs else []
+        dedup_hours = cfg.get("dedup_hours", 24)  # 0 = 전체 기간
+        recent_topics = get_recent_topics(db_ch, dedup_ids, hours=dedup_hours, limit=50)
 
         production_mode = cfg.get("production_mode", "manual")
         channel_format = cfg.get("format", "single")
 
         # 고정 주제 채널: parse_request 스킵, request_text를 그대로 topic으로 사용
+        _skip_ws = cfg.get("skip_web_search", False)
         if cfg.get("fixed_topic"):
             topics = [request_text]
         else:
             # 동기 함수를 스레드에서 실행 (이벤트 루프 블록 방지)
             topics = await asyncio.to_thread(
                 parse_request, request_text, instructions,
-                trend_context=trend_context, recent_topics=recent_topics
+                trend_context=trend_context, recent_topics=recent_topics,
+                skip_web_search=_skip_ws
             )
 
             # 코드 레벨 중복 필터 (프롬프트 의존 보완)
@@ -737,19 +767,25 @@ async def api_run_channel(channel_id: str, request: Request):
             # 라운드업: 여러 주제를 하나의 Job으로 합침
             combined_topic = " / ".join(topics)
             job = create_job(db, channel_id=channel_id, topic=combined_topic)
+            record_topic(db_ch, channel_id, combined_topic)
             jobs.append(job)
             if production_mode == "auto":
-                start_pipeline_full(db_ch, db, job["id"])
+                start_pipeline_full(db_ch, db, job["id"],
+                                    use_gemini_draft=use_gemini_draft)
             else:
-                start_pipeline(db_ch, db, job["id"])
+                start_pipeline(db_ch, db, job["id"],
+                               use_gemini_draft=use_gemini_draft)
         else:
             for topic in topics:
                 job = create_job(db, channel_id=channel_id, topic=topic)
+                record_topic(db_ch, channel_id, topic)
                 jobs.append(job)
                 if production_mode == "auto":
-                    start_pipeline_full(db_ch, db, job["id"])
+                    start_pipeline_full(db_ch, db, job["id"],
+                                        use_gemini_draft=use_gemini_draft)
                 else:
-                    start_pipeline(db_ch, db, job["id"])
+                    start_pipeline(db_ch, db, job["id"],
+                                   use_gemini_draft=use_gemini_draft)
         return {"created": len(jobs), "jobs": jobs, "mode": production_mode}
 
     except Exception as e:
@@ -2524,9 +2560,12 @@ async def api_export_channels():
             except (json.JSONDecodeError, TypeError):
                 pass
         channels.append(ch)
+    # topic_history도 포함 (머신 간 주제 중복 방지용)
+    topics = db_ch.fetchall("SELECT channel_id, topic, created_at FROM topic_history ORDER BY created_at")
     from fastapi.responses import Response
     payload = json.dumps(
-        {"channels": channels, "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+        {"channels": channels, "topic_history": topics,
+         "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
         ensure_ascii=False, indent=2,
     )
     return Response(
@@ -2582,7 +2621,26 @@ async def api_import_channels(file: UploadFile = File(...)):
             )
         imported += 1
 
-    return {"imported": imported}
+    # topic_history 가져오기 (중복 무시)
+    topics_imported = 0
+    for th in data.get("topic_history", []):
+        ch_id = th.get("channel_id")
+        topic = th.get("topic")
+        created = th.get("created_at")
+        if not ch_id or not topic:
+            continue
+        # 같은 채널 + 같은 주제 + 같은 시각이면 스킵
+        dup = db_ch.fetchone(
+            "SELECT id FROM topic_history WHERE channel_id=? AND topic=? AND created_at=?",
+            [ch_id, topic, created]
+        )
+        if not dup:
+            db_ch.insert("topic_history", {
+                "channel_id": ch_id, "topic": topic, "created_at": created,
+            })
+            topics_imported += 1
+
+    return {"imported": imported, "topics_imported": topics_imported}
 
 
 # ─── Editor API ───

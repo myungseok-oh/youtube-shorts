@@ -150,7 +150,8 @@ def _build_sovits_cfg(ch_config: dict, channel_id: str) -> dict:
 
 # ─── Phase A: 뉴스 검색 + 대본 작성 → waiting_slides ───
 
-def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
+def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
+                  use_gemini_draft: bool = False):
     """Phase A v2: synopsis → visual_plan → script → waiting_slides"""
     try:
         db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
@@ -215,6 +216,11 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
             # ── 통합 1회 호출: 시놉시스 + 비주얼 플랜 + 대본 ──
             _update_step(db, job_id, "synopsis", "running")
             try:
+                # 시장 데이터가 이미 주입된 채널 또는 skip_web_search 설정 → 웹검색 스킵 (속도 향상)
+                _skip_web = bool(ch_config.get("market_data_sources")) or ch_config.get("skip_web_search", False)
+                # Gemini 드래프트 모드: 토글 ON + API 키 존재 시
+                _gemini_key = ch_config.get("gemini_api_key", "") if use_gemini_draft else ""
+                print(f"[runner] use_gemini_draft={use_gemini_draft}, gemini_key={'Y' if _gemini_key else 'N'}")
                 result = generate_all_in_one(
                     topic, instructions, brand,
                     channel_format=channel_format,
@@ -228,6 +234,8 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None):
                     bg_media_type=ch_config.get("bg_media_type", "auto"),
                     script_rules=script_rules,
                     roundup_rules=roundup_rules,
+                    skip_web_search=_skip_web,
+                    gemini_api_key=_gemini_key,
                 )
             except Exception as e:
                 _update_step(db, job_id, "synopsis", "failed", error_msg=str(e))
@@ -1938,11 +1946,13 @@ _phase_a_semaphore = threading.Semaphore(2)
 
 # ─── Public API ───
 
-def start_pipeline(db_ch, db, job_id: str, script_json: dict = None):
+def start_pipeline(db_ch, db, job_id: str, script_json: dict = None,
+                    use_gemini_draft: bool = False):
     """Phase A 실행 (대본까지 → waiting_slides). 동시 최대 2개."""
     def _run_with_limit():
         with _phase_a_semaphore:
-            _run_phase_a(db_ch, db, job_id, script_json)
+            _run_phase_a(db_ch, db, job_id, script_json,
+                         use_gemini_draft=use_gemini_draft)
     t = threading.Thread(target=_run_with_limit, daemon=True)
     t.start()
     return t
@@ -1957,10 +1967,12 @@ def resume_pipeline(db_ch, db, job_id: str, tts_voice: str = "", tts_rate=None,
                        sovits_cfg_override=sovits_cfg)
 
 
-def start_pipeline_full(db_ch, db, job_id: str, script_json: dict = None):
+def start_pipeline_full(db_ch, db, job_id: str, script_json: dict = None,
+                        use_gemini_draft: bool = False):
     """원스탑: Phase A 실행 후 완료되면 Phase B 큐 등록"""
     def _run_then_queue():
-        _run_phase_a(db_ch, db, job_id, script_json)
+        _run_phase_a(db_ch, db, job_id, script_json,
+                     use_gemini_draft=use_gemini_draft)
         # Phase A 성공 시 자동으로 Phase B 큐 등록
         job = db.fetchone("SELECT status FROM jobs WHERE id = ?", [job_id])
         if job and job["status"] == "waiting_slides":

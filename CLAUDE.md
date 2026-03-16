@@ -204,6 +204,50 @@ POST http://127.0.0.1:9880/tts
 → WAV 오디오 응답
 ```
 
+### GPT-SoVITS 품질 튜닝 가이드
+
+#### 추임새("으~", "어~") 발생 원인
+GPT-SoVITS는 텍스트→GPT(발화 스타일 생성)→SoVITS(음성 합성) 구조.
+GPT가 자연스러운 발화를 위해 숨소리/머뭇거림/추임새를 자동 생성함.
+
+**발생 조건:**
+1. 참조 음성이 너무 짧음 (3~5초) → 모델이 스타일 못 잡음 → filler sound 생성. **권장: 10~20초**
+2. Edge TTS 음성의 미세한 breath noise를 "어~"로 재해석 → Edge TTS raw 음성은 품질 낮음
+3. temperature/top_p 기본값이 높으면 창의성↑ → 이상한 소리↑
+
+#### 추론 파라미터 (추임새 줄이는 설정)
+| 파라미터 | 기본값 | 권장값 | 효과 |
+|---------|--------|--------|------|
+| temperature | 0.6 | **0.2** | 낮을수록 안정적 |
+| top_p | 1.0 | **0.7** | 샘플링 범위 제한 |
+| top_k | 50 | **20** | 후보 토큰 제한 |
+| repetition_penalty | 1.0 | **1.2** | 반복/filler 억제 |
+
+#### 참조 음성 조건 (좋은 reference)
+- **길이**: 10~20초
+- **톤**: 일정 (감정 변화 적은 설명형)
+- **잡음**: 없음
+- **문장**: 완전한 문장 (잘린 문장 금지)
+- **예시**: "이 영상에서는 인간의 심리에 대해 설명합니다. 사람들은 왜 줄이 긴 가게를 더 신뢰할까요. 이 현상은 심리학에서 군중 심리라고 불립니다."
+
+#### Edge TTS → 참조 음성 변환 파이프라인
+Edge TTS raw 음성을 그대로 reference로 쓰면 filler 많이 발생. 반드시 정리 필요:
+```
+Edge TTS → 오디오 정리(노이즈 제거 + 무음 제거 + 정규화) → GPT-SoVITS reference
+```
+
+**ffmpeg 무음 제거:**
+```bash
+ffmpeg -i input.wav -af silenceremove=1:0:-50dB output.wav
+```
+
+**Audacity 수동 정리:** Noise Reduction → Normalize → Silence Trim
+
+#### 최적 참조 음성 전략 (품질순)
+1. **성우 음성 15초** — 가장 안정적, 애니 캐릭터 음성/성우 음성 추천
+2. **Edge TTS + 오디오 정리** — 노이즈/무음 제거 후 사용
+3. **Edge TTS raw** — 비추천, filler sound 많음
+
 ---
 
 ## 채널 목록
@@ -440,8 +484,9 @@ POST http://127.0.0.1:9880/tts
 
 # 피드백
 
-- [2026-03-10] 서버 재시작: `kill $(lsof -ti :9999)` 로 포트만 종료할 것. 파이어폭스 등 다른 프로세스 kill 금지
+- [2026-03-10] 서버 재시작: `kill $(lsof -ti :9999 -sTCP:LISTEN)` 으로 LISTEN 프로세스만 종료할 것. `lsof -ti :9999`는 해당 포트에 연결된 브라우저까지 죽여서 세션 날아감. **절대 -sTCP:LISTEN 빼지 마라**
 - [2026-03-11] 변수명 충돌 주의: `_now()`는 runner.py 모듈 함수. 로컬 변수로 `_now = datetime.now()` 사용 금지 → `_dt` 등 다른 이름 사용
 - [2026-03-15] 하드코딩 금지: generate_slides.js 등에 색상/크기/비율을 하드코딩하지 말 것. 반드시 채널 config 파라미터로 전달. 한 채널 수정이 다른 채널에 영향 가면 안 됨
 - [2026-03-15] Claude 인포그래픽 사용 금지: graph 타입도 Gemini/SD로 직접 생성. Claude HTML 인포그래픽은 다른 이미지와 스타일 불일치
 - [2026-03-16] 서버 재기동 필요 판단: pipeline/ 하위 파이썬 모듈(agent.py, runner.py 등)은 서버 시작 시 import 캐시됨. 코드 수정 후 반드시 서버 재기동 안내할 것
+- [2026-03-16] 자동/수동 동기화 필수: generate_all_in_one() 프롬프트를 수정하면 generate_image_prompts()와 generate_visual_plan()에도 동일 규칙 적용할 것. 수동 대본도 Phase B에서 이 함수들을 사용함

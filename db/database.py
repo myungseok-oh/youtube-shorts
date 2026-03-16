@@ -98,6 +98,19 @@ class Database:
                 conn.execute(f"ALTER TABLE channels ADD COLUMN {col} TEXT DEFAULT {default}")
                 conn.commit()
 
+        # topic_history 테이블 (주제 중복 검사용, channels.db에 생성 — 머신 간 이식 가능)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS topic_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id  TEXT NOT NULL,
+                topic       TEXT NOT NULL,
+                created_at  TEXT DEFAULT (datetime('now','localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_topic_history_channel_date
+                ON topic_history(channel_id, created_at);
+        """)
+        conn.commit()
+
     def execute(self, sql: str, params=None):
         conn = self._get_conn()
         conn.execute(sql, params or [])

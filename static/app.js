@@ -81,6 +81,12 @@ document.addEventListener("DOMContentLoaded", () => {
   startPolling();
   startUsagePolling();
 
+  // Gemini 토글 초기화
+  const geminiToggle = document.getElementById("gemini-toggle");
+  if (geminiToggle) {
+    geminiToggle.checked = !!localStorage.getItem("gemini_draft_on");
+  }
+
   // 모달 바깥 클릭으로 닫기
   document.getElementById("job-detail-modal").addEventListener("click", (e) => {
     if (e.target === e.currentTarget) closeModal("job-detail-modal");
@@ -1495,6 +1501,7 @@ async function bgToVideo(jobId, bgIdx, btn) {
     } else {
       alert(`영상화 실패: ${data.detail || "unknown error"}`);
       btn.innerHTML = origText;
+      btn.disabled = false;
     }
     _updateVeoStatus(statusEl);
   } catch (e) {
@@ -1502,6 +1509,7 @@ async function bgToVideo(jobId, bgIdx, btn) {
     if (slotWrap) slotWrap.classList.remove("veo-converting");
     alert(`영상화 요청 실패: ${e.message}`);
     btn.innerHTML = origText;
+    btn.disabled = false;
     _updateVeoStatus(statusEl);
   }
 }
@@ -1513,7 +1521,6 @@ function _updateVeoStatus(statusEl) {
   } else {
     statusEl.innerHTML = "";
   }
-  btn.disabled = false;
 }
 
 function copyOnePrompt(btn, text) {
@@ -2998,11 +3005,14 @@ async function runChannel(channelId, btnEl) {
   const prevJobCount = ch?.jobs?.length || 0;
 
   try {
-    const fetchOpts = { method: "POST" };
-    if (customRequest) {
-      fetchOpts.headers = {"Content-Type": "application/json"};
-      fetchOpts.body = JSON.stringify({request: customRequest});
-    }
+    const useGemini = !!localStorage.getItem("gemini_draft_on");
+    const bodyObj = { use_gemini_draft: useGemini };
+    if (customRequest) bodyObj.request = customRequest;
+    const fetchOpts = {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(bodyObj),
+    };
     const res = await fetch(`/api/channels/${channelId}/run`, fetchOpts);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -3088,6 +3098,15 @@ async function runAllChannels() {
   if (!confirm(`${runnableChannels.length}개 채널을 모두 실행하시겠습니까?`)) return;
   for (const ch of runnableChannels) {
     runChannel(ch.id, null);
+  }
+}
+
+// ─── Gemini Draft 토글 ───
+function onGeminiToggle(checked) {
+  if (checked) {
+    localStorage.setItem("gemini_draft_on", "1");
+  } else {
+    localStorage.removeItem("gemini_draft_on");
   }
 }
 
@@ -3207,6 +3226,25 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-auto-bg-source").value = cfg.auto_bg_source || "sd_image";
   document.getElementById("cs-gemini-api-key").value = cfg.gemini_api_key || "";
   document.getElementById("cs-use-subagent").checked = !!cfg.use_subagent;
+  // 기본 탭 — 고정 주제
+  document.getElementById("cs-fixed-topic").checked = !!cfg.fixed_topic;
+  // 콘텐츠 탭
+  document.getElementById("cs-target-duration").value = cfg.target_duration || 60;
+  document.getElementById("cs-target-duration-label").textContent = cfg.target_duration || 60;
+  document.getElementById("cs-skip-web-search").checked = !!cfg.skip_web_search;
+  document.getElementById("cs-dedup-hours").value = cfg.dedup_hours != null ? cfg.dedup_hours : 24;
+  const mds = cfg.market_data_sources || [];
+  document.querySelectorAll(".cs-market-source").forEach(cb => cb.checked = mds.includes(cb.value));
+  // 슬라이드 탭 — 스타일
+  document.getElementById("cs-slide-main-text-size").value = cfg.slide_main_text_size || 0;
+  document.getElementById("cs-slide-main-text-size-label").textContent = cfg.slide_main_text_size || 0;
+  document.getElementById("cs-slide-badge-size").value = cfg.slide_badge_size || 0;
+  document.getElementById("cs-slide-badge-size-label").textContent = cfg.slide_badge_size || 0;
+  document.getElementById("cs-slide-accent-color").value = cfg.slide_accent_color || "#ff6b35";
+  document.getElementById("cs-slide-accent-color-text").value = cfg.slide_accent_color || "#ff6b35";
+  document.getElementById("cs-slide-hl-color").value = cfg.slide_hl_color || "#ffd700";
+  document.getElementById("cs-slide-hl-color-text").value = cfg.slide_hl_color || "#ffd700";
+  document.getElementById("cs-slide-bg-gradient").value = cfg.slide_bg_gradient || "";
   toggleAutoBgSource();
   document.getElementById("cs-yt-client-id").value = cfg.youtube_client_id || "";
   document.getElementById("cs-yt-client-secret").value = cfg.youtube_client_secret || "";
@@ -3322,6 +3360,20 @@ async function saveChannelSettings() {
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _setIfPresent("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
   cfg.use_subagent = document.getElementById("cs-use-subagent").checked;
+
+  // 기본 탭
+  cfg.fixed_topic = document.getElementById("cs-fixed-topic").checked;
+  // 콘텐츠 탭
+  cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
+  cfg.skip_web_search = document.getElementById("cs-skip-web-search").checked;
+  cfg.dedup_hours = parseInt(document.getElementById("cs-dedup-hours").value);
+  cfg.market_data_sources = [...document.querySelectorAll(".cs-market-source:checked")].map(cb => cb.value);
+  // 슬라이드 탭 — 스타일
+  cfg.slide_main_text_size = parseInt(document.getElementById("cs-slide-main-text-size").value) || 0;
+  cfg.slide_badge_size = parseInt(document.getElementById("cs-slide-badge-size").value) || 0;
+  cfg.slide_accent_color = document.getElementById("cs-slide-accent-color-text").value.trim();
+  cfg.slide_hl_color = document.getElementById("cs-slide-hl-color-text").value.trim();
+  cfg.slide_bg_gradient = document.getElementById("cs-slide-bg-gradient").value.trim();
 
   // TTS 설정 저장
   cfg.tts_engine = document.getElementById("cs-tts-engine").value;
@@ -3586,6 +3638,20 @@ async function saveChannelSettingsSilent() {
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   _set("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
   cfg.use_subagent = document.getElementById("cs-use-subagent").checked;
+
+  // 기본 탭
+  cfg.fixed_topic = document.getElementById("cs-fixed-topic").checked;
+  // 콘텐츠 탭
+  cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
+  cfg.skip_web_search = document.getElementById("cs-skip-web-search").checked;
+  cfg.dedup_hours = parseInt(document.getElementById("cs-dedup-hours").value);
+  cfg.market_data_sources = [...document.querySelectorAll(".cs-market-source:checked")].map(cb => cb.value);
+  // 슬라이드 탭
+  cfg.slide_main_text_size = parseInt(document.getElementById("cs-slide-main-text-size").value) || 0;
+  cfg.slide_badge_size = parseInt(document.getElementById("cs-slide-badge-size").value) || 0;
+  cfg.slide_accent_color = document.getElementById("cs-slide-accent-color-text").value.trim();
+  cfg.slide_hl_color = document.getElementById("cs-slide-hl-color-text").value.trim();
+  cfg.slide_bg_gradient = document.getElementById("cs-slide-bg-gradient").value.trim();
 
   cfg.trend_sources = [];
   cfg.youtube_api_key = "";

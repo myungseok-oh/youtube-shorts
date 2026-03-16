@@ -5,9 +5,11 @@ google-genai SDK 사용, 공식 모델명:
 - veo-3.1-generate-001 (영상, Veo 3.1 Fast image-to-video)
 """
 import os
+import subprocess
 import time
 from google import genai
 from google.genai import types
+from pipeline import config
 
 
 # 시도할 모델 순서
@@ -73,6 +75,23 @@ def generate_image(prompt: str, output_path: str, api_key: str,
 
 
 VIDEO_MODEL = "veo-3.1-fast-generate-preview"
+
+
+def _strip_audio(video_path: str):
+    """영상에서 오디오 스트림 제거 (배경 영상용)."""
+    tmp = video_path + ".tmp.mp4"
+    try:
+        subprocess.run(
+            [config.ffmpeg(), "-y", "-i", video_path, "-an", "-c:v", "copy", tmp],
+            capture_output=True, timeout=30,
+        )
+        if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+            os.replace(tmp, video_path)
+            print(f"[gemini] audio stripped: {os.path.basename(video_path)}")
+    except Exception as e:
+        print(f"[gemini] audio strip failed: {e}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 VIDEO_POLL_INTERVAL = 10   # 폴링 간격 (초)
 VIDEO_POLL_TIMEOUT = 300   # 최대 대기 시간 (초)
@@ -147,6 +166,8 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
             else:
                 print(f"[gemini] no video uri")
                 return False
+            # Veo 3.1은 오디오를 항상 포함하므로 ffmpeg로 제거
+            _strip_audio(output_path)
             print(f"[gemini] video saved: {os.path.basename(output_path)} "
                   f"(model={VIDEO_MODEL}, {elapsed}s)")
             return True

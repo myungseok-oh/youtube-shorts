@@ -140,3 +140,39 @@ def get_job_steps(db, job_id: str) -> list[dict]:
 def delete_job(db, job_id: str):
     db.execute("DELETE FROM job_steps WHERE job_id = ?", [job_id])
     db.execute("DELETE FROM jobs WHERE id = ?", [job_id])
+
+
+# --- Topic History (channels.db — 머신 간 이식 가능한 주제 중복 검사) ---
+
+def record_topic(db_ch, channel_id: str, topic: str):
+    """주제를 topic_history에 기록."""
+    db_ch.insert("topic_history", {
+        "channel_id": channel_id,
+        "topic": topic,
+    })
+
+
+def get_recent_topics(db_ch, channel_ids: list, hours: int = 24,
+                      limit: int = 50) -> list[str]:
+    """최근 N시간 내 주제 목록 반환 (중복 체크용).
+    hours=0 이면 전체 기간 검색 (교양/상식 채널용)."""
+    if not channel_ids:
+        return []
+    ph = ",".join("?" for _ in channel_ids)
+    if hours > 0:
+        rows = db_ch.fetchall(
+            f"SELECT topic FROM topic_history "
+            f"WHERE channel_id IN ({ph}) "
+            f"AND created_at >= datetime('now', 'localtime', '-{hours} hours') "
+            f"ORDER BY created_at DESC LIMIT ?",
+            channel_ids + [limit]
+        )
+    else:
+        # 전체 기간 (교양/상식 채널 — 주제 재사용 방지)
+        rows = db_ch.fetchall(
+            f"SELECT topic FROM topic_history "
+            f"WHERE channel_id IN ({ph}) "
+            f"ORDER BY created_at DESC LIMIT ?",
+            channel_ids + [limit]
+        )
+    return [r["topic"] for r in rows] if rows else []
