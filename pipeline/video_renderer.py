@@ -313,11 +313,12 @@ def render_segments(slide_durations: dict, image_dir: str,
         dur = slide_durations[s]
         has_overlay = os.path.exists(overlay_path)
 
-        # 슬라이드에 배경이 2개 매핑된 경우 → 분할 렌더링
+        # 슬라이드에 배경이 2개 매핑된 경우 → 분할 렌더링 후 슬라이드 내 concat
         bg_indices = bg_map.get(s, [s])  # 기본: 슬라이드 번호 = bg 번호
         if len(bg_indices) >= 2 and dur > 3.0:
             # 오디오를 반분하여 각 배경에 할당
             half_dur = dur / len(bg_indices)
+            part_files = []
             for part_i, bg_idx in enumerate(bg_indices):
                 part_seg = os.path.join(segment_dir, f"segment_{s}_{part_i}.mp4")
                 motion = hints.get(bg_idx, "")
@@ -339,7 +340,11 @@ def render_segments(slide_durations: dict, image_dir: str,
                 else:
                     print(f"[video_renderer] slide {s} part {part_i}: static")
                     _render_static_segment(img_path, part_audio, part_seg, half_dur, vcfg)
-                segment_files.append(part_seg)
+                part_files.append(part_seg)
+            # 서브세그먼트를 하나의 슬라이드 세그먼트로 concat (하드컷)
+            merged_seg = os.path.join(segment_dir, f"segment_{s}.mp4")
+            _concat_parts(part_files, merged_seg)
+            segment_files.append(merged_seg)
         else:
             # 단일 배경 (기존 로직)
             seg_path = os.path.join(segment_dir, f"segment_{s}.mp4")
@@ -362,6 +367,24 @@ def render_segments(slide_durations: dict, image_dir: str,
             segment_files.append(seg_path)
 
     return segment_files
+
+
+def _concat_parts(part_files: list[str], output_path: str):
+    """서브세그먼트를 하나의 세그먼트로 concat (슬라이드 내 배경 전환)."""
+    concat_file = output_path + ".parts.txt"
+    with open(concat_file, "w", encoding="utf-8") as f:
+        for p in part_files:
+            abs_p = os.path.abspath(p).replace("\\", "/")
+            f.write(f"file '{abs_p}'\n")
+    subprocess.run([
+        config.ffmpeg(), "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", concat_file,
+        "-c", "copy",
+        output_path
+    ], capture_output=True)
+    if os.path.exists(concat_file):
+        os.remove(concat_file)
 
 
 def _split_audio(input_path: str, output_path: str, start: float, duration: float):
@@ -600,7 +623,6 @@ def _concat_with_xfade(segment_files: list[str], output_path: str,
     # xfade 시간이 세그먼트보다 길면 줄임
     xd = min(xfade_dur, min(durations) * 0.4)
 
-    # 입력 파일
     inputs = []
     for seg in segment_files:
         inputs.extend(["-i", seg])
