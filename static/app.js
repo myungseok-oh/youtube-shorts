@@ -752,7 +752,10 @@ function renderWizardStep1(jobId, scriptData, stepsData) {
   sentences.forEach((sen, i) => {
     if (sen.slide !== currentSlide) {
       currentSlide = sen.slide;
-      narrationView += `<div class="text-xs text-orange-400 font-bold mt-2 mb-1 ${i > 0 ? 'pt-2 border-t border-gray-800' : ''}">슬라이드 ${currentSlide}</div>`;
+      narrationView += `<div class="text-xs text-orange-400 font-bold mt-2 mb-1 flex items-center justify-between ${i > 0 ? 'pt-2 border-t border-gray-800' : ''}">
+        <span>슬라이드 ${currentSlide}</span>
+        <button onclick="copySlideNarration(${currentSlide})" class="text-gray-500 hover:text-white transition" title="이 슬라이드 복사">📋</button>
+      </div>`;
     }
     narrationView += `<div class="text-sm text-gray-300 py-0.5">
       <input type="text" class="narration-edit-input" data-sen-idx="${i}" data-sen-slide="${sen.slide}"
@@ -762,6 +765,7 @@ function renderWizardStep1(jobId, scriptData, stepsData) {
   narrationView += `<div class="mt-3 flex gap-2">
     <button onclick="saveNarrationScript('${jobId}')" id="btn-save-narration"
             class="px-4 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xs font-medium transition">저장</button>
+    <button onclick="copyAllNarration()" class="px-4 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">전체 복사</button>
     <span id="narration-save-msg" class="text-xs text-green-400 self-center hidden">저장 완료</span>
   </div>`;
   narrationView += `</div>`;
@@ -1062,7 +1066,7 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
         </div>
         ${has_narration ? `
         <div class="flex items-center gap-2 mt-2">
-          <audio id="narration-preview" controls src="/api/jobs/${jobId}/narration" class="h-8 flex-1"></audio>
+          <audio id="narration-preview" controls src="/api/jobs/${jobId}/narration?t=${Date.now()}" class="h-8 flex-1"></audio>
           <button onclick="deleteNarration('${jobId}')" class="text-xs text-gray-500 hover:text-red-400 transition">삭제</button>
         </div>` : ''}
       </div>
@@ -1531,9 +1535,21 @@ function copyOnePrompt(btn, text) {
 }
 
 function copyImagePrompts(btn) {
-  const el = document.getElementById("image-prompts-box");
-  if (!el) return;
-  navigator.clipboard.writeText(el.textContent).then(() => {
+  // 프롬프트 텍스트만 추출 (배지/VEO/클립보드 제외, 번호는 유지)
+  const box = document.getElementById("image-prompts-box");
+  if (!box) return;
+  const lines = [];
+  box.querySelectorAll(".text-xs.py-1").forEach(item => {
+    const num = item.querySelector(".text-orange-400");
+    const ko = item.querySelector(".text-gray-300");
+    const en = item.querySelector(".text-gray-500");
+    const parts = [];
+    if (num) parts.push(num.textContent.trim());
+    if (ko && ko.textContent.trim()) parts.push(ko.textContent.trim());
+    if (en && en.textContent.trim()) parts.push(en.textContent.trim());
+    if (parts.length) lines.push(parts.join("\n"));
+  });
+  navigator.clipboard.writeText(lines.join("\n\n")).then(() => {
     btn.innerHTML = "&#x2705;";
     setTimeout(() => { btn.innerHTML = "&#x1F4CB;"; }, 1500);
   });
@@ -1762,6 +1778,44 @@ async function deleteChannelBg(type) {
   if (!confirm(`${type === 'intro' ? '인트로' : '아웃트로'} 고정 이미지를 삭제하시겠습니까?`)) return;
   await fetch(`/api/channels/${channelId}/${type}-bg`, { method: "DELETE" });
   _showChannelBg(type, false, channelId);
+}
+
+// ─── Character Reference Image ───
+
+function loadCharacterRefPreview() {
+  const modal = document.getElementById("channel-settings-modal");
+  const channelId = modal.dataset.channelId;
+  const container = document.getElementById("cs-character-ref-preview");
+  const img = new Image();
+  img.src = `/api/channels/${channelId}/character-ref?t=${Date.now()}`;
+  img.onload = () => {
+    container.innerHTML = "";
+    img.className = "w-full h-full object-cover";
+    container.appendChild(img);
+  };
+  img.onerror = () => {
+    container.innerHTML = '<span class="text-gray-600 text-xs">없음</span>';
+  };
+}
+
+async function uploadCharacterRef(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const modal = document.getElementById("channel-settings-modal");
+  const channelId = modal.dataset.channelId;
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`/api/channels/${channelId}/character-ref`, { method: "POST", body: fd });
+  if (res.ok) loadCharacterRefPreview();
+  input.value = "";
+}
+
+async function deleteCharacterRef() {
+  const modal = document.getElementById("channel-settings-modal");
+  const channelId = modal.dataset.channelId;
+  if (!confirm("캐릭터 참조 이미지를 삭제하시겠습니까?")) return;
+  await fetch(`/api/channels/${channelId}/character-ref`, { method: "DELETE" });
+  loadCharacterRefPreview();
 }
 
 // ─── Channel TTS Settings ───
@@ -2766,6 +2820,41 @@ function switchScriptView(view, btn) {
   if (btn) btn.classList.add("active");
 }
 
+function _flashMsg(id, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  setTimeout(() => el.classList.add("hidden"), 1500);
+}
+
+function copySlideNarration(slideNum) {
+  const inputs = document.querySelectorAll(`.narration-edit-input[data-sen-slide="${slideNum}"]`);
+  if (!inputs.length) return;
+  const text = Array.from(inputs).map(el => el.value).join(" ");
+  navigator.clipboard.writeText(text).then(() => {
+    _flashMsg("narration-save-msg", `슬라이드 ${slideNum} 복사됨`);
+  });
+}
+
+function copyAllNarration() {
+  const inputs = document.querySelectorAll(".narration-edit-input");
+  if (!inputs.length) return;
+  let lines = [];
+  let curSlide = 0;
+  inputs.forEach(el => {
+    const s = parseInt(el.dataset.senSlide);
+    if (s !== curSlide) {
+      if (curSlide > 0) lines.push("", "");  // 슬라이드 경계: 빈 줄 2개 (TTS 자연 pause)
+      curSlide = s;
+    }
+    lines.push(el.value);
+  });
+  navigator.clipboard.writeText(lines.join("\n")).then(() => {
+    _flashMsg("narration-save-msg", "전체 복사됨");
+  });
+}
+
 async function saveNarrationScript(jobId) {
   const inputs = document.querySelectorAll(".narration-edit-input");
   if (!inputs.length) return;
@@ -3207,6 +3296,7 @@ async function openChannelSettings(channelId) {
 
   document.getElementById("cs-image-prompt-style").value = cfg.image_prompt_style || "";
   document.getElementById("cs-image-scene-references").value = cfg.image_scene_references || "";
+  loadCharacterRefPreview();
   document.getElementById("cs-script-rules").value = cfg.script_rules || "";
   document.getElementById("cs-roundup-rules").value = cfg.roundup_rules || "";
   document.getElementById("cs-image-style").value = cfg.image_style || "mixed";
@@ -3875,6 +3965,8 @@ function openManualModal(channelId) {
   _manualImagePrompts = [];
   _manualSlides = [{ main: "", sub: "", bg_type: "photo", image_prompt_ko: "", image_prompt_en: "" }];
   _manualSentences = [{ text: "", slide: 1 }];
+  const jsonTA = document.getElementById("manual-json-input");
+  if (jsonTA) jsonTA.value = "";
   document.getElementById("manual-modal").classList.remove("hidden");
   renderManualModal(channelId);
 }
@@ -3925,9 +4017,9 @@ function applyJsonPaste() {
     const imgPrompts = Array.isArray(data.image_prompts) ? data.image_prompts : [];
     _manualImagePrompts = imgPrompts;
 
-    // slides
+    // slides (closing 제외 — 제출 시 자동 추가됨)
     if (Array.isArray(data.slides) && data.slides.length > 0) {
-      _manualSlides = data.slides.map((s, i) => {
+      _manualSlides = data.slides.filter(s => (s.bg_type || "photo") !== "closing").map((s, i) => {
         const slideNum = i + 1;
         // image_prompts에서 이 슬라이드의 프롬프트들 찾기
         const slidePrompts = imgPrompts.filter(p => p.slide === slideNum);
@@ -4174,8 +4266,8 @@ async function submitManualJob(channelId) {
     }
   }
 
-  // closing 슬라이드 자동 추가
-  const slides = _manualSlides.map(s => ({
+  // closing 제외 (채널에 클로징 배경이 있으면 Phase B에서 자동 처리)
+  const slides = _manualSlides.filter(s => s.bg_type !== "closing").map(s => ({
     category: _manualCategory,
     main: s.main,
     sub: s.sub,
@@ -4183,7 +4275,6 @@ async function submitManualJob(channelId) {
     image_prompt_ko: s.image_prompt_ko || "",
     image_prompt_en: s.image_prompt_en || "",
   }));
-  slides.push({ category: "", main: "", sub: "", bg_type: "closing", image_prompt_ko: "", image_prompt_en: "" });
 
   const sentences = _manualSentences.map(s => ({
     text: s.text,
@@ -4233,7 +4324,6 @@ async function submitManualJob(channelId) {
     const data = await res.json();
     closeModal("manual-modal");
     await loadAll();
-    openJobDetail(data.id);
   } catch (e) {
     alert("작업 생성 실패: " + e.message);
   }

@@ -212,32 +212,188 @@ def _run_gemini(prompt: str, api_key: str, model: str = "gemini-2.5-flash",
 
 
 def _validate_with_claude(draft_json: dict, instructions: str, brand: str,
-                          topic: str, target_duration: int = 60) -> dict:
-    """Claude CLI로 Gemini 드래프트의 script 부분만 검증 및 보정.
+                          topic: str, target_duration: int = 60,
+                          prompt_style: str = "", layout: str = "full",
+                          image_style: str = "mixed", scene_references: str = "",
+                          bg_display_mode: str = "zone",
+                          bg_media_type: str = "auto",
+                          channel_format: str = "single",
+                          has_outro: bool = False,
+                          script_rules: str = "",
+                          roundup_rules: str = "") -> dict:
+    """Claude CLI로 대본 검토/수정 + 이미지 프롬프트(visual_plan) 생성.
 
-    synopsis/visual_plan은 그대로 유지, script만 Claude에 전달하여 프롬프트 최소화.
+    수동 JSON, Gemini 드래프트 모두 이 함수를 거쳐 후처리됨.
     """
     script = draft_json.get("script", {})
-    script_str = json.dumps(script, ensure_ascii=False)
+    existing_vp = draft_json.get("visual_plan", [])
+
+    # closing 슬라이드 제거 후 Claude에 전달 (closing은 채널 설정에 따라 Phase B에서 처리)
+    _input_script = dict(script)
+    if "slides" in _input_script:
+        _input_script["slides"] = [
+            s for s in _input_script["slides"]
+            if s.get("bg_type") != "closing"
+        ]
+    script_str = json.dumps(_input_script, ensure_ascii=False)
 
     _max_slides = target_duration // 5 + 2
-    prompt = f"""대본 검증. 목표={target_duration}초, closing 제외 최대 {_max_slides}개 슬라이드.
-초과 시 병합/삭제. main 20자·sub 25자 넘으면 축약. 문제 없으면 그대로. JSON만 출력.
 
-{script_str}"""
-    raw = _run_claude(prompt, timeout=180, model="claude-sonnet-4-6",
-                      retries=0, use_web=False)
-    validated_script = _parse_response(raw, brand, required_fields=())
+    # 대본 규칙 (채널 형식에 따라)
+    if channel_format == "roundup":
+        rules_text = roundup_rules.strip() if roundup_rules and roundup_rules.strip() else DEFAULT_ROUNDUP_RULES
+    else:
+        rules_text = script_rules.strip() if script_rules and script_rules.strip() else DEFAULT_SCRIPT_RULES
 
-    # script만 교체, synopsis/visual_plan은 원본 유지
+    # 아웃트로 처리
+    outro_note = ""
+    if has_outro:
+        outro_note = "\n- ★ 별도 아웃트로가 있으므로 마지막 씬에 마무리 인사/구독 요청 넣지 마라."
+
+    # 이미지 프롬프트 스타일 지침
+    style_rules = prompt_style.strip() if prompt_style and prompt_style.strip() else (
+        "ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera, style\n"
+        "- 추상 개념 금지 → 카메라맨이 촬영할 수 있는 구체적 장소/사물\n"
+        "- wide→medium→close-up→wide 스케일 변화, 같은 구도 연속 금지\n"
+        "- photo/broll/logo: realistic, sharp focus, 8k, photojournalism\n"
+        "- graph: flat illustration, vector art, infographic (실사 금지)\n"
+        "- BANNED: text/numbers in image, dark/moody themes, same scene repeated"
+    )
+
+    # media 타입 지침
+    if bg_media_type == "auto":
+        media_instruction = (
+            "- 이미지:영상 비율 약 6:4 (전체 씬 중 ~40%를 'video'로 지정)\n"
+            "- 동적 장면(행동/움직임/변화)은 video, 정적 장면(설명/도입/정리)은 image"
+        )
+    elif bg_media_type == "single":
+        media_instruction = "- 모든 씬을 'image'로 지정"
+    else:
+        media_instruction = f"- bg_media_type: {bg_media_type}"
+
+    scene_ref_section = ""
+    if scene_references and scene_references.strip():
+        scene_ref_section = f"\n### 현장 레퍼런스\n{scene_references.strip()}"
+
+    prompt = f"""{instructions}
+
+---
+
+## 작업: 대본 검토/수정 + 비주얼 플랜 생성
+
+채널: {brand} | 주제: {topic} | 목표: {target_duration}초
+
+아래 대본을 검토하고 필요시 수정한 뒤, 비주얼 플랜(이미지 프롬프트)을 생성해.
+
+## STEP 1: 대본 검토/수정
+
+### 대본 규칙 (이 기준으로 검토)
+{rules_text}
+{outro_note}
+
+### 검토 항목
+1. **슬라이드 구성**: closing 제외 최대 {_max_slides}개. 초과 시 병합/삭제. 슬라이드별 역할(훅→핵심→배경→영향→전망) 명확한지
+2. **텍스트 길이**: main 20자 이내, sub 25자 이내. 넘으면 축약. <span class="hl">...</span>으로 강조
+3. **나레이션 분량**: TTS 초당 ~4.5음절 기준으로 duration과 매칭
+   - 5초 슬라이드 → 1~2문장(20~25자)
+   - 10초 슬라이드 → 3~4문장(40~50자)
+   - ★ video(6초) → 반드시 2문장, 25~30자 이내
+   - 6~7초처럼 어중간한 길이는 피하라
+4. **나레이션 흐름**: sentences를 이어 읽으면 연속된 내레이션이 되어야 함. 슬라이드 간 인과 연결, 접속 표현 활용
+5. **slide 번호 매칭**: sentences의 slide 번호가 정확한지, 슬라이드 1개당 문장 2~4개
+6. **채널 톤 준수**: 채널 지침(위 instructions)의 톤/스타일에 맞는지. 문장 종결 다양하게
+7. **금지 표현**: sentences에 채널명 언급 금지. youtube_title 100자 이내
+8. 문제 없으면 그대로 유지 (불필요한 변경 금지)
+
+## STEP 2: 비주얼 스타일 가이드
+
+모든 씬에 걸쳐 시각적 일관성을 유지할 스타일 가이드를 정의하라.
+- art_style: 전체 영상의 그림체/톤
+- color_palette: 3~5개 주요 색상
+- character_design: 주요 인물의 외형 상세 (모든 씬에서 동일)
+- consistency_keywords: 모든 프롬프트에 반복 삽입할 키워드
+- ★ character_design + consistency_keywords를 STEP 3의 모든 en 프롬프트에 반드시 포함
+
+## STEP 3: 비주얼 플랜
+
+{style_rules}
+{scene_ref_section}
+
+### Image Style
+{_image_style_instruction(image_style)}
+
+### Image Size
+{_image_size_instruction(layout, bg_display_mode)}
+
+### duration/media
+- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). ★ video: 반드시 6초 고정 (6초 초과 금지). 6~7초 image 금지
+{media_instruction}
+- graph/overview → 항상 image. video의 en에 움직임 키워드 포함
+- motion: 카메라+피사체+환경 조합 (예: "slow zoom in on factory as smoke rises")
+- bg_type: photo/broll/graph/logo. overview는 라운드업 전용
+- ★ closing 슬라이드는 생성하지 마라 (채널 설정에 따라 시스템이 자동 처리)
+
+## 입력 대본
+{script_str}
+
+## 출력 (JSON만, 다른 텍스트 금지)
+
+{{
+  "style_guide": {{
+    "art_style": "그림체/톤 키워드",
+    "color_palette": "주요 색상 3~5개",
+    "character_design": "주요 인물 외형 상세",
+    "consistency_keywords": "모든 en 프롬프트에 삽입할 키워드"
+  }},
+  "script": {{
+    "news_date": "...",
+    "youtube_title": "...",
+    "sentences": [{{"text": "나레이션", "slide": 1}}, ...],
+    "slides": [{{"category": "...", "main": "...", "sub": "...", "bg_type": "..."}}, ...]
+  }},
+  "visual_plan": [
+    {{"scene": 1, "media": "image", "duration": 5, "bg_type": "photo",
+      "en": "★ consistency_keywords 포함 English prompt 30-60 words", "ko": "한국어 설명", "motion": "motion desc"}}, ...
+  ]
+}}
+
+★ visual_plan↔slides 1:1 매핑. closing 슬라이드 생성 금지.
+★ sentences: HTML 금지. slides main/sub: <span class="hl">...</span>만 허용. brand: "{brand}"
+"""
+    raw = _run_claude(prompt, timeout=300, model="claude-sonnet-4-6",
+                      retries=1, use_web=False)
+    validated = _parse_response(raw, brand, required_fields=())
+
+    # 구조 보정: script가 최상위에 풀려있는 경우
+    if "sentences" in validated and "slides" in validated and "script" not in validated:
+        validated = {
+            "script": {
+                "news_date": validated.pop("news_date", script.get("news_date", "")),
+                "youtube_title": validated.pop("youtube_title", script.get("youtube_title", "")),
+                "sentences": validated.pop("sentences", []),
+                "slides": validated.pop("slides", []),
+            },
+            "visual_plan": validated.pop("visual_plan", []),
+        }
+
     result = dict(draft_json)
-    result["script"] = validated_script
 
-    # slides 수 변경 시 visual_plan도 동기화
-    new_slides = validated_script.get("slides", [])
-    old_vp = result.get("visual_plan", [])
-    if len(new_slides) != len(old_vp):
-        result["visual_plan"] = _sync_visual_plan(old_vp, new_slides)
+    # script 교체
+    new_script = validated.get("script", script)
+    if "sentences" in new_script and "slides" in new_script:
+        result["script"] = new_script
+    else:
+        result["script"] = script  # 파싱 실패 시 원본 유지
+
+    # visual_plan 교체 (Claude가 생성한 것 우선)
+    new_vp = validated.get("visual_plan", [])
+    if new_vp and any(vp.get("en") for vp in new_vp):
+        result["visual_plan"] = new_vp
+    elif existing_vp:
+        result["visual_plan"] = existing_vp
+    else:
+        # visual_plan이 없으면 slides 기반으로 빈 구조 생성
+        result["visual_plan"] = _sync_visual_plan([], result["script"].get("slides", []))
 
     return result
 
@@ -1337,7 +1493,6 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
             "- photo/broll/logo: realistic, sharp focus, 8k, photojournalism\n"
             "- graph: flat illustration, vector art, infographic (실사 금지)\n"
             "- overview: modern news studio, broadcast newsroom\n"
-            "- closing: 빈 문자열\n"
             "- BANNED: text/numbers in image, dark/moody themes, same scene repeated"
         )
 
@@ -1397,7 +1552,8 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
 {media_instruction}
 - graph/overview → 항상 image. video의 en에 움직임 키워드 포함
 - motion: 카메라+피사체+환경 조합 (예: "slow zoom in on factory as smoke rises")
-- bg_type: photo/broll/graph/logo/closing. overview는 라운드업 전용 (단일 형식 사용 금지)
+- bg_type: photo/broll/graph/logo. overview는 라운드업 전용 (단일 형식 사용 금지)
+- ★ closing 슬라이드는 생성하지 마라 (채널 설정에 따라 시스템이 자동 처리)
 
 ## STEP 3: 대본
 
@@ -1435,7 +1591,7 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
   }}
 }}
 
-★ visual_plan↔slides 1:1 매핑. closing: {{"scene":N,"media":"image","duration":0,"bg_type":"closing","en":"","ko":"","motion":""}}
+★ visual_plan↔slides 1:1 매핑. closing 슬라이드 생성 금지.
 ★ sentences: HTML 금지. slides main/sub: <span class="hl">...</span>만 허용. brand: "{brand}"
 """
 
@@ -1463,7 +1619,17 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
             print("[agent] Claude 검증 시작...")
             _t_val = _time.time()
             result = _validate_with_claude(draft, instructions, brand, topic,
-                                             target_duration=target_duration)
+                                             target_duration=target_duration,
+                                             prompt_style=prompt_style,
+                                             layout=layout,
+                                             image_style=image_style,
+                                             scene_references=scene_references,
+                                             bg_display_mode=bg_display_mode,
+                                             bg_media_type=bg_media_type,
+                                             channel_format=channel_format,
+                                             has_outro=has_outro,
+                                             script_rules=script_rules,
+                                             roundup_rules=roundup_rules)
             result = _normalize_gemini_result(result)  # Claude 출력도 구조 보정
             _sc2 = result.get("script", {})
             print(f"[agent] Claude 검증 완료: {_time.time()-_t_val:.1f}초, "
@@ -1546,7 +1712,6 @@ ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera
 - **broll**: photo와 유사하되 시네마틱. 키워드: cinematic shot, news B-roll, dramatic composition
 - **graph**: 인포그래픽/일러스트 (실사 금지). 키워드: flat illustration, vector art, infographic, clean lines, soft pastels
 - **logo**: 기업 건물 외관 + 브랜드 사이니지. 키워드: cinematic wide shot, brand signage visible
-- **closing**: 빈 문자열 "" 출력
 
 ## BANNED
 - text, letters, numbers rendered in the image

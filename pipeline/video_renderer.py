@@ -435,10 +435,10 @@ def _render_kenburns_segment(bg_path: str, overlay_path: str, audio_path: str,
 
     _aspect = _iw / _ih if _ih > 0 else 1.0
     if _aspect > 0.8:  # 1:1 또는 가로 이미지 (center/top/bottom 레이아웃)
-        # 원본 비율 유지, 1080 폭에 맞추고 세로는 비율대로, 나머지 검정
-        _scale_w = 1242  # 1080 * 1.15
-        _scale_h = int(_scale_w / _aspect)
-        _pad = f",pad=1242:2208:(ow-iw)/2:(oh-ih)/2:black"
+        # Cover 모드: 프레임 전체를 채우도록 스케일 + 중앙 크롭 (검정 여백 제거)
+        _scale_h = 2208
+        _scale_w = max(1242, int(2208 * _aspect))
+        _pad = f",crop=1242:2208:(iw-1242)/2:(ih-2208)/2"
     else:  # 9:16 세로 이미지 (full 레이아웃)
         _scale_w, _scale_h = 1242, 2208
         _pad = ""

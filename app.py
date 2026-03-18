@@ -610,6 +610,42 @@ async def api_delete_channel_bg(channel_id: str, img_type: str):
     return {"ok": True}
 
 
+@app.post("/api/channels/{channel_id}/character-ref")
+async def api_upload_character_ref(channel_id: str, file: UploadFile = File(...)):
+    if not get_channel(db_ch, channel_id):
+        raise HTTPException(404, "Channel not found")
+    d = _channel_asset_dir(channel_id)
+    for ext in ["jpg", "jpeg", "png", "webp"]:
+        old = os.path.join(d, f"character_ref.{ext}")
+        if os.path.exists(old):
+            os.remove(old)
+    original = file.filename or "character_ref.png"
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else "png"
+    if ext not in ("jpg", "jpeg", "png", "webp"):
+        ext = "png"
+    out_path = os.path.join(d, f"character_ref.{ext}")
+    content = await file.read()
+    with open(out_path, "wb") as f:
+        f.write(content)
+    return {"ok": True, "path": out_path, "size_kb": round(len(content) / 1024, 1)}
+
+
+@app.get("/api/channels/{channel_id}/character-ref")
+async def api_get_character_ref(channel_id: str):
+    path = _find_channel_image(channel_id, "character_ref")
+    if not path:
+        raise HTTPException(404, "Not found")
+    return FileResponse(path)
+
+
+@app.delete("/api/channels/{channel_id}/character-ref")
+async def api_delete_character_ref(channel_id: str):
+    path = _find_channel_image(channel_id, "character_ref")
+    if path:
+        os.remove(path)
+    return {"ok": True}
+
+
 # ─── Job API ───
 
 @app.get("/api/jobs")
@@ -681,14 +717,10 @@ async def api_create_manual_job(request: Request):
             db.execute("UPDATE jobs SET meta_json = ? WHERE id = ?",
                        [json.dumps(meta, ensure_ascii=False), job["id"]])
 
-    # Phase A 스킵 → 바로 waiting_slides
-    db.execute("UPDATE jobs SET status = 'waiting_slides' WHERE id = ?", [job["id"]])
-    db.execute(
-        "UPDATE job_steps SET status = 'skipped' WHERE job_id = ? AND step_name IN ('synopsis', 'visual_plan', 'script')",
-        [job["id"]],
-    )
+    # Phase A 실행 (Claude 후처리: 대본 검토/수정 + 이미지 프롬프트 생성)
+    start_pipeline(db_ch, db, job["id"], script_json=script_json)
 
-    return {"id": job["id"], "status": "waiting_slides"}
+    return {"id": job["id"], "status": "running"}
 
 
 @app.post("/api/channels/{channel_id}/run")
@@ -1225,7 +1257,9 @@ async def api_get_narration(job_id: str):
     for ext in ["mp3", "wav", "m4a", "ogg", "webm"]:
         path = os.path.join(job_dir, f"narration.{ext}")
         if os.path.exists(path):
-            return FileResponse(path, media_type=f"audio/{ext}")
+            resp = FileResponse(path, media_type=f"audio/{ext}")
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            return resp
     raise HTTPException(404, "Narration not found")
 
 

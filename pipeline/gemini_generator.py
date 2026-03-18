@@ -4,12 +4,16 @@ google-genai SDK 사용, 공식 모델명:
 - gemini-2.5-flash-image (이미지, 무료)
 - veo-3.1-generate-001 (영상, Veo 3.1 Fast image-to-video)
 """
+import hashlib
 import os
 import subprocess
 import time
+import httpx
 from google import genai
 from google.genai import types
 from pipeline import config
+
+_REF_CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "ref_cache")
 
 
 # 시도할 모델 순서
@@ -18,8 +22,40 @@ IMAGE_MODELS = [
 ]
 
 
+def _normalize_gdrive_url(url: str) -> str:
+    """Google Drive 공유 URL → 직접 다운로드 URL 변환."""
+    import re
+    m = re.match(r"https?://drive\.google\.com/file/d/([^/]+)", url)
+    if m:
+        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    return url
+
+
+def _download_ref_image(url: str):
+    """참조 이미지 URL -> 로컬 캐시 경로. 이미 다운로드된 경우 캐시 반환."""
+    url = _normalize_gdrive_url(url)
+    os.makedirs(_REF_CACHE_DIR, exist_ok=True)
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+    ext = os.path.splitext(url.split("?")[0])[-1] or ".png"
+    cached = os.path.join(_REF_CACHE_DIR, f"ref_{url_hash}{ext}")
+    if os.path.exists(cached):
+        return cached
+    try:
+        resp = httpx.get(url, follow_redirects=True, timeout=30)
+        resp.raise_for_status()
+        with open(cached, "wb") as f:
+            f.write(resp.content)
+        print(f"[gemini] ref image cached: {cached}")
+        return cached
+    except Exception as e:
+        print(f"[gemini] ref image download failed: {e}")
+        return None
+
+
 def generate_image(prompt: str, output_path: str, api_key: str,
-                   aspect_ratio: str = "9:16", max_retries: int = 1) -> bool:
+                   aspect_ratio: str = "9:16", max_retries: int = 1,
+                   reference_image_url: str = None,
+                   reference_image_path: str = None) -> bool:
     """Gemini 이미지 생성.
 
     Args:
@@ -28,18 +64,42 @@ def generate_image(prompt: str, output_path: str, api_key: str,
         api_key: Google AI Studio API key
         aspect_ratio: 비율 (9:16, 1:1, 4:3 등)
         max_retries: 재시도 횟수 (429 시 즉시 중단)
+        reference_image_url: 캐릭터 참조 이미지 URL (선택, 하위 호환)
+        reference_image_path: 캐릭터 참조 이미지 로컬 경로 (선택, 우선)
 
     Returns:
         성공 여부
     """
     client = genai.Client(api_key=api_key)
 
+    # 참조 이미지 준비 (로컬 파일 우선, 없으면 URL 다운로드)
+    ref_path = None
+    if reference_image_path and os.path.exists(reference_image_path):
+        ref_path = reference_image_path
+    elif reference_image_url:
+        ref_path = _download_ref_image(reference_image_url)
+
+    contents = None
+    if ref_path:
+        import mimetypes
+        mime = mimetypes.guess_type(ref_path)[0] or "image/png"
+        with open(ref_path, "rb") as f:
+            ref_bytes = f.read()
+        ref_part = types.Part.from_bytes(data=ref_bytes, mime_type=mime)
+        contents = [
+            ref_part,
+            f"위 캐릭터를 포함하여 다음 장면을 생성해줘. 캐릭터의 외형(얼굴, 체형, 의상, 색상)을 정확히 유지할 것.\n\n{prompt}",
+        ]
+        print(f"[gemini] ref image attached: {ref_path} ({mime})")
+    if contents is None:
+        contents = prompt
+
     for model_name in IMAGE_MODELS:
         for attempt in range(max_retries + 1):
             try:
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=prompt,
+                    contents=contents,
                     config=types.GenerateContentConfig(
                         response_modalities=["IMAGE"],
                         image_config=types.ImageConfig(

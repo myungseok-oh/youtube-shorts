@@ -25,7 +25,7 @@ from pipeline import config
 from pipeline.agent import (
     generate_script, generate_image_prompts,
     generate_synopsis, generate_visual_plan, generate_script_from_plan,
-    generate_all_in_one,
+    generate_all_in_one, _validate_with_claude,
 )
 from pipeline.tts_generator import generate_audio, GOOGLE_CLOUD_VOICES
 from pipeline.slide_generator import generate_slides, generate_thumbnail
@@ -281,6 +281,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
             meta["style_guide"] = result.get("style_guide", {})
 
             # visual_plan → image_prompts 변환 (Phase B 호환)
+            # 기존 프롬프트가 있고 visual_plan이 비어있으면 보존 (수동 대본 보호)
             image_prompts = []
             for vp in visual_plan:
                 image_prompts.append({
@@ -290,7 +291,11 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                     "media": vp.get("media", "image"),
                     "slide": vp.get("scene", 1),
                 })
-            meta["image_prompts"] = image_prompts
+            if image_prompts and any(p.get("en") for p in image_prompts):
+                meta["image_prompts"] = image_prompts
+            elif not meta.get("image_prompts") or not any(
+                    (p.get("en") if isinstance(p, dict) else "") for p in meta.get("image_prompts", [])):
+                meta["image_prompts"] = image_prompts
 
             db.execute(
                 "UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
@@ -298,13 +303,127 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
             )
 
         else:
-            # script_json 직접 제공 (수동 대본)
-            _update_step(db, job_id, "synopsis", "skipped",
-                         output_data={"message": "script 직접 제공"})
-            _update_step(db, job_id, "visual_plan", "skipped",
-                         output_data={"message": "script 직접 제공"})
-            _update_step(db, job_id, "script", "skipped",
-                         output_data={"message": "script 직접 제공"})
+            # script_json 직접 제공 (수동 대본) → Claude 후처리
+            target_duration = int(ch_config.get("target_duration", 60))
+
+            # 슬라이드 내장 이미지 프롬프트 or meta_json에 저장된 프롬프트 → visual_plan으로 변환
+            _existing_vp = []
+            _meta_existing = {}
+            _meta_row = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
+            if _meta_row and _meta_row.get("meta_json"):
+                try:
+                    _meta_existing = json.loads(_meta_row["meta_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            _saved_prompts = _meta_existing.get("image_prompts", [])
+
+            if _saved_prompts and any(p.get("en") for p in _saved_prompts):
+                # meta_json에 저장된 프롬프트 사용 (프론트에서 보낸 다중 프롬프트)
+                for i, p in enumerate(_saved_prompts):
+                    _existing_vp.append({
+                        "scene": p.get("slide", i + 1),
+                        "media": p.get("media", "image"),
+                        "duration": 5,
+                        "bg_type": "photo",
+                        "ko": p.get("ko", ""),
+                        "en": p.get("en", ""),
+                        "motion": p.get("motion", ""),
+                    })
+            else:
+                # 슬라이드에 내장된 프롬프트 추출
+                _scene = 1
+                for s in script_json.get("slides", []):
+                    if s.get("bg_type") == "closing":
+                        continue
+                    _existing_vp.append({
+                        "scene": _scene,
+                        "media": "image",
+                        "duration": 5,
+                        "bg_type": s.get("bg_type", "photo"),
+                        "ko": s.get("image_prompt_ko", ""),
+                        "en": s.get("image_prompt_en", ""),
+                        "motion": "",
+                    })
+                    _scene += 1
+
+            draft_json = {"script": script_json}
+            if any(vp.get("en") for vp in _existing_vp):
+                draft_json["visual_plan"] = _existing_vp
+
+            _update_step(db, job_id, "synopsis", "running")
+            try:
+                print(f"[runner] 수동 대본 Claude 후처리 시작: job={job_id}")
+                result = _validate_with_claude(
+                    draft_json, instructions, brand, topic,
+                    target_duration=target_duration,
+                    prompt_style=image_prompt_style,
+                    layout=ch_config.get("slide_layout", "full"),
+                    image_style=ch_config.get("image_style", "mixed"),
+                    scene_references=image_scene_references,
+                    bg_display_mode=ch_config.get("bg_display_mode", "zone"),
+                    bg_media_type=ch_config.get("bg_media_type", "auto"),
+                    channel_format=channel_format,
+                    has_outro=has_outro,
+                    script_rules=script_rules,
+                    roundup_rules=roundup_rules,
+                )
+                script_json = result.get("script", script_json)
+                visual_plan = result.get("visual_plan", [])
+                print(f"[runner] 수동 대본 후처리 완료: "
+                      f"sentences={len(script_json.get('sentences',[]))}, "
+                      f"slides={len(script_json.get('slides',[]))}, "
+                      f"vp={len(visual_plan)}")
+            except Exception as e:
+                print(f"[runner] 수동 대본 후처리 실패, 원본 유지: {e}")
+                visual_plan = []
+                result = {}
+                traceback.print_exc()
+
+            _update_step(db, job_id, "synopsis", "completed",
+                         output_data={"message": "대본 검토 완료"})
+            _update_step(db, job_id, "visual_plan", "completed",
+                         output_data={"scenes": len(visual_plan)})
+            _update_step(db, job_id, "script", "completed",
+                         output_data={
+                             "sentences": len(script_json.get("sentences", [])),
+                             "slides": len(script_json.get("slides", [])),
+                         })
+
+            # topic을 youtube_title로 업데이트
+            _yt_title = script_json.get("youtube_title", "").strip()
+            if _yt_title:
+                db.execute("UPDATE jobs SET topic = ?, updated_at = ? WHERE id = ?",
+                           [_yt_title, _now(), job_id])
+
+            # script_json + meta_json 저장
+            db.execute("UPDATE jobs SET script_json = ?, updated_at = ? WHERE id = ?",
+                       [json.dumps(script_json, ensure_ascii=False), _now(), job_id])
+
+            meta = {}
+            existing = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
+            if existing and existing.get("meta_json"):
+                try:
+                    meta = json.loads(existing["meta_json"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            meta["visual_plan"] = visual_plan
+            meta["style_guide"] = result.get("style_guide", {}) if visual_plan else {}
+            image_prompts = []
+            for vp in visual_plan:
+                image_prompts.append({
+                    "ko": vp.get("ko", ""),
+                    "en": vp.get("en", ""),
+                    "motion": vp.get("motion", ""),
+                    "media": vp.get("media", "image"),
+                    "slide": vp.get("scene", 1),
+                })
+            if image_prompts and any(p.get("en") for p in image_prompts):
+                meta["image_prompts"] = image_prompts
+            elif not meta.get("image_prompts") or not any(
+                    (p.get("en") if isinstance(p, dict) else "") for p in meta.get("image_prompts", [])):
+                meta["image_prompts"] = image_prompts
+            db.execute("UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
+                       [json.dumps(meta, ensure_ascii=False), _now(), job_id])
 
         # Phase A 완료 → waiting_slides
         db.execute(
@@ -545,8 +664,10 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                         _ar = "9:16"
                                     else:
                                         _ar = "1:1" if slide_layout_b in ("center", "top", "bottom") else "9:16"
+                                    _char_ref_path = _find_channel_image(channel_id, "character_ref")
                                     gemini_generate_image(en_prompt, out, gemini_key,
-                                                          aspect_ratio=_ar)
+                                                          aspect_ratio=_ar,
+                                                          reference_image_path=_char_ref_path)
                                     print(f"[runner] bg_{idx+1}.png Gemini 이미지 생성 완료 (slide {slide_num})")
                                 except Exception as e:
                                     print(f"[runner] bg_{idx+1} Gemini 이미지 생성 실패: {e}")
@@ -660,39 +781,112 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
             _update_step(db, job_id, "slides", "failed", error_msg=str(e))
             raise
 
-        # 나레이션 파일 감지
-        narration_path = _find_narration(dirs["job"])
+        # 나레이션 파일 감지 (TTS 엔진/음성 변경 시 나레이션 무시 → TTS 사용)
+        force_tts = bool(tts_engine_override or tts_voice_override or sovits_cfg_override)
+        narration_path = None if force_tts else _find_narration(dirs["job"])
 
         if narration_path:
-            # --- 나레이션 업로드 모드: TTS 스킵, 나레이션 기반 렌더 ---
+            # --- 나레이션 업로드 모드: 무음 기준 분할 → 기존 렌더 파이프라인 합류 ---
+            content_slides = [s for s in slides_data if s.get("bg_type") != "closing"]
+            split_result = _split_narration(narration_path, len(content_slides),
+                                            dirs["segment"])
             _update_step(db, job_id, "tts", "skipped",
-                         output_data={"message": "나레이션 직접 업로드"})
+                         output_data={"message": "나레이션 업로드 (자동 분할)",
+                                      "segments": len(split_result)})
+
+            # 분할 결과 → merged_audio, slide_durations (기존 TTS 파이프라인 형식)
+            merged_audio = {k: v["path"] for k, v in split_result.items()}
+            slide_durations = {k: v["duration"] for k, v in split_result.items()}
+            total_duration = sum(slide_durations.values())
 
             _update_step(db, job_id, "render", "running")
             try:
-                final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
-                total_dur = _render_with_narration(
-                    narration_path, dirs["image"], slides_data, final_path)
+                _ch_cfg_render = json.loads(channel.get("config", "{}")) if channel else {}
 
-                # 인트로/아웃트로 세그먼트 이어붙이기
-                _ch_cfg_narr = json.loads(channel.get("config", "{}")) if channel else {}
-                _intro_offset, wrap_dur = _wrap_with_intro_outro(
-                    channel_id, final_path, dirs["segment"], _ch_cfg_narr)
-                total_dur += wrap_dur
+                # 슬라이드간 나래이션 갭
+                _xfade_dur = ch_config_pb.get("crossfade_duration", 0.5) or 0.5
+                _pad_gap = max(0.3, _xfade_dur + 0.1)
+                _timeline_narr = {"slide_durations": slide_durations,
+                                  "total_duration": total_duration}
+                _pad_slide_audio(merged_audio, _timeline_narr, gap=_pad_gap)
+                slide_durations = _timeline_narr["slide_durations"]
+                total_duration = _timeline_narr["total_duration"]
+
+                # motion 힌트 + 슬라이드→bg 매핑
+                _motion_hints = {}
+                _slide_bg_map = {}
+                try:
+                    _meta_raw = job_row.get("meta_json", "")
+                    if _meta_raw:
+                        _meta = json.loads(_meta_raw)
+                        for i, p in enumerate(_meta.get("image_prompts", [])):
+                            bg_idx = i + 1
+                            m = p.get("motion", "") if isinstance(p, dict) else ""
+                            if m:
+                                _motion_hints[bg_idx] = m
+                            slide_num = p.get("slide", bg_idx) if isinstance(p, dict) else bg_idx
+                            _slide_bg_map.setdefault(slide_num, []).append(bg_idx)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                segments = render_segments(slide_durations, dirs["image"],
+                                           merged_audio, dirs["segment"],
+                                           motion_hints=_motion_hints,
+                                           slide_bg_map=_slide_bg_map)
+                final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
+
+                # 효과음 설정
+                sfx_cfg = _ch_cfg_render if (_ch_cfg_render.get("sfx_enabled") or _ch_cfg_render.get("bgm_enabled") or _ch_cfg_render.get("crossfade_duration")) else None
+                if _cd.get("narr_volume") is not None:
+                    if sfx_cfg is None:
+                        sfx_cfg = dict(_ch_cfg_render)
+                    sfx_cfg["narr_volume"] = _cd["narr_volume"]
+
+                # compose_data 전환 효과 오버라이드
+                _tr = _cd.get("transition", {})
+                if _tr.get("effect"):
+                    _ch_cfg_render["crossfade_transition"] = _tr["effect"]
+                if _tr.get("duration") is not None:
+                    _ch_cfg_render["crossfade_duration"] = _tr["duration"]
+
+                # SFX/BGM 없이 concat
+                concat_cfg = dict(_ch_cfg_render)
+                concat_cfg["sfx_enabled"] = False
+                concat_cfg["bgm_enabled"] = False
+                concat_segments(segments, final_path,
+                                sfx_cfg=concat_cfg,
+                                slide_durations=slide_durations)
+
+                # 인트로/아웃트로
+                intro_offset, wrap_dur = _wrap_with_intro_outro(
+                    channel_id, final_path, dirs["segment"], _ch_cfg_render)
+                total_duration += wrap_dur
+
+                # SFX/BGM 믹싱
+                if sfx_cfg:
+                    actual_xfade = _ch_cfg_render.get("crossfade_duration", 0.5) or 0.5
+                    apply_audio_mix(final_path, sfx_cfg, slide_durations,
+                                    xfade_dur=actual_xfade, audio_offset=intro_offset)
 
                 file_size = os.path.getsize(final_path) / (1024 * 1024)
                 _update_step(db, job_id, "render", "completed",
                              output_data={
                                  "file": final_path,
-                                 "duration": round(total_dur, 1),
+                                 "duration": round(total_duration, 1),
                                  "size_mb": round(file_size, 1),
                              })
-                # render 완료 즉시 output_path 기록 (영상 미리보기용)
                 db.execute("UPDATE jobs SET output_path = ?, updated_at = ? WHERE id = ?",
                            [final_path, _now(), job_id])
                 generate_metadata(topic, sentences, dirs["job"],
                                   youtube_title=script_json.get("youtube_title", ""),
                                   brand=brand)
+
+                # 썸네일 생성
+                try:
+                    _generate_job_thumbnail(job_id, script_json, slides_data, [], brand, dirs["job"])
+                except Exception as e:
+                    print(f"[thumbnail] 썸네일 생성 실패 (무시): {e}")
+
             except Exception as e:
                 _update_step(db, job_id, "render", "failed", error_msg=str(e))
                 raise
@@ -978,6 +1172,102 @@ def _find_narration(job_dir: str) -> str | None:
         if os.path.exists(path):
             return path
     return None
+
+
+def _split_narration(narration_path: str, slide_count: int,
+                     output_dir: str) -> dict:
+    """업로드된 나레이션을 무음 구간 기준으로 슬라이드별 분할.
+
+    ffmpeg silencedetect로 무음 구간을 감지하고, 가장 긴 (slide_count - 1)개
+    무음 구간을 경계로 분할. 무음 구간 부족 시 균등 분할 폴백.
+
+    Returns:
+        {1: {"path": ".../slide_audio_1.mp3", "duration": 5.2}, 2: {...}, ...}
+    """
+    import re
+    from pipeline.tts_generator import get_audio_duration
+
+    os.makedirs(output_dir, exist_ok=True)
+    total_dur = get_audio_duration(narration_path)
+    if total_dur <= 0:
+        raise RuntimeError("나레이션 파일 길이를 측정할 수 없습니다")
+
+    # 1) silencedetect로 무음 구간 감지
+    result = subprocess.run(
+        [config.ffmpeg(), "-i", narration_path,
+         "-af", "silencedetect=noise=-35dB:d=0.3",
+         "-f", "null", "-"],
+        capture_output=True, text=True
+    )
+    stderr = result.stderr
+
+    # silence_start / silence_end 파싱
+    starts = [float(m) for m in re.findall(r"silence_start:\s*([\d.]+)", stderr)]
+    ends = [float(m) for m in re.findall(r"silence_end:\s*([\d.]+)", stderr)]
+
+    silences = []
+    for i in range(min(len(starts), len(ends))):
+        s, e = starts[i], ends[i]
+        dur = e - s
+        mid = (s + e) / 2
+        silences.append({"start": s, "end": e, "duration": dur, "mid": mid})
+
+    # 2) 분할 지점 결정: 균등 시간 기준으로 가장 가까운 무음 선택
+    needed = slide_count - 1
+    if len(silences) >= needed and needed > 0:
+        # 이상적 분할 시간 계산 (균등 배분)
+        ideal_splits = [total_dur * (i + 1) / slide_count for i in range(needed)]
+        # 각 이상적 시간에 가장 가까운 무음 구간 선택 (중복 방지)
+        used = set()
+        split_points = []
+        for ideal in ideal_splits:
+            best_idx = None
+            best_dist = float('inf')
+            for j, s in enumerate(silences):
+                if j in used:
+                    continue
+                dist = abs(s["mid"] - ideal)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = j
+            if best_idx is not None:
+                split_points.append(silences[best_idx]["mid"])
+                used.add(best_idx)
+            else:
+                split_points.append(ideal)
+        split_points.sort()
+        print(f"[runner] narration split: {slide_count} segments "
+              f"(silence gaps: {len(silences)}, nearest-to-ideal)")
+    else:
+        # 무음 구간 부족 → 균등 분할
+        split_points = [total_dur * (i + 1) / slide_count
+                        for i in range(needed)]
+        print(f"[runner] narration split: {slide_count} segments "
+              f"(uniform fallback, silence gaps: {len(silences)})")
+
+    # 3) 분할 지점 → 구간 리스트
+    boundaries = [0.0] + split_points + [total_dur]
+    result_map = {}
+    for i in range(slide_count):
+        start = boundaries[i]
+        end = boundaries[i + 1]
+        duration = end - start
+        out_path = os.path.join(output_dir, f"slide_audio_{i + 1}.mp3")
+        subprocess.run(
+            [config.ffmpeg(), "-y",
+             "-i", narration_path,
+             "-ss", str(start), "-t", str(duration),
+             "-c:a", "libmp3lame", "-q:a", "2",
+             out_path],
+            capture_output=True
+        )
+        # 실제 duration 측정 (ffmpeg 인코딩 오차 보정)
+        actual_dur = get_audio_duration(out_path)
+        if actual_dur <= 0:
+            actual_dur = duration
+        result_map[i + 1] = {"path": out_path, "duration": actual_dur}
+
+    return result_map
 
 
 def _render_with_narration(narration_path: str, image_dir: str,
@@ -1576,8 +1866,10 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                 _ar = "9:16"
                             else:
                                 _ar = "1:1" if slide_layout_s3 in ("center", "top", "bottom") else "9:16"
+                            _char_ref_path_s3 = _find_channel_image(channel_id, "character_ref")
                             gemini_generate_image(en_prompt, output_path, gemini_key,
-                                                  aspect_ratio=_ar)
+                                                  aspect_ratio=_ar,
+                                                  reference_image_path=_char_ref_path_s3)
                             print(f"[runner] bg_{idx+1}.png Gemini 이미지 생성 완료")
                         except Exception as e:
                             print(f"[runner] bg_{idx+1} Gemini 이미지 생성 실패: {e}")
@@ -1940,20 +2232,15 @@ class JobQueue:
 # 전역 큐 인스턴스
 _job_queue = JobQueue()
 
-# Phase A 동시 실행 제한 (Claude API 부하 방지)
-_phase_a_semaphore = threading.Semaphore(2)
-
-
 # ─── Public API ───
 
 def start_pipeline(db_ch, db, job_id: str, script_json: dict = None,
                     use_gemini_draft: bool = False):
-    """Phase A 실행 (대본까지 → waiting_slides). 동시 최대 2개."""
-    def _run_with_limit():
-        with _phase_a_semaphore:
-            _run_phase_a(db_ch, db, job_id, script_json,
-                         use_gemini_draft=use_gemini_draft)
-    t = threading.Thread(target=_run_with_limit, daemon=True)
+    """Phase A 실행 (대본까지 → waiting_slides)."""
+    def _run():
+        _run_phase_a(db_ch, db, job_id, script_json,
+                     use_gemini_draft=use_gemini_draft)
+    t = threading.Thread(target=_run, daemon=True)
     t.start()
     return t
 
