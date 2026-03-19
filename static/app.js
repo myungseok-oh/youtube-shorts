@@ -451,6 +451,9 @@ async function openJobDetail(jobId) {
   _lastDetailHadScript = false;
   _detailLoading = true;
   _wizardStep = 1; // will be auto-determined after data load
+  _slideTransitions = []; // 전환효과 캐시 초기화
+  _slideMotions = []; // 모션 캐시 초기화
+  _selectedPreviewSlide = 1;
   document.getElementById("job-detail-modal").classList.remove("hidden");
   document.getElementById("job-detail-content").innerHTML = `
     <div class="text-center py-8 text-gray-500">로딩중...</div>`;
@@ -588,11 +591,11 @@ function determineWizardStep(scriptData, stepsData) {
     const uploadedCount = Object.keys(uploaded_backgrounds || {}).length;
     return uploadedCount > 0 ? 2 : 1;
   }
-  if (status === "queued" || status === "completed") return 3;
+  if (status === "queued" || status === "completed") return 4;
   if (status === "running" && script) {
     // Phase B — check if slides step is done
     if (stepStatus["slides"] === "completed" || stepStatus["tts"] === "running" || stepStatus["tts"] === "completed" ||
-        stepStatus["render"] === "running" || stepStatus["render"] === "completed") return 3;
+        stepStatus["render"] === "running" || stepStatus["render"] === "completed") return 4;
     return 2;
   }
   if (status === "failed") {
@@ -600,15 +603,15 @@ function determineWizardStep(scriptData, stepsData) {
     const fn = failedStep ? failedStep.step_name : "";
     if (["synopsis", "visual_plan", "script"].includes(fn)) return 1;
     if (["slides", "tts"].includes(fn)) return 2;
-    return 3;
+    return 4;
   }
   return 1;
 }
 
 function renderWizardNav(step, scriptData, stepsData) {
   const { status, script, uploaded_backgrounds, image_prompts } = scriptData;
-  const labels = ["대본 작성", "이미지 + 음성", "영상 제작"];
-  const icons = ["📝", "🖼️", "🎬"];
+  const labels = ["대본 작성", "이미지 + 음성", "전환효과", "영상 제작"];
+  const icons = ["📝", "🖼️", "✨", "🎬"];
 
   // determine "done" state for each step
   const hasScript = !!script;
@@ -623,11 +626,12 @@ function renderWizardNav(step, scriptData, stepsData) {
   const isDone = [
     hasScript, // step 1 done
     hasScript && uploadedCount >= bgCount && bgCount > 0, // step 2 done
-    renderDone || status === "completed", // step 3 done
+    hasScript && uploadedCount >= bgCount && bgCount > 0, // step 3 done (same as step 2 — transition is optional)
+    renderDone || status === "completed", // step 4 done
   ];
 
   let html = '<div class="wizard-nav">';
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     if (i > 0) {
       html += `<div class="wizard-step-arrow ${isDone[i - 1] ? 'done' : ''}">→</div>`;
     }
@@ -643,7 +647,7 @@ function renderWizardNav(step, scriptData, stepsData) {
 }
 
 function navigateWizard(step) {
-  if (step < 1 || step > 3) return;
+  if (step < 1 || step > 4) return;
   _wizardStep = step;
   if (_lastScriptData && _lastStepsData) {
     renderJobDetail(_lastScriptData, _lastStepsData);
@@ -762,11 +766,11 @@ function renderWizardStep1(jobId, scriptData, stepsData) {
              value="${esc(sen.text)}" />
     </div>`;
   });
-  narrationView += `<div class="mt-3 flex gap-2">
+  narrationView += `<div class="mt-3 flex gap-2 items-center">
     <button onclick="saveNarrationScript('${jobId}')" id="btn-save-narration"
-            class="px-4 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xs font-medium transition">저장</button>
-    <button onclick="copyAllNarration()" class="px-4 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">전체 복사</button>
-    <span id="narration-save-msg" class="text-xs text-green-400 self-center hidden">저장 완료</span>
+            class="px-4 py-1.5 bg-blue-700 hover:bg-blue-600 rounded text-xs font-medium transition">💾 저장</button>
+    <button onclick="copyAllNarration()" class="px-4 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">📋 전체 복사</button>
+    <span id="narration-save-msg" class="text-xs text-green-400 self-center hidden"></span>
   </div>`;
   narrationView += `</div>`;
 
@@ -1090,7 +1094,738 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
     </div>`;
 }
 
-function renderWizardStep3(jobId, scriptData, stepsData) {
+// ─── Step 3: 전환효과 + 모션 ───
+
+let _slideTransitions = []; // 슬라이드별 전환 설정 캐시
+let _slideMotions = []; // 슬라이드별 모션 설정 캐시
+let _motionsCache = null; // 모션 프리셋 캐시
+
+function renderWizardStep3_Transition(jobId, scriptData, stepsData) {
+  const { script, uploaded_backgrounds, image_prompts, channel_config } = scriptData;
+  const slides = script?.slides || [];
+  const _fpc = (image_prompts || []).filter(p => (typeof p === "object" ? p.en : p)).length;
+  const bgCount = _fpc > 0 ? _fpc : slides.filter(s => s.bg_type !== "closing").length;
+  const uploadedBgs = uploaded_backgrounds || {};
+  const cfg = channel_config || {};
+
+  const defaultEffect = cfg.crossfade_transition || "fade";
+  const defaultDur = cfg.crossfade_duration ?? 0.5;
+
+  // 초기화
+  if (_slideTransitions.length !== bgCount - 1) {
+    _slideTransitions = [];
+    for (let i = 1; i < bgCount; i++)
+      _slideTransitions.push({ slide: i, effect: defaultEffect, duration: defaultDur });
+  }
+  if (_slideMotions.length !== bgCount) {
+    _slideMotions = [];
+    for (let i = 1; i <= bgCount; i++) {
+      const isVideo = (uploadedBgs[i] || "").includes(".mp4");
+      _slideMotions.push({ slide: i, motion: isVideo ? "none" : "random" });
+    }
+    _loadSlideEffects(jobId, defaultEffect, defaultDur, uploadedBgs);
+  }
+
+  const trOptions = _transitionsCache || [];
+  const moOptions = _motionsCache || [];
+
+  // 모션/전환 아이콘 맵
+  const MO_ICONS = { none:"⏸", random:"🎲", zoom_in:"🔍", zoom_out:"🔎", pan_right:"→", pan_left:"←", pan_down:"↓", pan_up:"↑" };
+  const TR_ICONS = { fade:"◐", dissolve:"◑", wipeleft:"◧", wiperight:"◨", slideup:"⬆", slidedown:"⬇",
+    slideleft:"⬅", slideright:"➡", circlecrop:"◎", radial:"↻", smoothleft:"⇠", smoothright:"⇢", smoothup:"⇡", smoothdown:"⇣" };
+
+  let html = `<div class="wizard-step-content">`;
+
+  // ═══ 상단 2컬럼: 팔레트 + 미리보기 ═══
+  html += `<div class="flex gap-3 mb-3" style="min-height:220px;">`;
+
+  // 좌상단: 효과 팔레트
+  html += `<div class="flex-1 overflow-y-auto">`;
+
+  // 현재 선택된 슬라이드의 모션/전환 정보
+  const curMotion = (_selectedPreviewSlide >= 1 && _slideMotions[_selectedPreviewSlide - 1])
+    ? _slideMotions[_selectedPreviewSlide - 1].motion : null;
+  const curTransition = (_selectedTransitionIdx >= 1 && _slideTransitions[_selectedTransitionIdx - 1])
+    ? _slideTransitions[_selectedTransitionIdx - 1].effect : null;
+
+  // 모션 팔레트
+  html += `<div class="mb-2">
+    <div class="text-[10px] text-gray-500 mb-1">모션 효과 <span class="text-gray-600">(슬라이드 선택 후 클릭)</span></div>
+    <div class="flex flex-wrap gap-1">`;
+  for (const m of moOptions) {
+    const isActive = curMotion === m.id && _selectedTransitionIdx === 0;
+    html += `<button onclick="applyMotionToSelected('${jobId}','${m.id}')"
+      class="fx-btn${isActive ? ' active-motion' : ''}" title="${m.desc}">
+      <span class="text-sm">${MO_ICONS[m.id] || "✦"}</span><span class="text-[9px]">${m.label}</span>
+    </button>`;
+  }
+  html += `</div></div>`;
+
+  // 전환 팔레트
+  html += `<div class="mb-2">
+    <div class="text-[10px] text-gray-500 mb-1">전환 효과 <span class="text-gray-600">(슬라이드 사이 선택 후 클릭)</span></div>
+    <div class="flex flex-wrap gap-1">`;
+  for (const t of trOptions) {
+    const isActive = curTransition === t.id && _selectedTransitionIdx > 0;
+    html += `<button onclick="applyTransitionToSelected('${t.id}')"
+      class="fx-btn${isActive ? ' active-transition' : ''}" title="${t.desc}">
+      <span class="text-sm">${TR_ICONS[t.id] || "◆"}</span><span class="text-[9px]">${t.label}</span>
+    </button>`;
+  }
+  html += `</div></div>`;
+
+  // 일괄 + 전환 길이 — 현재 선택된 전환의 duration 또는 기본값
+  const curDurVal = (_selectedTransitionIdx >= 1 && _slideTransitions[_selectedTransitionIdx - 1])
+    ? _slideTransitions[_selectedTransitionIdx - 1].duration : defaultDur;
+  html += `<div class="flex items-center gap-2 mt-1">
+    <span class="text-[10px] text-gray-500">전환 길이:</span>
+    <input type="range" id="tr-dur-global" min="0" max="1.5" step="0.1" value="${curDurVal}"
+      style="width:80px;" oninput="document.getElementById('tr-dur-global-label').textContent=this.value+'초'">
+    <span id="tr-dur-global-label" class="text-[10px] text-gray-400">${curDurVal}초</span>
+    <button onclick="applyBulkAll()" class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-[10px] transition ml-2">전체 일괄</button>
+  </div>`;
+
+  html += `</div>`;
+
+  // 우상단: 미리보기
+  html += `
+    <div class="flex-shrink-0 flex flex-col items-center" style="width:140px;">
+      <div class="text-[10px] text-gray-500 mb-1">미리보기</div>
+      <div class="rounded overflow-hidden" style="width:135px; height:240px; background:#0a0a0a; position:relative;" id="fx-preview-box">
+        <div class="flex items-center justify-center h-full text-gray-600 text-[10px]" id="tr-preview-placeholder">
+          슬라이드 선택
+        </div>
+        <div class="fx-preview-loading hidden" id="tr-preview-loading">
+          <span class="animate-pulse">로딩 중...</span>
+        </div>
+        <video id="tr-preview-video" class="hidden" style="width:100%;height:100%;object-fit:contain;" autoplay muted loop></video>
+        <!-- CSS 전체 미리보기용 레이어 -->
+        <div id="fx-css-preview" class="hidden" style="position:absolute;inset:0;overflow:hidden;">
+          <div id="fx-css-cur" style="position:absolute;inset:0;width:100%;height:100%;opacity:1;"></div>
+          <div id="fx-css-nxt" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;"></div>
+        </div>
+      </div>
+      <div class="flex gap-1 mt-2">
+        <button onclick="playFullPreview('${jobId}')" id="btn-full-preview"
+          class="px-3 py-1 rounded text-[10px] font-medium transition"
+          style="background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid rgba(99,102,241,0.3);"
+          onmouseover="this.style.background='rgba(99,102,241,0.4)'" onmouseout="this.style.background='rgba(99,102,241,0.2)'">
+          ▶ 전체
+        </button>
+      </div>
+      <div id="fx-preview-status" class="text-[9px] text-gray-500 mt-1 font-mono"></div>
+    </div>`;
+
+  html += `</div>`;
+
+  // ═══ 하단: 타임라인 ═══
+  html += `<div class="rounded-lg p-2" style="background:rgba(255,255,255,0.02);">
+    <div class="overflow-x-auto">
+      <div class="flex items-end gap-0" id="fx-timeline" style="min-width:max-content; padding-bottom:4px;">`;
+
+  for (let i = 1; i <= bgCount; i++) {
+    const bgUrl = uploadedBgs[i] || null;
+    const isVideo = bgUrl && bgUrl.includes(".mp4");
+    const mo = _slideMotions[i - 1] || { motion: "random" };
+    const selected = (_selectedPreviewSlide === i) ? "ring-2 ring-orange-500" : "";
+
+    // 슬라이드 블록 (프레임 스트립 + 모션 배지 오버레이)
+    const _MO_LABELS = {none:"정적",random:"랜덤",zoom_in:"줌인",zoom_out:"줌아웃",pan_right:"우패닝",pan_left:"좌패닝",pan_down:"하패닝",pan_up:"상패닝"};
+    const moLabel = (moOptions.find(m=>m.id===mo.motion)||{}).label || _MO_LABELS[mo.motion] || "";
+    html += `<div class="relative cursor-pointer ${selected} rounded" style="flex-shrink:0;"
+                  onclick="selectSlideForFx('${jobId}', ${i})" id="fx-slide-${i}">`;
+
+    // 프레임 (단일 이미지 — 로드 속도 개선)
+    html += `<div style="height:50px; width:80px; position:relative; overflow:hidden;">`;
+    html += bgUrl
+      ? (isVideo
+        ? `<video src="${bgUrl}" muted playsinline style="width:100%;height:100%;object-fit:cover;pointer-events:none;"></video>`
+        : `<img src="${bgUrl}" loading="eager" decoding="async" style="width:100%;height:100%;object-fit:cover;" />`)
+      : `<div style="width:100%;height:100%;background:#1a1a2e;" class="flex items-center justify-center text-gray-600 text-[9px]">${i}</div>`;
+    // 모션 배지: 슬라이드 내부 좌상단 오버레이 (클릭 투과)
+    html += `<div style="position:absolute;top:2px;left:2px;background:rgba(139,92,246,0.7);color:#fff;
+                  font-size:8px;padding:1px 4px;border-radius:3px;white-space:nowrap;z-index:2;line-height:1.3;pointer-events:none;">
+      ${MO_ICONS[mo.motion] || "✦"} ${moLabel}
+    </div>`;
+    html += `</div>`;
+
+    // 슬라이드 번호
+    html += `<div class="text-center text-[9px] text-gray-500 mt-0.5">${i}</div>`;
+    html += `</div>`;
+
+    // 전환 아이콘 (슬라이드 사이)
+    if (i < bgCount) {
+      const tr = _slideTransitions[i - 1] || { effect: defaultEffect, duration: defaultDur };
+      const trSelected = (_selectedTransitionIdx === i) ? "ring-2 ring-blue-500" : "";
+      html += `<div class="flex flex-col items-center justify-end cursor-pointer px-0.5 ${trSelected} rounded"
+                    onclick="selectTransitionForFx('${jobId}', ${i})" id="fx-tr-${i}"
+                    style="flex-shrink:0; min-width:28px;">
+        <div class="w-6 h-6 rounded-full flex items-center justify-center text-[11px]"
+             style="background:rgba(59,130,246,0.2); color:#93c5fd;">
+          ${TR_ICONS[tr.effect] || "◆"}
+        </div>
+        <div class="text-[8px] text-gray-500 mt-0.5">${tr.duration}초</div>
+      </div>`;
+    }
+  }
+
+  html += `</div></div></div>`;
+  html += `</div>`;
+
+  if (!_transitionsCache || !_motionsCache) _ensureEffectsLoaded(jobId);
+  return html;
+}
+
+let _selectedPreviewSlide = 1;
+let _selectedTransitionIdx = 0; // 0 = none selected
+
+function _updatePaletteHighlights() {
+  // 모션 팔레트: 슬라이드 선택 시 해당 슬라이드의 모션 하이라이트
+  document.querySelectorAll(".fx-btn").forEach(b => b.classList.remove("active-motion", "active-transition"));
+  if (_selectedTransitionIdx === 0 && _selectedPreviewSlide >= 1) {
+    const curMotion = _slideMotions[_selectedPreviewSlide - 1]?.motion;
+    if (curMotion) {
+      document.querySelectorAll(".fx-btn").forEach(b => {
+        if (b.getAttribute("onclick")?.includes(`'${curMotion}'`) && b.getAttribute("onclick")?.includes("applyMotionToSelected"))
+          b.classList.add("active-motion");
+      });
+    }
+  }
+  // 전환 팔레트: 전환 선택 시 해당 전환의 효과 하이라이트
+  if (_selectedTransitionIdx >= 1) {
+    const curEffect = _slideTransitions[_selectedTransitionIdx - 1]?.effect;
+    if (curEffect) {
+      document.querySelectorAll(".fx-btn").forEach(b => {
+        if (b.getAttribute("onclick")?.includes(`'${curEffect}'`) && b.getAttribute("onclick")?.includes("applyTransitionToSelected"))
+          b.classList.add("active-transition");
+      });
+    }
+  }
+}
+
+function selectSlideForFx(jobId, slideIdx) {
+  _selectedPreviewSlide = slideIdx;
+  _selectedTransitionIdx = 0;
+  // 하이라이트
+  document.querySelectorAll("[id^='fx-slide-']").forEach(el => el.classList.remove("ring-2","ring-orange-500"));
+  document.querySelectorAll("[id^='fx-tr-']").forEach(el => el.classList.remove("ring-2","ring-blue-500"));
+  const el = document.getElementById(`fx-slide-${slideIdx}`);
+  if (el) el.classList.add("ring-2","ring-orange-500");
+  _updatePaletteHighlights();
+  // 모션 미리보기
+  _playMotionPreview(jobId, slideIdx);
+}
+
+function selectTransitionForFx(jobId, trIdx) {
+  _selectedTransitionIdx = trIdx;
+  _selectedPreviewSlide = trIdx; // 전환은 slide trIdx → trIdx+1
+  // 하이라이트
+  document.querySelectorAll("[id^='fx-slide-']").forEach(el => el.classList.remove("ring-2","ring-orange-500"));
+  document.querySelectorAll("[id^='fx-tr-']").forEach(el => el.classList.remove("ring-2","ring-blue-500"));
+  const el = document.getElementById(`fx-tr-${trIdx}`);
+  if (el) el.classList.add("ring-2","ring-blue-500");
+  _updatePaletteHighlights();
+  // 전환 미리보기
+  _playTransitionPreview(jobId, trIdx);
+}
+
+function applyMotionToSelected(jobId, motionId) {
+  const s = _selectedPreviewSlide;
+  if (s < 1 || s > _slideMotions.length) return;
+  const bgUrl = _lastScriptData?.uploaded_backgrounds?.[s] || "";
+  if (bgUrl.includes(".mp4")) return;
+  _slideMotions[s - 1] = { slide: s, motion: motionId };
+  _updateTimelineBadge(s, motionId);
+  _updatePaletteHighlights();
+  _playMotionPreview(jobId, s);
+  _autoSaveEffects();
+}
+
+function applyTransitionToSelected(effectId) {
+  const idx = _selectedTransitionIdx;
+  if (idx < 1 || idx > _slideTransitions.length) return;
+  const dur = parseFloat(document.getElementById("tr-dur-global")?.value) || 0.5;
+  _slideTransitions[idx - 1] = { slide: idx, effect: effectId, duration: dur };
+  _updateTimelineTransition(idx, effectId, dur);
+  _updatePaletteHighlights();
+  _playTransitionPreview(_lastScriptData?.job_id || "", idx);
+  _autoSaveEffects();
+}
+
+// 효과 변경 시 디바운스 자동 저장 (1초 후)
+let _fxSaveTimer = null;
+function _autoSaveEffects() {
+  if (_fxSaveTimer) clearTimeout(_fxSaveTimer);
+  _fxSaveTimer = setTimeout(async () => {
+    const jobId = _lastScriptData?.job_id;
+    if (!jobId) return;
+    try {
+      const cdRes = await fetch(`/api/jobs/${jobId}/composer`);
+      if (!cdRes.ok) return;
+      const data = await cdRes.json();
+      const cd = data.compose_data || {};
+      cd.slide_transitions = _slideTransitions;
+      cd.slide_motions = _slideMotions;
+      await fetch(`/api/jobs/${jobId}/composer/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cd),
+      });
+    } catch {}
+  }, 1000);
+}
+
+function _updateTimelineBadge(slideNum, motionId) {
+  const MO_ICONS = { none:"⏸", random:"🎲", zoom_in:"🔍", zoom_out:"🔎", pan_right:"→", pan_left:"←", pan_down:"↓", pan_up:"↑" };
+  const _MO_LABELS = {none:"정적",random:"랜덤",zoom_in:"줌인",zoom_out:"줌아웃",pan_right:"우패닝",pan_left:"좌패닝",pan_down:"하패닝",pan_up:"상패닝"};
+  const slideEl = document.getElementById(`fx-slide-${slideNum}`);
+  if (!slideEl) return;
+  const badge = slideEl.querySelector('[style*="rgba(139,92,246"]');
+  if (badge) badge.innerHTML = `${MO_ICONS[motionId] || "✦"} ${_MO_LABELS[motionId] || ""}`;
+}
+
+function _updateTimelineTransition(trIdx, effect, dur) {
+  const TR_ICONS = { fade:"◐", dissolve:"◑", wipeleft:"◧", wiperight:"◨", slideup:"⬆", slidedown:"⬇",
+    slideleft:"⬅", slideright:"➡", circlecrop:"◎", radial:"↻", smoothleft:"⇠", smoothright:"⇢", smoothup:"⇡", smoothdown:"⇣" };
+  const trEl = document.getElementById(`fx-tr-${trIdx}`);
+  if (!trEl) return;
+  const iconEl = trEl.querySelector('[style*="rgba(59,130,246"]');
+  if (iconEl) iconEl.textContent = TR_ICONS[effect] || "◆";
+  const durEl = trEl.querySelector('.text-gray-500');
+  if (durEl) durEl.textContent = dur + "초";
+}
+
+function _showPreviewLoading() {
+  const loading = document.getElementById("tr-preview-loading");
+  const ph = document.getElementById("tr-preview-placeholder");
+  const video = document.getElementById("tr-preview-video");
+  if (ph) ph.classList.add("hidden");
+  if (loading) loading.classList.remove("hidden");
+  if (video) video.classList.add("hidden");
+}
+
+function _hidePreviewLoading() {
+  const loading = document.getElementById("tr-preview-loading");
+  if (loading) loading.classList.add("hidden");
+}
+
+async function _playMotionPreview(jobId, slideIdx) {
+  const mo = _slideMotions[slideIdx - 1];
+  if (!mo) return;
+  const video = document.getElementById("tr-preview-video");
+  if (!video) return;
+  _showPreviewLoading();
+  video.src = `/api/jobs/${jobId}/motion-preview?slide=${slideIdx}&motion=${mo.motion}&t=${Date.now()}`;
+  video.oncanplay = () => { _hidePreviewLoading(); video.classList.remove("hidden"); };
+  video.onerror = () => { _hidePreviewLoading(); video.classList.remove("hidden"); };
+  video.load();
+  video.play().catch(() => {});
+}
+
+async function _playTransitionPreview(jobId, trIdx) {
+  const tr = _slideTransitions[trIdx - 1];
+  if (!tr) return;
+  const video = document.getElementById("tr-preview-video");
+  if (!video) return;
+  _showPreviewLoading();
+  video.src = `/api/jobs/${jobId}/transition-preview?effect=${tr.effect}&duration=${tr.duration}&slide_from=${trIdx}&slide_to=${trIdx + 1}&t=${Date.now()}`;
+  video.oncanplay = () => { _hidePreviewLoading(); video.classList.remove("hidden"); };
+  video.onerror = () => { _hidePreviewLoading(); video.classList.remove("hidden"); };
+  video.load();
+  video.play().catch(() => {});
+}
+
+// ─── 전체 미리보기: CSS 애니메이션 (실시간, 렌더 불필요) ───
+let _fullPreviewPlaying = false;
+let _fullPreviewTimer = null;
+let _fullPreviewSlideIdx = 0;
+
+// 모션 → CSS transform 매핑
+const _CSS_MOTIONS = {
+  zoom_in:   { from: "scale(1)",       to: "scale(1.3)" },
+  zoom_out:  { from: "scale(1.3)",     to: "scale(1)" },
+  pan_right: { from: "translateX(-8%) scale(1.1)", to: "translateX(8%) scale(1.1)" },
+  pan_left:  { from: "translateX(8%) scale(1.1)",  to: "translateX(-8%) scale(1.1)" },
+  pan_down:  { from: "translateY(-8%) scale(1.1)", to: "translateY(8%) scale(1.1)" },
+  pan_up:    { from: "translateY(8%) scale(1.1)",  to: "translateY(-8%) scale(1.1)" },
+  none:      { from: "scale(1)",       to: "scale(1)" },
+};
+
+// 전환 → CSS 애니메이션 매핑
+const _CSS_TRANSITIONS = {
+  fade:        (cur, nxt, dur) => { nxt.style.transition = `opacity ${dur}s`; nxt.style.opacity = "1"; },
+  dissolve:    (cur, nxt, dur) => { cur.style.transition = `opacity ${dur}s`; cur.style.opacity = "0"; nxt.style.transition = `opacity ${dur}s`; nxt.style.opacity = "1"; },
+  wipeleft:    (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "inset(0 0 0 0)"; },
+  wiperight:   (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "inset(0 0 0 0)"; },
+  slideup:     (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateY(0)"; },
+  slidedown:   (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateY(0)"; },
+  slideleft:   (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateX(0)"; },
+  slideright:  (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateX(0)"; },
+  circlecrop:  (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "circle(100% at 50% 50%)"; },
+  radial:      (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "circle(100% at 50% 50%)"; },
+  smoothleft:  (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateX(0)"; },
+  smoothright: (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateX(0)"; },
+  smoothup:    (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateY(0)"; },
+  smoothdown:  (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateY(0)"; },
+};
+
+// 전환 초기 상태 (전환 시작 전 nxt 위치)
+const _CSS_TR_INIT = {
+  wipeleft:    (nxt) => { nxt.style.clipPath = "inset(0 100% 0 0)"; },
+  wiperight:   (nxt) => { nxt.style.clipPath = "inset(0 0 0 100%)"; },
+  slideup:     (nxt) => { nxt.style.transform = "translateY(100%)"; },
+  slidedown:   (nxt) => { nxt.style.transform = "translateY(-100%)"; },
+  slideleft:   (nxt) => { nxt.style.transform = "translateX(100%)"; },
+  slideright:  (nxt) => { nxt.style.transform = "translateX(-100%)"; },
+  circlecrop:  (nxt) => { nxt.style.clipPath = "circle(0% at 50% 50%)"; },
+  radial:      (nxt) => { nxt.style.clipPath = "circle(0% at 50% 50%)"; },
+  smoothleft:  (nxt) => { nxt.style.transform = "translateX(100%)"; },
+  smoothright: (nxt) => { nxt.style.transform = "translateX(-100%)"; },
+  smoothup:    (nxt) => { nxt.style.transform = "translateY(100%)"; },
+  smoothdown:  (nxt) => { nxt.style.transform = "translateY(-100%)"; },
+};
+
+function playFullPreview(jobId) {
+  if (_fullPreviewPlaying) { _stopFullPreview(); return; }
+
+  const box = document.getElementById("fx-css-preview");
+  const ph = document.getElementById("tr-preview-placeholder");
+  const video = document.getElementById("tr-preview-video");
+  const statusEl = document.getElementById("fx-preview-status");
+  if (!box) return;
+  if (!_lastScriptData?.uploaded_backgrounds) {
+    if (statusEl) statusEl.textContent = "데이터 로딩 중...";
+    // 잠시 후 재시도
+    setTimeout(() => playFullPreview(jobId), 1000);
+    return;
+  }
+
+  // 배경 URL 수집 (이미지 + 영상 모두 지원)
+  const bgUrls = [];
+  for (let i = 0; i < _slideMotions.length; i++) {
+    const slideNum = _slideMotions[i].slide;
+    const bgUrl = _lastScriptData?.uploaded_backgrounds?.[slideNum] || "";
+    bgUrls.push(bgUrl);
+  }
+
+  // 유효한 이미지만 필터 (최소 1개는 있어야)
+  if (bgUrls.every(u => !u)) { if (statusEl) statusEl.textContent = "배경 이미지 없음"; return; }
+
+  // 이미지 프리로드 (깜빡임 방지)
+  bgUrls.forEach(u => { if (u) { const img = new Image(); img.src = u; } });
+
+  // UI 전환
+  if (ph) ph.classList.add("hidden");
+  if (video) video.classList.add("hidden");
+  _hidePreviewLoading();
+  box.classList.remove("hidden");
+
+  const btn = document.getElementById("btn-full-preview");
+  if (btn) btn.textContent = "⏹ 정지";
+  _fullPreviewPlaying = true;
+  _fullPreviewSlideIdx = 0;
+
+  const SLIDE_DUR = 2000;
+  const TR_DUR = 600;
+
+  // 컨테이너에 미디어 요소(img 또는 video) 설정
+  function _setMedia(container, url) {
+    container.innerHTML = "";
+    container.style.transition = "none";
+    container.style.transform = "scale(1)";
+    container.style.opacity = "0";
+    container.style.clipPath = "none";
+    if (!url) return;
+    const isVideo = url.includes(".mp4") || url.includes(".gif");
+    if (isVideo) {
+      const v = document.createElement("video");
+      v.src = url; v.muted = true; v.autoplay = true; v.loop = true; v.playsInline = true;
+      v.style.cssText = "width:100%;height:100%;object-fit:cover;";
+      container.appendChild(v);
+      v.play().catch(() => {});
+    } else {
+      const img = document.createElement("img");
+      img.src = url;
+      img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+      container.appendChild(img);
+    }
+  }
+
+  function showSlide(idx) {
+    if (!_fullPreviewPlaying) return;
+    if (idx >= _slideMotions.length) { idx = 0; } // 루프
+
+    _fullPreviewSlideIdx = idx;
+    const curDiv = document.getElementById("fx-css-cur");
+    const nxtDiv = document.getElementById("fx-css-nxt");
+    if (!curDiv || !nxtDiv) return;
+
+    // 타임라인 하이라이트
+    document.querySelectorAll("[id^='fx-slide-']").forEach(el => el.classList.remove("ring-2","ring-orange-500"));
+    document.querySelectorAll("[id^='fx-tr-']").forEach(el => el.classList.remove("ring-2","ring-blue-500"));
+    const slideEl = document.getElementById(`fx-slide-${_slideMotions[idx].slide}`);
+    if (slideEl) slideEl.classList.add("ring-2","ring-orange-500");
+    if (statusEl) statusEl.textContent = `${idx + 1} / ${_slideMotions.length}`;
+
+    // 현재 슬라이드 설정
+    const mo = _slideMotions[idx]?.motion || "none";
+    const cssMotion = _CSS_MOTIONS[mo] || _CSS_MOTIONS.none;
+    const url = bgUrls[idx];
+
+    // 이미지가 없는 슬라이드는 스킵
+    if (!url) {
+      _fullPreviewTimer = setTimeout(() => showSlide(idx + 1), 200);
+      return;
+    }
+
+    // 미디어 설정
+    _setMedia(curDiv, url);
+    _setMedia(nxtDiv, "");
+    curDiv.style.opacity = "1";
+    curDiv.style.transform = cssMotion.from;
+
+    // 브라우저가 리셋을 렌더한 후 모션 시작 (2프레임 대기)
+    requestAnimationFrame(() => { requestAnimationFrame(() => {
+      if (!_fullPreviewPlaying) return;
+      curDiv.style.transition = `transform ${SLIDE_DUR/1000}s ease-out`;
+      curDiv.style.transform = cssMotion.to;
+    }); });
+
+    // 전환 시작
+    _fullPreviewTimer = setTimeout(() => {
+      if (!_fullPreviewPlaying) return;
+      const nextIdx = (idx + 1) % _slideMotions.length;
+      const nxtUrl = bgUrls[nextIdx];
+
+      // 다음 이미지가 없으면 바로 다음으로
+      if (!nxtUrl) {
+        showSlide(nextIdx);
+        return;
+      }
+
+      // 전환 효과
+      const trCfg = _slideTransitions[idx] || {};
+      const effect = trCfg.effect || "fade";
+
+      // 전환 하이라이트
+      const trEl = document.getElementById(`fx-tr-${_slideMotions[idx].slide}`);
+      if (trEl) {
+        document.querySelectorAll("[id^='fx-slide-']").forEach(el => el.classList.remove("ring-2","ring-orange-500"));
+        trEl.classList.add("ring-2","ring-blue-500");
+      }
+
+      // nxt 미디어 준비
+      _setMedia(nxtDiv, nxtUrl);
+      nxtDiv.style.transition = "none";
+      nxtDiv.style.opacity = "0";
+      nxtDiv.style.transform = "scale(1)";
+      nxtDiv.style.clipPath = "none";
+
+      // 전환 초기 상태
+      const initFn = _CSS_TR_INIT[effect];
+      if (initFn) {
+        nxtDiv.style.opacity = "1";
+        initFn(nxtDiv);
+      }
+
+      // 전환 애니메이션 (2프레임 대기 후)
+      requestAnimationFrame(() => { requestAnimationFrame(() => {
+        if (!_fullPreviewPlaying) return;
+        const trFn = _CSS_TRANSITIONS[effect] || _CSS_TRANSITIONS.fade;
+        trFn(curDiv, nxtDiv, TR_DUR / 1000);
+      }); });
+
+      // 전환 완료 → 다음 슬라이드
+      _fullPreviewTimer = setTimeout(() => {
+        if (!_fullPreviewPlaying) return;
+        showSlide(nextIdx);
+      }, TR_DUR + 100);
+    }, SLIDE_DUR - TR_DUR);
+  }
+
+  showSlide(0);
+}
+
+function _stopFullPreview() {
+  _fullPreviewPlaying = false;
+  if (_fullPreviewTimer) { clearTimeout(_fullPreviewTimer); _fullPreviewTimer = null; }
+  const btn = document.getElementById("btn-full-preview");
+  if (btn) btn.textContent = "▶ 전체";
+  const box = document.getElementById("fx-css-preview");
+  if (box) box.classList.add("hidden");
+  const statusEl = document.getElementById("fx-preview-status");
+  if (statusEl) statusEl.textContent = "";
+  // 타임라인 하이라이트 제거
+  document.querySelectorAll("[id^='fx-slide-']").forEach(el => el.classList.remove("ring-2","ring-orange-500"));
+  document.querySelectorAll("[id^='fx-tr-']").forEach(el => el.classList.remove("ring-2","ring-blue-500"));
+}
+
+async function _ensureEffectsLoaded(jobId) {
+  try {
+    const fetches = [];
+    if (!_transitionsCache) fetches.push(fetch("/api/transitions").then(r => r.json()).then(d => { _transitionsCache = d; }));
+    if (!_motionsCache) fetches.push(fetch("/api/motions").then(r => r.json()).then(d => { _motionsCache = d; }));
+    await Promise.all(fetches);
+    if (_wizardStep === 3 && _lastScriptData && _lastStepsData) {
+      renderJobDetail(_lastScriptData, _lastStepsData);
+    }
+  } catch (e) { console.warn("effects load failed", e); }
+}
+
+async function _loadSlideEffects(jobId, defaultEffect, defaultDur, uploadedBgs) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/composer`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const cd = data.compose_data || data;
+    const savedTr = cd.slide_transitions || data.slide_transitions || [];
+    const savedMo = cd.slide_motions || data.slide_motions || [];
+
+    // 저장된 효과가 없으면 서버에 자동 생성 요청
+    if (savedTr.length === 0 && savedMo.length === 0) {
+      try {
+        const autoRes = await fetch(`/api/jobs/${jobId}/auto-effects`, { method: "POST" });
+        if (autoRes.ok) {
+          // 재귀 호출로 자동 생성된 값 로드
+          return _loadSlideEffects(jobId, defaultEffect, defaultDur, uploadedBgs);
+        }
+      } catch (e) { console.warn("auto-effects failed", e); }
+    }
+
+    // 전환 복원
+    for (const t of savedTr) {
+      const idx = t.slide - 1;
+      if (idx >= 0 && idx < _slideTransitions.length) {
+        _slideTransitions[idx] = { slide: t.slide, effect: t.effect || defaultEffect, duration: t.duration ?? defaultDur };
+      }
+    }
+
+    // 모션 복원
+    for (const m of savedMo) {
+      const idx = m.slide - 1;
+      if (idx >= 0 && idx < _slideMotions.length) {
+        _slideMotions[idx] = { slide: m.slide, motion: m.motion || "random" };
+      }
+    }
+
+    if (_wizardStep === 3 && _lastScriptData && _lastStepsData) {
+      renderJobDetail(_lastScriptData, _lastStepsData);
+    }
+  } catch (e) { console.warn("load slide effects failed", e); }
+}
+
+function updateSlideMotion(slideIdx) {
+  const sel = document.getElementById(`mo-${slideIdx}`);
+  if (!sel) return;
+  const idx = slideIdx - 1;
+  if (idx >= 0 && idx < _slideMotions.length) {
+    _slideMotions[idx] = { slide: slideIdx, motion: sel.value };
+  }
+}
+
+function updateSlideTransition(slideIdx) {
+  const effectSel = document.getElementById(`tr-effect-${slideIdx}`);
+  const durInput = document.getElementById(`tr-dur-${slideIdx}`);
+  if (!effectSel || !durInput) return;
+  const idx = slideIdx - 1;
+  if (idx >= 0 && idx < _slideTransitions.length) {
+    _slideTransitions[idx] = {
+      slide: slideIdx,
+      effect: effectSel.value,
+      duration: parseFloat(durInput.value) || 0.5,
+    };
+  }
+}
+
+function applyBulkAll() {
+  const dur = parseFloat(document.getElementById("tr-dur-global")?.value) || 0.5;
+  for (let i = 0; i < _slideTransitions.length; i++) {
+    _slideTransitions[i].duration = dur;
+    // 타임라인 아이콘 업데이트
+    _updateTimelineTransition(i + 1, _slideTransitions[i].effect, dur);
+  }
+  _autoSaveEffects();
+}
+
+async function saveTransitionsAndResume(jobId) {
+  const btn = document.getElementById("btn-resume-job");
+  if (btn) {
+    btn.textContent = "저장 중...";
+    btn.disabled = true;
+    btn.classList.add("opacity-50", "cursor-not-allowed");
+  }
+
+  try {
+    // compose_data에 slide_transitions + slide_motions 저장
+    let composeData = {};
+    try {
+      const cdRes = await fetch(`/api/jobs/${jobId}/composer`);
+      if (cdRes.ok) composeData = await cdRes.json();
+    } catch {}
+
+    composeData.slide_transitions = _slideTransitions;
+    composeData.slide_motions = _slideMotions;
+
+    await fetch(`/api/jobs/${jobId}/composer/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(composeData),
+    });
+
+    // Phase B 실행 — Step 2에서 설정한 TTS 엔진/음성 포함
+    if (btn) btn.textContent = "영상 제작 중...";
+
+    const _ttsPayload = {};
+    const _engineSel = document.getElementById("tts-engine-select");
+    const _engine = _engineSel ? _engineSel.value : (_lastScriptData?.channel_config?.tts_engine || "edge-tts");
+    _ttsPayload.tts_engine = _engine;
+    if (_engine === "google-cloud") {
+      const _gv = document.getElementById("google-voice-select");
+      const _gr = document.getElementById("google-rate");
+      _ttsPayload.tts_voice = _gv ? _gv.value : (_lastScriptData?.channel_config?.google_voice || "ko-KR-Wavenet-A");
+      _ttsPayload.tts_rate = _gr ? _gr.value : "0";
+    } else if (_engine === "gpt-sovits") {
+      const _ref = document.getElementById("sovits-ref-select");
+      _ttsPayload.sovits_ref_voice = _ref ? _ref.value : "";
+    } else {
+      const _ev = document.getElementById("tts-voice-select");
+      const _er = document.getElementById("tts-rate");
+      _ttsPayload.tts_voice = _ev ? _ev.value : (_lastScriptData?.channel_config?.tts_voice || "");
+      _ttsPayload.tts_rate = _er ? _er.value : "0";
+    }
+
+    const res = await fetch(`/api/jobs/${jobId}/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(_ttsPayload),
+    });
+    if (res.ok) {
+      _wizardStep = 4;
+      await refreshJobDetail(jobId);
+      loadAll();
+    } else {
+      const err = await res.json();
+      alert(err.detail || "영상 제작 시작 실패");
+      if (btn) {
+        btn.textContent = "영상 제작 →";
+        btn.disabled = false;
+        btn.classList.remove("opacity-50", "cursor-not-allowed");
+      }
+    }
+  } catch (e) {
+    alert("저장 또는 제작 시작 실패");
+    if (btn) {
+      btn.textContent = "영상 제작 →";
+      btn.disabled = false;
+      btn.classList.remove("opacity-50", "cursor-not-allowed");
+    }
+  }
+}
+
+// ─── Step 4: 영상 제작 ───
+
+function renderWizardStep4(jobId, scriptData, stepsData) {
   const { status, script, has_thumbnail } = scriptData;
   const steps = stepsData.steps || [];
   const stepStatus = {};
@@ -1254,19 +1989,27 @@ function renderWizardFooter(step, jobId, scriptData, stepsData) {
       : "";
   } else if (step === 2) {
     centerHtml = `<span class="text-xs text-gray-500">${uploadedCount}/${bgCount}장 준비됨</span>`;
-    const isRunning = status === "running";
     rightBtn = `<div class="flex gap-2">
       <a href="/composer/${jobId}" target="_blank"
         class="px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm font-medium transition inline-block">
         영상 편집
       </a>
-      <button id="btn-resume-job" onclick="resumeJob('${jobId}')"
+      <button onclick="navigateWizard(3)"
+        class="px-4 py-2 ${uploadedCount >= bgCount ? 'bg-orange-600 hover:bg-orange-500' : 'bg-gray-700 hover:bg-gray-600'} rounded-lg text-sm font-medium transition">
+        전환효과 →
+      </button>
+    </div>`;
+  } else if (step === 3) {
+    centerHtml = `<span class="text-xs text-gray-500">슬라이드 간 전환효과 설정</span>`;
+    const isRunning = status === "running";
+    rightBtn = `<div class="flex gap-2">
+      <button id="btn-resume-job" onclick="saveTransitionsAndResume('${jobId}')"
         class="px-4 py-2 ${isRunning ? 'bg-gray-600 opacity-50 cursor-not-allowed' : uploadedCount >= bgCount ? 'bg-orange-600 hover:bg-orange-500' : 'bg-gray-700 hover:bg-gray-600'} rounded-lg text-sm font-medium transition"
         ${isRunning ? 'disabled' : ''}>
         ${isRunning ? '영상 제작 중...' : '영상 제작 →'}
       </button>
     </div>`;
-  } else if (step === 3) {
+  } else if (step === 4) {
     const renderDone = stepStatus["render"] === "completed" || status === "completed";
     if (renderDone) {
       rightBtn = `
@@ -1359,7 +2102,8 @@ function renderJobDetail(scriptData, stepsData) {
   let bodyHtml = "";
   if (_wizardStep === 1) bodyHtml = renderWizardStep1(jobId, scriptData, stepsData);
   else if (_wizardStep === 2) bodyHtml = renderWizardStep2(jobId, scriptData, stepsData);
-  else if (_wizardStep === 3) bodyHtml = renderWizardStep3(jobId, scriptData, stepsData);
+  else if (_wizardStep === 3) bodyHtml = renderWizardStep3_Transition(jobId, scriptData, stepsData);
+  else if (_wizardStep === 4) bodyHtml = renderWizardStep4(jobId, scriptData, stepsData);
 
   const wizardNav = renderWizardNav(_wizardStep, scriptData, stepsData);
   const wizardFooter = renderWizardFooter(_wizardStep, jobId, scriptData, stepsData);
@@ -2863,8 +3607,7 @@ async function saveNarrationScript(jobId) {
     slide: parseInt(el.dataset.senSlide || "0", 10),
   }));
   const btn = document.getElementById("btn-save-narration");
-  const msg = document.getElementById("narration-save-msg");
-  if (btn) btn.disabled = true;
+  if (btn) { btn.disabled = true; btn.textContent = "저장 중..."; }
   try {
     const res = await fetch(`/api/jobs/${jobId}/script`, {
       method: "PUT",
@@ -2872,7 +3615,7 @@ async function saveNarrationScript(jobId) {
       body: JSON.stringify({ sentences }),
     });
     if (res.ok) {
-      if (msg) { msg.classList.remove("hidden"); setTimeout(() => msg.classList.add("hidden"), 2000); }
+      _flashMsg("narration-save-msg", "저장 완료");
     } else {
       const err = await res.json();
       alert(err.detail || "저장 실패");
@@ -2880,7 +3623,7 @@ async function saveNarrationScript(jobId) {
   } catch (e) {
     alert("저장 요청 실패");
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) { btn.disabled = false; btn.textContent = "💾 저장"; }
   }
 }
 
@@ -3063,7 +3806,7 @@ async function resumeJob(jobId) {
       body: JSON.stringify(payload),
     });
     if (res.ok) {
-      _wizardStep = 3; // 영상 제작 시작 → step 3으로 이동
+      _wizardStep = 4; // 영상 제작 시작 → step 4으로 이동
       await refreshJobDetail(jobId);
       loadAll();
     } else {

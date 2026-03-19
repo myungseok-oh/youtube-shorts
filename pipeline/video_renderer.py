@@ -100,17 +100,239 @@ def generate_transition_preview(transition: str, output_dir: str,
     return out_path
 
 
+def generate_motion_preview(motion: str, output_dir: str,
+                             bg_path: str = "", duration: float = 3.0) -> str:
+    """모션 효과 미리보기 영상 생성 (3초).
+
+    Args:
+        motion: 모션 프리셋 ID (zoom_in, pan_right, none, random 등)
+        output_dir: 출력 디렉토리
+        bg_path: 배경 이미지 경로 (없으면 기본 그라디언트)
+        duration: 미리보기 길이 (초)
+
+    Returns:
+        생성된 MP4 파일 경로
+    """
+    import hashlib
+    os.makedirs(output_dir, exist_ok=True)
+
+    _hash = hashlib.md5(f"{motion}_{duration}_{bg_path}".encode()).hexdigest()[:12]
+    out_path = os.path.join(output_dir, f"mo_{_hash}.mp4")
+    if os.path.exists(out_path):
+        return out_path
+
+    total_frames = int(duration * 24) + 5
+
+    # 배경이 없으면 그라디언트 생성
+    is_image = False
+    if not bg_path or not os.path.exists(bg_path):
+        bg_input = ["-f", "lavfi", "-i",
+                    f"color=c=#1a2238:s=1080x1920:d={duration}:r=24"]
+    else:
+        is_image = True
+        bg_input = ["-i", bg_path]  # 단일 이미지: -loop 1 없이 zoompan 직접 적용
+
+    preset = _select_kb_preset(motion)
+    if preset is None:
+        # 정적: 단순 스케일
+        if is_image:
+            bg_input = ["-loop", "1", "-i", bg_path]
+        filter_v = (
+            "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=24[vout]"
+        )
+    else:
+        # 미리보기 전용 강화 프리셋 (3초 안에 효과 명확히 인지)
+        _PREVIEW_PRESETS = {
+            "zoom_in":  ("min(2.0,1+0.014*on)",  "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+            "zoom_out": ("if(eq(on,1),2.0,max(1,zoom-0.014))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+            "pan_right": ("min(1.5,1+0.007*on)", "iw/2-(iw/zoom/2)+on*3", "ih/2-(ih/zoom/2)"),
+            "pan_left":  ("min(1.5,1+0.007*on)", "iw/2-(iw/zoom/2)-on*3", "ih/2-(ih/zoom/2)"),
+            "pan_down":  ("min(1.5,1+0.007*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)+on*2"),
+            "pan_up":    ("if(eq(on,1),1.5,max(1,zoom-0.007))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)-on*2"),
+        }
+        motion_key = motion.lower().strip()
+        if motion_key in _PREVIEW_PRESETS:
+            zoom_expr, x_expr, y_expr = _PREVIEW_PRESETS[motion_key]
+        else:
+            zoom_expr, x_expr, y_expr = preset
+        # zoompan은 단일 이미지에 직접 적용 (scale/crop 거치면 효과 미미)
+        filter_v = (
+            f"[0:v]zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
+            f":d={total_frames}:s=1080x1920:fps=24[vout]"
+        )
+
+    result = subprocess.run([
+        config.ffmpeg(), "-y",
+        *bg_input,
+        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+        "-filter_complex", filter_v,
+        "-map", "[vout]", "-map", "1:a",
+        "-c:v", "libx264", "-preset", "fast",
+        "-c:a", "aac", "-b:a", "64k",
+        "-pix_fmt", "yuv420p",
+        "-t", str(duration),
+        "-shortest",
+        out_path
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[video_renderer] motion preview error: {result.stderr[:300]}")
+        raise RuntimeError("Motion preview generation failed")
+
+    return out_path
+
+
+def generate_full_preview(job_id: str, output_dir: str,
+                          slide_motions: list[dict],
+                          slide_transitions: list[dict],
+                          bg_dir: str, duration_per_slide: float = 2.0) -> str:
+    """전체 미리보기 영상 생성 — 모든 슬라이드를 모션+전환으로 연결한 단일 MP4.
+
+    Args:
+        slide_motions: [{"slide":1, "motion":"zoom_in"}, ...]
+        slide_transitions: [{"slide":1, "effect":"fade", "duration":0.5}, ...]
+        bg_dir: backgrounds 폴더 경로
+        duration_per_slide: 슬라이드당 길이 (초)
+
+    Returns:
+        생성된 MP4 파일 경로
+    """
+    import hashlib
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 해시: 모션+전환 설정이 바뀌면 재생성
+    _cfg_str = str(slide_motions) + str(slide_transitions) + str(duration_per_slide)
+    _hash = hashlib.md5(_cfg_str.encode()).hexdigest()[:12]
+    out_path = os.path.join(output_dir, f"full_preview_{_hash}.mp4")
+    if os.path.exists(out_path):
+        return out_path
+
+    motions_dir = os.path.join(output_dir, "motions")
+    os.makedirs(motions_dir, exist_ok=True)
+
+    # 1) 각 슬라이드 모션 프리뷰 생성 (캐시 활용)
+    segments = []
+    for mo in slide_motions:
+        slide_num = mo["slide"]
+        motion = mo.get("motion", "random")
+
+        # 배경 이미지 찾기
+        bg_path = ""
+        for ext in ("jpg", "jpeg", "png", "webp"):
+            p = os.path.join(bg_dir, f"bg_{slide_num}.{ext}")
+            if os.path.exists(p):
+                bg_path = p
+                break
+
+        try:
+            seg = generate_motion_preview(
+                motion, motions_dir, bg_path=bg_path,
+                duration=duration_per_slide)
+            segments.append(seg)
+        except Exception as e:
+            print(f"[full_preview] slide {slide_num} motion failed: {e}")
+            # 폴백: 정적 이미지로 생성
+            try:
+                seg = generate_motion_preview(
+                    "none", motions_dir, bg_path=bg_path,
+                    duration=duration_per_slide)
+                segments.append(seg)
+            except Exception:
+                continue
+
+    if len(segments) < 2:
+        if segments:
+            import shutil
+            shutil.copy2(segments[0], out_path)
+            return out_path
+        raise RuntimeError("No segments generated")
+
+    # 2) xfade로 합성
+    n = len(segments)
+    durations = [duration_per_slide] * n
+
+    # 전환 설정
+    tr_map = {}
+    for t in slide_transitions:
+        tr_map[int(t.get("slide", 0))] = t
+
+    # filter_complex 구성
+    inputs = []
+    for seg in segments:
+        inputs.extend(["-i", seg])
+
+    norm_filters = []
+    for i in range(n):
+        norm_filters.append(
+            f"[{i}:v]fps=24,scale=540:960:force_original_aspect_ratio=decrease,"
+            f"pad=540:960:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[nv{i}]"
+        )
+
+    # xfade 체인
+    xfade_filters = []
+    offsets = []
+    cumulative = durations[0]
+    prev_label = "[nv0]"
+
+    for i in range(1, n):
+        t_cfg = tr_map.get(i, {})
+        t_effect = t_cfg.get("effect", "fade")
+        t_dur = float(t_cfg.get("duration", 0.5))
+        t_dur = min(t_dur, min(durations[i - 1], durations[i]) * 0.4)
+
+        offset = cumulative - t_dur
+        out_label = f"[xf{i}]" if i < n - 1 else "[vout]"
+        xfade_filters.append(
+            f"{prev_label}[nv{i}]xfade=transition={t_effect}"
+            f":duration={t_dur:.2f}:offset={offset:.2f}{out_label}"
+        )
+        cumulative += durations[i] - t_dur
+        prev_label = out_label if i < n - 1 else ""
+
+    filter_str = ";".join(norm_filters + xfade_filters)
+
+    result = subprocess.run([
+        config.ffmpeg(), "-y",
+        *inputs,
+        "-filter_complex", filter_str,
+        "-map", "[vout]",
+        "-c:v", "libx264", "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        "-an",  # 오디오 없음
+        out_path
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[full_preview] xfade error: {result.stderr[:500]}")
+        raise RuntimeError("Full preview generation failed")
+
+    return out_path
+
+
 # Ken Burns 효과 프리셋 (zoompan 필터용)
 # 각 프리셋: (zoom_expr, x_expr, y_expr, 설명)
 # 출력 해상도 1080x1920, 입력은 여유 있게 스케일 (1.15배)
 _KB_PRESETS = {
-    "zoom_in": ("min(1.15,1+0.0015*in)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
-    "zoom_out": ("if(eq(in,1),1.15,max(1,zoom-0.0015))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
-    "pan_right": ("min(1.15,1+0.001*in)", "iw/2-(iw/zoom/2)+in*0.3", "ih/2-(ih/zoom/2)"),
-    "pan_left": ("min(1.15,1+0.001*in)", "iw/2-(iw/zoom/2)-in*0.3", "ih/2-(ih/zoom/2)"),
-    "pan_down": ("min(1.15,1+0.001*in)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)+in*0.2"),
-    "pan_up": ("if(eq(in,1),1.15,max(1,zoom-0.001))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)-in*0.2"),
+    "zoom_in": ("min(1.15,1+0.0015*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+    "zoom_out": ("if(eq(on,1),1.15,max(1,zoom-0.0015))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+    "pan_right": ("min(1.15,1+0.001*on)", "iw/2-(iw/zoom/2)+on*0.3", "ih/2-(ih/zoom/2)"),
+    "pan_left": ("min(1.15,1+0.001*on)", "iw/2-(iw/zoom/2)-on*0.3", "ih/2-(ih/zoom/2)"),
+    "pan_down": ("min(1.15,1+0.001*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)+on*0.2"),
+    "pan_up": ("if(eq(on,1),1.15,max(1,zoom-0.001))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)-on*0.2"),
 }
+
+# UI 표시용 모션 프리셋 목록
+MOTION_PRESETS = [
+    {"id": "none", "label": "정적", "desc": "모션 없음"},
+    {"id": "random", "label": "랜덤", "desc": "랜덤 Ken Burns"},
+    {"id": "zoom_in", "label": "줌 인", "desc": "느린 확대"},
+    {"id": "zoom_out", "label": "줌 아웃", "desc": "느린 축소"},
+    {"id": "pan_right", "label": "우측 패닝", "desc": "좌→우 이동 + 줌"},
+    {"id": "pan_left", "label": "좌측 패닝", "desc": "우→좌 이동 + 줌"},
+    {"id": "pan_down", "label": "하단 패닝", "desc": "위→아래 이동"},
+    {"id": "pan_up", "label": "상단 패닝", "desc": "아래→위 이동"},
+]
 
 # motion 힌트 → Ken Burns 프리셋 매핑
 _MOTION_MAP = {
@@ -133,9 +355,16 @@ _MOTION_MAP = {
 
 
 def _select_kb_preset(motion: str = ""):
-    """motion 힌트로 Ken Burns 프리셋 선택. 매칭 안 되면 랜덤."""
+    """motion 힌트로 Ken Burns 프리셋 선택. 매칭 안 되면 랜덤.
+    "none" → None 반환 (정적), 프리셋 ID 직접 매칭 지원.
+    """
     if motion:
         motion_lower = motion.lower().strip()
+        if motion_lower == "none":
+            return None  # 정적: Ken Burns 미적용
+        # 프리셋 ID 직접 매칭 (UI에서 선택)
+        if motion_lower in _KB_PRESETS:
+            return _KB_PRESETS[motion_lower]
         # 긴 구문부터 매칭
         for hint in sorted(_MOTION_MAP.keys(), key=len, reverse=True):
             if hint in motion_lower:
@@ -416,11 +645,45 @@ def _render_static_segment(img_path: str, audio_path: str,
     ], capture_output=True)
 
 
+def _render_static_bg_segment(bg_path: str, overlay_path: str, audio_path: str,
+                               output_path: str, duration: float, vcfg: dict):
+    """정적 배경 이미지 + PNG 오버레이 + 오디오 합성 (모션 없음)."""
+    result = subprocess.run([
+        config.ffmpeg(), "-y",
+        "-loop", "1", "-i", bg_path,
+        "-loop", "1", "-i", overlay_path,
+        "-i", audio_path,
+        "-filter_complex",
+        "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=24[bg];"
+        "[bg][1:v]overlay=0:0:shortest=1[out]",
+        "-map", "[out]", "-map", "2:a",
+        "-c:v", "libx264", "-preset", "fast",
+        "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
+        "-pix_fmt", "yuv420p",
+        "-t", str(duration + 0.1),
+        output_path
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[video_renderer] static_bg failed: {result.stderr[:300]}")
+        _render_static_segment(
+            overlay_path.replace("_overlay.png", ".png"),
+            audio_path, output_path, duration, vcfg)
+
+
 def _render_kenburns_segment(bg_path: str, overlay_path: str, audio_path: str,
                               output_path: str, duration: float, vcfg: dict,
                               motion: str = ""):
-    """이미지 배경 + Ken Burns 효과 + PNG 오버레이 + 오디오 합성"""
+    """이미지 배경 + Ken Burns 효과 + PNG 오버레이 + 오디오 합성.
+    motion="none"이면 정적 배경 (zoom/pan 없음).
+    """
     preset = _select_kb_preset(motion)
+    if preset is None:
+        # 정적: Ken Burns 없이 이미지 + 오버레이 합성
+        _render_static_bg_segment(bg_path, overlay_path, audio_path,
+                                   output_path, duration, vcfg)
+        return
     zoom_expr, x_expr, y_expr = preset
     total_frames = int(duration * 24) + 5  # 24fps
 
@@ -503,12 +766,14 @@ def _render_video_segment(bg_path: str, overlay_path: str, audio_path: str,
 
 def concat_segments(segment_files: list[str], output_path: str,
                     sfx_cfg: dict | None = None,
-                    slide_durations: dict | None = None) -> str:
+                    slide_durations: dict | None = None,
+                    per_slide_transitions: list[dict] | None = None) -> str:
     """세그먼트들을 하나의 최종 영상으로 합침 (크로스페이드) + BGM/효과음 믹싱.
 
     Args:
         sfx_cfg: 채널 config dict (sfx_*, bgm_*, crossfade_* 설정 포함)
         slide_durations: {슬라이드번호: 초} — 전환 시점 계산용
+        per_slide_transitions: 슬라이드별 전환 효과 리스트 (없으면 글로벌 적용)
 
     Returns:
         최종 영상 파일 경로
@@ -528,14 +793,16 @@ def concat_segments(segment_files: list[str], output_path: str,
         xfade_dur = sfx_cfg.get("crossfade_duration", 0.5) or 0.5
         xfade_transition = sfx_cfg.get("crossfade_transition", "fade") or "fade"
 
+    _has_per_slide = bool(per_slide_transitions)
     print(f"[video_renderer] concat_segments: {len(segment_files)} files, "
-          f"xfade={xfade_dur}s/{xfade_transition}, sfx={bool(needs_sfx)}, bgm={bool(needs_bgm)}")
+          f"xfade={xfade_dur}s/{xfade_transition}, per_slide={_has_per_slide}, sfx={bool(needs_sfx)}, bgm={bool(needs_bgm)}")
 
     actual_xfade = 0  # 실제 적용된 xfade 시간 (fallback 시 0)
     if len(segment_files) >= 2 and xfade_dur > 0:
         try:
             _concat_with_xfade(segment_files, concat_out, slide_durations, xfade_dur,
-                               transition=xfade_transition)
+                               transition=xfade_transition,
+                               per_slide_transitions=per_slide_transitions)
             actual_xfade = xfade_dur
         except Exception as e:
             print(f"[video_renderer] xfade failed, falling back to simple concat: {e}")
@@ -601,16 +868,29 @@ def _get_segment_duration(seg_path: str) -> float:
 
 def _concat_with_xfade(segment_files: list[str], output_path: str,
                        slide_durations: dict | None, xfade_dur: float,
-                       transition: str = "fade"):
+                       transition: str = "fade",
+                       per_slide_transitions: list[dict] | None = None):
     """xfade 크로스페이드로 세그먼트 합성.
 
     영상: xfade=transition={transition} (모든 입력을 1080x1920/24fps로 정규화)
     오디오: 앞 패딩 atrim + hard-cut concat (44100Hz/stereo, 블렌딩 없음)
+
+    Args:
+        per_slide_transitions: 슬라이드별 전환 설정 리스트
+            [{"slide": 1, "effect": "fade", "duration": 0.5}, ...]
+            slide N → N번째 슬라이드에서 N+1번째로 넘어갈 때 적용
+            None이면 글로벌 transition/xfade_dur 적용
     """
     n = len(segment_files)
     if n < 2:
         _concat_simple(segment_files, output_path)
         return
+
+    # 슬라이드별 전환 설정 룩업 테이블 구성
+    _per_slide = {}
+    if per_slide_transitions:
+        for t in per_slide_transitions:
+            _per_slide[int(t.get("slide", 0))] = t
 
     # 세그먼트별 실제 길이 조회
     durations = []
@@ -620,8 +900,16 @@ def _concat_with_xfade(segment_files: list[str], output_path: str,
     if len(durations) != n:
         durations = [_get_segment_duration(seg) for seg in segment_files]
 
-    # xfade 시간이 세그먼트보다 길면 줄임
-    xd = min(xfade_dur, min(durations) * 0.4)
+    # 슬라이드별 (effect, duration) 배열 구성 — n-1개 전환점
+    transitions_list = []
+    for i in range(1, n):
+        t_cfg = _per_slide.get(i, {})  # slide i → i+1 전환
+        t_effect = t_cfg.get("effect", transition)
+        t_dur = float(t_cfg.get("duration", xfade_dur))
+        # xfade 시간이 세그먼트보다 길면 줄임
+        max_xd = min(durations[i - 1], durations[i]) * 0.4
+        t_dur = min(t_dur, max_xd)
+        transitions_list.append((t_effect, t_dur))
 
     inputs = []
     for seg in segment_files:
@@ -638,9 +926,10 @@ def _concat_with_xfade(segment_files: list[str], output_path: str,
         )
         # 2번째 이후 오디오: 앞 xd초 trim (앞 패딩 중 xd만큼 제거 → 비디오 xfade와 싱크)
         if i > 0:
+            _xd_i = transitions_list[i - 1][1]  # 이 세그먼트에 적용될 전환의 duration
             norm_filters.append(
                 f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
-                f"atrim=start={xd:.3f},asetpts=PTS-STARTPTS[na{i}]"
+                f"atrim=start={_xd_i:.3f},asetpts=PTS-STARTPTS[na{i}]"
             )
         else:
             norm_filters.append(
@@ -648,17 +937,18 @@ def _concat_with_xfade(segment_files: list[str], output_path: str,
             )
 
     vfilters = []
-    offset = durations[0] - xd  # 첫 xfade 시작점
+    offset = durations[0] - transitions_list[0][1]  # 첫 xfade 시작점
 
     for i in range(1, n):
+        t_effect, t_dur = transitions_list[i - 1]
         vin = f"[xv{i-2}]" if i >= 2 else f"[nv0]"
         vout = f"[xv{i-1}]" if i < n - 1 else "[vout]"
         vfilters.append(
-            f"{vin}[nv{i}]xfade=transition={transition}:duration={xd:.3f}:offset={offset:.3f}{vout}"
+            f"{vin}[nv{i}]xfade=transition={t_effect}:duration={t_dur:.3f}:offset={offset:.3f}{vout}"
         )
 
         if i < n - 1:
-            offset += durations[i] - xd
+            offset += durations[i] - transitions_list[i][1]
 
     # 오디오: 모든 스트림을 단순 concat (하드컷, acrossfade 없음)
     audio_inputs = "".join(f"[na{i}]" for i in range(n))
@@ -666,7 +956,8 @@ def _concat_with_xfade(segment_files: list[str], output_path: str,
 
     filter_complex = ";".join(norm_filters + vfilters + afilters)
 
-    print(f"[video_renderer] xfade: {n} segments, xd={xd:.3f}s, durations={durations}")
+    _tr_summary = [(t[0], f"{t[1]:.2f}s") for t in transitions_list]
+    print(f"[video_renderer] xfade: {n} segments, transitions={_tr_summary}, durations={durations}")
 
     result = subprocess.run([
         config.ffmpeg(), "-y",

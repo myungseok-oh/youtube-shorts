@@ -47,6 +47,130 @@ def _gc_voices():
     return GOOGLE_CLOUD_VOICES
 
 
+# ─── 이미지 프롬프트 기반 모션/전환 자동 선정 ───
+
+# motion 텍스트 → Ken Burns 프리셋 매핑 (video_renderer._MOTION_MAP 확장)
+_AUTO_MOTION_MAP = {
+    "slow zoom in": "zoom_in", "zoom in": "zoom_in", "push in": "zoom_in",
+    "dolly in": "zoom_in", "close-up": "zoom_in", "close up": "zoom_in",
+    "slow zoom out": "zoom_out", "zoom out": "zoom_out", "pull out": "zoom_out",
+    "dolly out": "zoom_out", "reveal": "zoom_out", "pull back": "zoom_out",
+    "crane descend": "zoom_in", "crane ascend": "zoom_out",
+    "pan left": "pan_left", "gentle pan left": "pan_left",
+    "pan right": "pan_right", "gentle pan right": "pan_right",
+    "pan across": "pan_right", "tracking shot": "pan_right",
+    "slide left": "pan_left", "slide right": "pan_right",
+    "pan up": "pan_up", "tilt up": "pan_up", "gentle pan up": "pan_up",
+    "pan down": "pan_down", "tilt down": "pan_down", "gentle pan down": "pan_down",
+    "overhead": "zoom_out", "aerial": "zoom_out", "bird": "zoom_out",
+    "establishing": "zoom_out", "wide shot": "zoom_out",
+    "static": "none", "still": "none",
+}
+
+# bg_type별 기본 전환 효과 추천
+_BG_TYPE_TRANSITIONS = {
+    "photo":   ["fade", "dissolve", "smoothleft", "smoothright"],
+    "broll":   ["dissolve", "fade", "smoothleft", "smoothright"],
+    "graph":   ["wipeleft", "wiperight", "slideup", "slidedown"],
+    "logo":    ["fade", "dissolve", "circlecrop"],
+    "closing": ["fade"],
+}
+
+# 장면 전환 강도별 전환 효과 (같은 맥락 → 부드러운, 다른 맥락 → 강한)
+_SMOOTH_TRANSITIONS = ["fade", "dissolve", "smoothleft", "smoothright"]
+_STRONG_TRANSITIONS = ["wipeleft", "wiperight", "slideup", "slidedown",
+                       "slideleft", "slideright", "circlecrop", "radial"]
+
+
+def _auto_assign_effects(image_prompts: list[dict], ch_config: dict) -> tuple[list, list]:
+    """이미지 프롬프트 내용으로 모션 효과 + 전환 효과 자동 선정.
+
+    Returns:
+        (slide_motions, slide_transitions) — compose_data에 저장할 형식
+    """
+    import random as _rand
+
+    default_tr = ch_config.get("crossfade_transition", "fade")
+    default_dur = ch_config.get("crossfade_duration", 0.5)
+
+    # closing 슬라이드 제외 (프론트엔드 bgCount와 일치시킴)
+    image_prompts = [p for p in image_prompts if p.get("en")]
+    bg_count = len(image_prompts)
+
+    # ── 1) 모션 선정 ──
+    slide_motions = []
+    for i, p in enumerate(image_prompts):
+        slide_num = i + 1
+        media = p.get("media", "image")
+        motion_hint = (p.get("motion") or "").lower().strip()
+
+        # 영상(video/mp4)이면 자체 모션 → 정적
+        if media == "video":
+            slide_motions.append({"slide": slide_num, "motion": "none"})
+            continue
+
+        # motion 힌트 텍스트 매핑 (긴 구문부터)
+        matched = None
+        for hint in sorted(_AUTO_MOTION_MAP.keys(), key=len, reverse=True):
+            if hint in motion_hint:
+                matched = _AUTO_MOTION_MAP[hint]
+                break
+
+        # en 프롬프트에서도 카메라 힌트 탐색
+        if not matched:
+            en = (p.get("en") or "").lower()
+            for hint in sorted(_AUTO_MOTION_MAP.keys(), key=len, reverse=True):
+                if hint in en:
+                    matched = _AUTO_MOTION_MAP[hint]
+                    break
+
+        # bg_type별 기본값
+        if not matched:
+            bg_type = p.get("bg_type", "photo")
+            if bg_type == "graph":
+                matched = "none"  # 인포그래픽은 정적
+            elif bg_type == "logo":
+                matched = "zoom_in"  # 로고는 줌인
+            else:
+                matched = _rand.choice(["zoom_in", "zoom_out", "pan_right", "pan_left"])
+
+        slide_motions.append({"slide": slide_num, "motion": matched})
+
+    # ── 2) 전환 선정 ──
+    slide_transitions = []
+    for i in range(bg_count - 1):
+        cur = image_prompts[i]
+        nxt = image_prompts[i + 1]
+        slide_num = i + 1
+
+        cur_type = cur.get("bg_type", "photo")
+        nxt_type = nxt.get("bg_type", "photo")
+        cur_slide = cur.get("slide", i + 1)
+        nxt_slide = nxt.get("slide", i + 2)
+
+        # 같은 슬라이드(다중 배경) → 부드러운 전환
+        if cur_slide == nxt_slide:
+            effect = _rand.choice(["dissolve", "fade"])
+            dur = 0.3
+        # bg_type 동일 (같은 맥락) → 부드러운 전환
+        elif cur_type == nxt_type:
+            pool = _BG_TYPE_TRANSITIONS.get(cur_type, _SMOOTH_TRANSITIONS)
+            effect = _rand.choice(pool)
+            dur = default_dur
+        # bg_type 변경 (맥락 전환) → 강한 전환
+        else:
+            effect = _rand.choice(_STRONG_TRANSITIONS)
+            dur = default_dur
+
+        slide_transitions.append({
+            "slide": slide_num,
+            "effect": effect,
+            "duration": dur,
+        })
+
+    return slide_motions, slide_transitions
+
+
 def _prompt_en(p) -> str:
     """이미지 프롬프트에서 영어 부분 추출. dict면 en, 문자열이면 그대로."""
     if isinstance(p, dict):
@@ -153,6 +277,9 @@ def _build_sovits_cfg(ch_config: dict, channel_id: str) -> dict:
 def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                   use_gemini_draft: bool = False):
     """Phase A v2: synopsis → visual_plan → script → waiting_slides"""
+    _pa_start = time.time()
+    _pa_tag = f"[PhaseA {job_id[:8]}]"
+    print(f"{_pa_tag} === Phase A 시작 ===")
     try:
         db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
                     ["running", _now(), job_id])
@@ -160,6 +287,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
         job_row = db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
         channel_id = job_row["channel_id"]
         topic = job_row["topic"]
+        print(f"{_pa_tag} 채널={channel_id}, 주제={topic[:50]}")
 
         channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
         instructions = channel.get("instructions", "") if channel else ""
@@ -202,13 +330,16 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
         # 채널 config에 market_data_sources가 있으면 시장 데이터 크롤링 → 프롬프트에 주입
         market_sources = ch_config.get("market_data_sources", [])
         if market_sources:
+            _t_market = time.time()
+            print(f"{_pa_tag} [1/4] 시장 데이터 크롤링 시작: {market_sources}")
             try:
                 from pipeline.market_crawler import collect_market_data, format_market_context
                 market_data = collect_market_data(sources=market_sources)
                 market_context = format_market_context(market_data)
                 instructions = instructions + "\n\n" + market_context
+                print(f"{_pa_tag} [1/4] 시장 데이터 크롤링 완료: {time.time()-_t_market:.1f}초")
             except Exception as e:
-                print(f"[runner] market_crawler failed, skipping: {e}")
+                print(f"{_pa_tag} [1/4] 시장 데이터 크롤링 실패 ({time.time()-_t_market:.1f}초): {e}")
 
         if script_json is None:
             target_duration = int(ch_config.get("target_duration", 60))
@@ -220,7 +351,9 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                 _skip_web = bool(ch_config.get("market_data_sources")) or ch_config.get("skip_web_search", False)
                 # Gemini 드래프트 모드: 토글 ON + API 키 존재 시
                 _gemini_key = ch_config.get("gemini_api_key", "") if use_gemini_draft else ""
-                print(f"[runner] use_gemini_draft={use_gemini_draft}, gemini_key={'Y' if _gemini_key else 'N'}")
+                _mode = "Gemini+Claude" if _gemini_key else ("Claude(no-web)" if _skip_web else "Claude(web)")
+                print(f"{_pa_tag} [2/4] 대본 생성 시작: mode={_mode}, target={target_duration}초")
+                _t_script = time.time()
                 result = generate_all_in_one(
                     topic, instructions, brand,
                     channel_format=channel_format,
@@ -238,12 +371,17 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                     gemini_api_key=_gemini_key,
                 )
             except Exception as e:
+                print(f"{_pa_tag} [2/4] 대본 생성 실패 ({time.time()-_t_script:.1f}초): {e}")
                 _update_step(db, job_id, "synopsis", "failed", error_msg=str(e))
                 raise
 
+            _elapsed_script = time.time() - _t_script
             synopsis = result.get("synopsis", {})
             visual_plan = result.get("visual_plan", [])
             script_json = result.get("script", {})
+            print(f"{_pa_tag} [2/4] 대본 생성 완료: {_elapsed_script:.1f}초, "
+                  f"scenes={len(synopsis.get('scenes',[]))}, vp={len(visual_plan)}, "
+                  f"sentences={len(script_json.get('sentences',[]))}, slides={len(script_json.get('slides',[]))}")
 
             # 3개 step 모두 완료 처리
             _update_step(db, job_id, "synopsis", "completed",
@@ -260,6 +398,8 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                          })
 
             # topic을 youtube_title로 업데이트
+            _t_save = time.time()
+            print(f"{_pa_tag} [3/4] DB 저장 시작")
             _yt_title = script_json.get("youtube_title", "").strip()
             _real_topic = _yt_title or synopsis.get("youtube_title", "").strip() or topic
             db.execute(
@@ -301,6 +441,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                 "UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
                 [json.dumps(meta, ensure_ascii=False), _now(), job_id]
             )
+            print(f"{_pa_tag} [3/4] DB 저장 완료: {time.time()-_t_save:.1f}초")
 
         else:
             # script_json 직접 제공 (수동 대본) → Claude 후처리
@@ -352,7 +493,8 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
 
             _update_step(db, job_id, "synopsis", "running")
             try:
-                print(f"[runner] 수동 대본 Claude 후처리 시작: job={job_id}")
+                _t_validate = time.time()
+                print(f"{_pa_tag} [2/4] 수동 대본 Claude 검증 시작")
                 result = _validate_with_claude(
                     draft_json, instructions, brand, topic,
                     target_duration=target_duration,
@@ -369,12 +511,11 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                 )
                 script_json = result.get("script", script_json)
                 visual_plan = result.get("visual_plan", [])
-                print(f"[runner] 수동 대본 후처리 완료: "
+                print(f"{_pa_tag} [2/4] 수동 대본 검증 완료: {time.time()-_t_validate:.1f}초, "
                       f"sentences={len(script_json.get('sentences',[]))}, "
-                      f"slides={len(script_json.get('slides',[]))}, "
-                      f"vp={len(visual_plan)}")
+                      f"slides={len(script_json.get('slides',[]))}, vp={len(visual_plan)}")
             except Exception as e:
-                print(f"[runner] 수동 대본 후처리 실패, 원본 유지: {e}")
+                print(f"{_pa_tag} [2/4] 수동 대본 검증 실패 ({time.time()-_t_validate:.1f}초): {e}")
                 visual_plan = []
                 result = {}
                 traceback.print_exc()
@@ -425,13 +566,34 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
             db.execute("UPDATE jobs SET meta_json = ?, updated_at = ? WHERE id = ?",
                        [json.dumps(meta, ensure_ascii=False), _now(), job_id])
 
+        # 모션/전환 효과 자동 선정 (이미지 프롬프트 기반)
+        try:
+            _ip = meta.get("image_prompts", [])
+            if _ip:
+                _auto_mo, _auto_tr = _auto_assign_effects(_ip, ch_config)
+                from pipeline.composer import load_compose_data, save_compose_data
+                _cd = load_compose_data(job_id)
+                # 기존 설정이 없을 때만 자동 할당 (사용자 수동 설정 보호)
+                if not _cd.get("slide_motions"):
+                    _cd["slide_motions"] = _auto_mo
+                if not _cd.get("slide_transitions"):
+                    _cd["slide_transitions"] = _auto_tr
+                save_compose_data(job_id, _cd)
+                print(f"{_pa_tag} [4/4] 모션/전환 자동 선정: {len(_auto_mo)}모션, {len(_auto_tr)}전환")
+        except Exception as _fx_err:
+            print(f"{_pa_tag} [4/4] 모션/전환 자동 선정 실패 (무시): {_fx_err}")
+
         # Phase A 완료 → waiting_slides
         db.execute(
             "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
             ["waiting_slides", _now(), job_id]
         )
+        _pa_total = time.time() - _pa_start
+        print(f"{_pa_tag} === Phase A 완료: 총 {_pa_total:.1f}초 ({_pa_total/60:.1f}분) ===")
 
     except Exception as e:
+        _pa_total = time.time() - _pa_start
+        print(f"{_pa_tag} === Phase A 실패: {_pa_total:.1f}초 ({_pa_total/60:.1f}분) === {e}")
         # 실패한 step 찾아서 에러 기록
         _pending = db.fetchone(
             "SELECT step_name FROM job_steps WHERE job_id = ? AND status IN ('running','pending') ORDER BY step_order LIMIT 1",
@@ -829,6 +991,15 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 except (json.JSONDecodeError, TypeError):
                     pass
 
+                # compose_data에서 슬라이드별 모션 오버라이드
+                _slide_motions = _cd.get("slide_motions", [])
+                if _slide_motions:
+                    for sm in _slide_motions:
+                        _s = int(sm.get("slide", 0))
+                        _m = sm.get("motion", "")
+                        if _s > 0 and _m:
+                            _motion_hints[_s] = _m
+
                 segments = render_segments(slide_durations, dirs["image"],
                                            merged_audio, dirs["segment"],
                                            motion_hints=_motion_hints,
@@ -842,12 +1013,16 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         sfx_cfg = dict(_ch_cfg_render)
                     sfx_cfg["narr_volume"] = _cd["narr_volume"]
 
-                # compose_data 전환 효과 오버라이드
-                _tr = _cd.get("transition", {})
-                if _tr.get("effect"):
-                    _ch_cfg_render["crossfade_transition"] = _tr["effect"]
-                if _tr.get("duration") is not None:
-                    _ch_cfg_render["crossfade_duration"] = _tr["duration"]
+                # 슬라이드별 전환 효과 로드 (개별 설정 우선)
+                _per_slide_tr = _cd.get("slide_transitions") or None
+
+                # compose_data 글로벌 전환 (슬라이드별 설정 없을 때 폴백)
+                if not _per_slide_tr:
+                    _tr = _cd.get("transition", {})
+                    if _tr.get("effect"):
+                        _ch_cfg_render["crossfade_transition"] = _tr["effect"]
+                    if _tr.get("duration") is not None:
+                        _ch_cfg_render["crossfade_duration"] = _tr["duration"]
 
                 # SFX/BGM 없이 concat
                 concat_cfg = dict(_ch_cfg_render)
@@ -855,7 +1030,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 concat_cfg["bgm_enabled"] = False
                 concat_segments(segments, final_path,
                                 sfx_cfg=concat_cfg,
-                                slide_durations=slide_durations)
+                                slide_durations=slide_durations,
+                                per_slide_transitions=_per_slide_tr)
 
                 # 인트로/아웃트로
                 intro_offset, wrap_dur = _wrap_with_intro_outro(
@@ -988,6 +1164,15 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 except (json.JSONDecodeError, TypeError):
                     pass
 
+                # compose_data에서 슬라이드별 모션 오버라이드
+                _slide_motions = _cd.get("slide_motions", [])
+                if _slide_motions:
+                    for sm in _slide_motions:
+                        _s = int(sm.get("slide", 0))
+                        _m = sm.get("motion", "")
+                        if _s > 0 and _m:
+                            _motion_hints[_s] = _m
+
                 segments = render_segments(timeline["slide_durations"], dirs["image"],
                                            merged_audio, dirs["segment"],
                                            motion_hints=_motion_hints,
@@ -1002,12 +1187,15 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         sfx_cfg = dict(_ch_cfg_render)
                     sfx_cfg["narr_volume"] = _cd["narr_volume"]
 
-                # compose_data에서 전환 효과 오버라이드
-                _tr = _cd.get("transition", {})
-                if _tr.get("effect"):
-                    _ch_cfg_render["crossfade_transition"] = _tr["effect"]
-                if _tr.get("duration") is not None:
-                    _ch_cfg_render["crossfade_duration"] = _tr["duration"]
+                # 슬라이드별 전환 효과 로드 (개별 설정 우선)
+                _per_slide_tr = _cd.get("slide_transitions") or None
+
+                if not _per_slide_tr:
+                    _tr = _cd.get("transition", {})
+                    if _tr.get("effect"):
+                        _ch_cfg_render["crossfade_transition"] = _tr["effect"]
+                    if _tr.get("duration") is not None:
+                        _ch_cfg_render["crossfade_duration"] = _tr["duration"]
 
                 # SFX/BGM은 인트로 wrap 후 별도 적용 (타이밍 오프셋 보정)
                 concat_cfg = dict(_ch_cfg_render)
@@ -1015,7 +1203,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 concat_cfg["bgm_enabled"] = False
                 concat_segments(segments, final_path,
                                 sfx_cfg=concat_cfg,
-                                slide_durations=timeline["slide_durations"])
+                                slide_durations=timeline["slide_durations"],
+                                per_slide_transitions=_per_slide_tr)
 
                 # 인트로/아웃트로 세그먼트 이어붙이기
                 intro_offset, wrap_dur = _wrap_with_intro_outro(

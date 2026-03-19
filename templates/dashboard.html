@@ -6,7 +6,7 @@
   <title>YouTube Shorts Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/style.css?v=20260317a">
+  <link rel="stylesheet" href="/static/style.css?v=20260319a">
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen">
 
@@ -648,21 +648,11 @@
               </div>
             </div>
             <audio id="cs-sfx-preview" class="hidden w-full mt-2" controls style="height:28px"></audio>
-            <div class="mt-2 pt-2 border-t border-gray-700">
-              <label class="block text-xs text-gray-500 mb-1">전환 효과</label>
-              <div class="flex gap-2 items-center mb-1">
-                <select id="cs-crossfade-transition" class="flex-1 px-2 py-1 rounded bg-gray-800 border border-gray-600 text-sm text-gray-200">
-                  <option value="fade">페이드</option>
-                </select>
-                <button onclick="previewTransition()" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs whitespace-nowrap">미리보기</button>
-              </div>
-              <video id="cs-transition-preview" class="hidden w-full rounded mt-1" style="max-height:120px" loop muted playsinline></video>
-              <label class="block text-xs text-gray-500 mb-1 mt-2">크로스페이드 길이 <span id="cs-crossfade-label">0.5</span>초</label>
-              <input id="cs-crossfade-duration" type="range" min="0" max="1.5" value="0.5" step="0.1"
-                     oninput="document.getElementById('cs-crossfade-label').textContent=this.value"
-                     class="w-full accent-orange-500">
-              <p class="text-[10px] text-gray-600 mt-0.5">0 = 하드컷, 0.3~0.7 권장</p>
-            </div>
+            <!-- 전환 효과: Step 3 (전환효과) 탭에서 슬라이드별 설정 -->
+            <select id="cs-crossfade-transition" class="hidden"><option value="fade">페이드</option></select>
+            <input id="cs-crossfade-duration" type="hidden" value="0.5">
+            <span id="cs-crossfade-label" class="hidden">0.5</span>
+            <video id="cs-transition-preview" class="hidden"></video>
           </div>
         </div>
       </div>
@@ -858,6 +848,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260317g"></script>
+  <script src="/static/app.js?v=20260319a"></script>
 </body>
 </html>

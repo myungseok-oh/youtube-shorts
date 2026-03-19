@@ -5,6 +5,7 @@ import asyncio
 import os
 import re
 import shutil
+import time as _time
 from datetime import datetime
 from contextlib import asynccontextmanager
 import uvicorn
@@ -35,7 +36,10 @@ from pipeline.sd_generator import (
 from pipeline.slide_generator import generate_slides, generate_chart, generate_infographic
 from pipeline.gemini_generator import generate_image as gemini_generate_image
 from pipeline.gemini_generator import image_to_video as gemini_image_to_video
-from pipeline.video_renderer import XFADE_TRANSITIONS, generate_transition_preview
+from pipeline.video_renderer import (
+    XFADE_TRANSITIONS, MOTION_PRESETS,
+    generate_transition_preview, generate_motion_preview,
+)
 
 db = Database(config.db_path())
 db_ch = Database(config.channels_db_path())
@@ -344,12 +348,17 @@ async def _run_channel_auto(ch: dict):
     _skip_ws = cfg.get("skip_web_search", False)
     if cfg.get("fixed_topic"):
         topics = [request_text]
+        print(f"[PhaseA {channel_id}] [0/4] 고정 주제 사용: {request_text[:50]}")
     else:
+        _t_parse = _time.time()
+        print(f"[PhaseA {channel_id}] [0/4] parse_request 시작: skip_web={_skip_ws}")
         topics = await asyncio.to_thread(
             parse_request, request_text, instructions,
             trend_context=trend_context, recent_topics=recent_topics,
             skip_web_search=_skip_ws
         )
+        print(f"[PhaseA {channel_id}] [0/4] parse_request 완료: {_time.time()-_t_parse:.1f}초, "
+              f"주제 {len(topics)}개: {[t[:30] for t in topics]}")
         filtered = []
         for topic in topics:
             if _is_duplicate(topic, recent_topics):
@@ -402,7 +411,6 @@ async def dashboard(request: Request):
 # ─── Usage API ───
 
 import subprocess as _sp
-import time as _time
 
 _CCUSAGE_CMD = shutil.which("ccusage") or "ccusage"
 _PLAN_LIMITS = {"session_cost": 49.0, "weekly_cost": 203.0}
@@ -775,13 +783,18 @@ async def api_run_channel(channel_id: str, request: Request):
         _skip_ws = cfg.get("skip_web_search", False)
         if cfg.get("fixed_topic"):
             topics = [request_text]
+            print(f"[PhaseA {channel_id}] [0/4] 고정 주제 사용: {request_text[:50]}")
         else:
             # 동기 함수를 스레드에서 실행 (이벤트 루프 블록 방지)
+            _t_parse = _time.time()
+            print(f"[PhaseA {channel_id}] [0/4] parse_request 시작 (수동): skip_web={_skip_ws}")
             topics = await asyncio.to_thread(
                 parse_request, request_text, instructions,
                 trend_context=trend_context, recent_topics=recent_topics,
                 skip_web_search=_skip_ws
             )
+            print(f"[PhaseA {channel_id}] [0/4] parse_request 완료: {_time.time()-_t_parse:.1f}초, "
+                  f"주제 {len(topics)}개: {[t[:30] for t in topics]}")
 
             # 코드 레벨 중복 필터 (프롬프트 의존 보완)
             filtered = []
@@ -949,6 +962,10 @@ async def api_get_job_script(job_id: str):
         "genspark_prompts": meta.get("genspark_prompts", []),
         "auto_bg_source": ch_cfg.get("auto_bg_source", "sd_image"),
         "slide_layout": ch_cfg.get("slide_layout", "full"),
+        "channel_config": {
+            "crossfade_transition": ch_cfg.get("crossfade_transition", "fade"),
+            "crossfade_duration": ch_cfg.get("crossfade_duration", 0.5),
+        },
     }
 
 
@@ -2316,6 +2333,90 @@ async def api_job_transition_preview(job_id: str, effect: str = "fade",
         return FileResponse(path, media_type="video/mp4")
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@app.get("/api/motions")
+async def api_list_motions():
+    """지원하는 모션 효과 목록"""
+    return MOTION_PRESETS
+
+
+@app.get("/api/jobs/{job_id}/motion-preview")
+async def api_job_motion_preview(job_id: str, slide: int = 1,
+                                  motion: str = "zoom_in"):
+    """작업의 실제 배경 이미지로 모션 효과 미리보기"""
+    bg_dir = os.path.join(config.output_dir(), job_id, "backgrounds")
+    preview_dir = os.path.join(config.output_dir(), job_id, "motions")
+
+    bg_path = ""
+    for ext in ["jpg", "jpeg", "png", "webp"]:
+        p = os.path.join(bg_dir, f"bg_{slide}.{ext}")
+        if os.path.exists(p):
+            bg_path = p
+            break
+
+    try:
+        path = await asyncio.to_thread(
+            generate_motion_preview, motion, preview_dir,
+            bg_path=bg_path, duration=3.0)
+        return FileResponse(path, media_type="video/mp4")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/jobs/{job_id}/full-preview")
+async def api_full_preview(job_id: str):
+    """전체 미리보기 영상 생성 — 모션+전환이 적용된 단일 MP4"""
+    from pipeline.video_renderer import generate_full_preview
+    from pipeline.composer import load_compose_data
+
+    cd = load_compose_data(job_id)
+    slide_motions = cd.get("slide_motions", [])
+    slide_transitions = cd.get("slide_transitions", [])
+    if not slide_motions:
+        raise HTTPException(400, "No motion settings")
+
+    bg_dir = os.path.join(config.output_dir(), job_id, "backgrounds")
+    preview_dir = os.path.join(config.output_dir(), job_id)
+
+    try:
+        path = await asyncio.to_thread(
+            generate_full_preview, job_id, preview_dir,
+            slide_motions, slide_transitions, bg_dir,
+            duration_per_slide=2.0)
+        return FileResponse(path, media_type="video/mp4")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/jobs/{job_id}/auto-effects")
+async def api_auto_effects(job_id: str):
+    """이미지 프롬프트 기반 모션/전환 효과 자동 선정"""
+    from pipeline.runner import _auto_assign_effects
+    from pipeline.composer import load_compose_data, save_compose_data
+
+    job = db.fetchone("SELECT meta_json FROM jobs WHERE id = ?", [job_id])
+    if not job:
+        raise HTTPException(404, "Job not found")
+    meta = json.loads(job.get("meta_json") or "{}")
+    ip = meta.get("image_prompts", [])
+    if not ip:
+        raise HTTPException(400, "No image prompts")
+
+    ch_id = db.fetchone("SELECT channel_id FROM jobs WHERE id = ?", [job_id])
+    ch_config = {}
+    if ch_id:
+        ch = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [ch_id["channel_id"]])
+        if ch:
+            try: ch_config = json.loads(ch.get("config") or "{}")
+            except: pass
+
+    auto_mo, auto_tr = _auto_assign_effects(ip, ch_config)
+    cd = load_compose_data(job_id)
+    cd["slide_motions"] = auto_mo
+    cd["slide_transitions"] = auto_tr
+    save_compose_data(job_id, cd)
+    return {"ok": True, "motions": len(auto_mo), "transitions": len(auto_tr)}
 
 
 @app.get("/api/ref-voices")

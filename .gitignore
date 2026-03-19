@@ -9,3 +9,4 @@ data/client_secret_*.json
 data/shorts.db
 data/shorts.db-shm
 data/shorts.db-wal
+data/google-tts.json
