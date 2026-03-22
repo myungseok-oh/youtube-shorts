@@ -1,5 +1,61 @@
 /* ─── YouTube Shorts Dashboard JS ─── */
 
+// ── zone 레이아웃 이미지 크기 계산 ──
+function calcZoneImageSize(layout, bgDisplayMode, zoneRatio) {
+  if (bgDisplayMode !== "zone" || layout === "full") return { w: 1080, h: 1920, ar: "9:16" };
+  const parts = (zoneRatio || "3:4:3").split(":").map(Number).filter(n => !isNaN(n));
+  if (parts.length !== 3) return { w: 1080, h: 1080, ar: "1:1" };
+  const total = parts[0] + parts[1] + parts[2] || 1;
+  let imgPct;
+  if (layout === "center") imgPct = parts[1] / total;
+  else if (layout === "top") imgPct = (parts[0] + parts[1]) / total;
+  else if (layout === "bottom") imgPct = (parts[1] + parts[2]) / total;
+  else return { w: 1080, h: 1920, ar: "9:16" };
+  const imgH = Math.round(1920 * imgPct);
+  let ar;
+  if (imgH >= 1600) ar = "9:16";
+  else if (imgH >= 1080) ar = "3:4";
+  else if (imgH >= 810) ar = "1:1";
+  else ar = "16:9";
+  return { w: 1080, h: imgH, ar };
+}
+
+// ── 버튼 로딩 상태 공통 유틸 ──
+function btnLoading(btn, label) {
+  if (!btn) return;
+  btn._origHTML = btn.innerHTML;
+  btn._origDisabled = btn.disabled;
+  btn.disabled = true;
+  btn.classList.add('btn-loading');
+  btn.innerHTML = `<span class="inline-block animate-spin mr-1">⏳</span> ${label || '처리중...'}`;
+}
+function btnDone(btn, label, autoRestore) {
+  if (!btn) return;
+  btn.classList.remove('btn-loading');
+  if (label) {
+    btn.innerHTML = `✅ ${label}`;
+    btn.classList.add('btn-done');
+  }
+  if (autoRestore !== false) {
+    setTimeout(() => btnRestore(btn), 2000);
+  }
+}
+function btnError(btn, label) {
+  if (!btn) return;
+  btn.classList.remove('btn-loading');
+  btn.innerHTML = `❌ ${label || '실패'}`;
+  btn.classList.add('btn-error');
+  setTimeout(() => btnRestore(btn), 3000);
+}
+function btnRestore(btn) {
+  if (!btn || !btn._origHTML) return;
+  btn.innerHTML = btn._origHTML;
+  btn.disabled = btn._origDisabled || false;
+  btn.classList.remove('btn-loading', 'btn-done', 'btn-error');
+  delete btn._origHTML;
+  delete btn._origDisabled;
+}
+
 const POLL_INTERVAL = 4000;
 let pollTimer = null;
 let channelsCache = [];
@@ -613,7 +669,6 @@ function renderWizardNav(step, scriptData, stepsData) {
   const labels = ["대본 작성", "이미지 + 음성", "전환효과", "영상 제작"];
   const icons = ["📝", "🖼️", "✨", "🎬"];
 
-  // determine "done" state for each step
   const hasScript = !!script;
   const slides = script?.slides || [];
   const _npc = (image_prompts || []).filter(p => (typeof p === "object" ? p.en : p)).length;
@@ -624,21 +679,24 @@ function renderWizardNav(step, scriptData, stepsData) {
   const renderDone = stepStatuses["render"] === "completed";
 
   const isDone = [
-    hasScript, // step 1 done
-    hasScript && uploadedCount >= bgCount && bgCount > 0, // step 2 done
-    hasScript && uploadedCount >= bgCount && bgCount > 0, // step 3 done (same as step 2 — transition is optional)
-    renderDone || status === "completed", // step 4 done
+    hasScript,
+    hasScript && uploadedCount >= bgCount && bgCount > 0,
+    hasScript && uploadedCount >= bgCount && bgCount > 0,
+    renderDone || status === "completed",
   ];
 
   let html = '<div class="wizard-nav">';
   for (let i = 0; i < 4; i++) {
     if (i > 0) {
-      html += `<div class="wizard-step-arrow ${isDone[i - 1] ? 'done' : ''}">→</div>`;
+      const lineCls = isDone[i - 1] ? "done" : ((i + 1 === step) ? "active" : "");
+      html += `<div class="wizard-step-line ${lineCls}"></div>`;
     }
-    const cls = (i + 1 === step) ? "active" : (isDone[i] ? "done" : "");
+    const isActive = (i + 1 === step);
+    const cls = isActive ? "active" : (isDone[i] ? "done" : "");
+    const numContent = isDone[i] && !isActive ? "&#10003;" : (i + 1);
     html += `
       <div class="wizard-step-item ${cls}" onclick="navigateWizard(${i + 1})">
-        <div class="wizard-step-num">${i + 1}</div>
+        <div class="wizard-step-num">${numContent}</div>
         <div class="wizard-step-label">${icons[i]} ${labels[i]}</div>
       </div>`;
   }
@@ -750,20 +808,25 @@ function renderWizardStep1(jobId, scriptData, stepsData) {
     <div class="fmt-hint">텍스트 선택 후 버튼 클릭</div>
   </div></div>`;
 
-  // 나레이션 대본
+  // 나레이션 대본 — 슬라이드별 textarea 1개
   let narrationView = `<div class="script-panel hidden" id="script-narration-view">`;
-  let currentSlide = 0;
-  sentences.forEach((sen, i) => {
-    if (sen.slide !== currentSlide) {
-      currentSlide = sen.slide;
-      narrationView += `<div class="text-xs text-orange-400 font-bold mt-2 mb-1 flex items-center justify-between ${i > 0 ? 'pt-2 border-t border-gray-800' : ''}">
-        <span>슬라이드 ${currentSlide}</span>
-        <button onclick="copySlideNarration(${currentSlide})" class="text-gray-500 hover:text-white transition" title="이 슬라이드 복사">📋</button>
-      </div>`;
-    }
+  // 슬라이드별로 문장 그룹핑
+  const slideGroups = {};
+  sentences.forEach(sen => {
+    if (!slideGroups[sen.slide]) slideGroups[sen.slide] = [];
+    slideGroups[sen.slide].push(sen.text);
+  });
+  const slideNums = Object.keys(slideGroups).map(Number).sort((a, b) => a - b);
+  slideNums.forEach((slideNum, idx) => {
+    const lines = slideGroups[slideNum];
+    const rows = Math.max(2, lines.length);
+    narrationView += `<div class="text-xs text-orange-400 font-bold mt-2 mb-1 flex items-center justify-between ${idx > 0 ? 'pt-2 border-t border-gray-800' : ''}">
+      <span>슬라이드 ${slideNum}</span>
+      <button onclick="copySlideNarration(${slideNum})" class="text-gray-500 hover:text-white transition" title="이 슬라이드 복사">📋</button>
+    </div>`;
     narrationView += `<div class="text-sm text-gray-300 py-0.5">
-      <input type="text" class="narration-edit-input" data-sen-idx="${i}" data-sen-slide="${sen.slide}"
-             value="${esc(sen.text)}" />
+      <textarea class="narration-slide-input" data-slide="${slideNum}"
+                rows="${rows}" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'">${esc(lines.join("\n"))}</textarea>
     </div>`;
   });
   narrationView += `<div class="mt-3 flex gap-2 items-center">
@@ -788,6 +851,11 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
   const { script, uploaded_backgrounds, has_narration, image_prompts, status } = scriptData;
   window._bgSource = scriptData.auto_bg_source || "sd_image";
   window._slideLayout = scriptData.slide_layout || "full";
+  const _chCfg2 = scriptData.channel_config || {};
+  const _bgDisplayMode = _chCfg2.bg_display_mode || "zone";
+  const _zoneRatio = _chCfg2.slide_zone_ratio || "3:4:3";
+  const _imgSize = calcZoneImageSize(window._slideLayout, _bgDisplayMode, _zoneRatio);
+  window._imgSizeLabel = `📐 ${_imgSize.w}×${_imgSize.h}`;
 
   if (!script) return `<div class="wizard-step-content"><div class="text-center py-8 text-gray-500">먼저 대본을 생성하세요</div></div>`;
 
@@ -842,7 +910,7 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
     const _videoLabel = _videoCount > 0 ? ` <span class="text-purple-400 font-normal">🎥 ${_videoCount}video</span>` : "";
     imgPromptsHtml = `<details class="mb-2" open>
       <summary class="flex items-center justify-between text-xs font-semibold text-gray-400 cursor-pointer mb-1">
-        <span>이미지 프롬프트 <span class="text-orange-400 font-normal">${(_slideLayout === "center" || _slideLayout === "top" || _slideLayout === "bottom") ? "📐 1080×960" : "📐 1080×1920"}</span>${_videoLabel}</span>
+        <span>이미지 프롬프트 <span class="text-orange-400 font-normal">${window._imgSizeLabel || "📐 1080×1920"}</span>${_videoLabel}</span>
         <button onclick="event.stopPropagation(); copyImagePrompts(this)" class="copy-icon-btn" title="복사">&#x1F4CB;</button>
       </summary>
       <div class="bg-gray-900 rounded p-2 prompt-scroll-area" id="image-prompts-box">${items}</div>
@@ -959,9 +1027,8 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
     </div>`;
 
   // === Right column: TTS / Narration ===
-  const jobCh = channelsCache.find(c => c.jobs?.some(j => j.id === jobId));
-  let chCfg = {};
-  try { chCfg = JSON.parse(jobCh?.config || "{}"); } catch {}
+  // scriptData.channel_config은 API에서 직접 제공 (channelsCache 의존 제거)
+  const chCfg = scriptData.channel_config || {};
   const chTtsEngine = chCfg.tts_engine || "edge-tts";
   const chTtsVoice = chCfg.tts_voice || "ko-KR-SunHiNeural";
   const chTtsRate = parseInt((chCfg.tts_rate || "+0%").replace("%", "").replace("+", "")) || 0;
@@ -1129,148 +1196,138 @@ function renderWizardStep3_Transition(jobId, scriptData, stepsData) {
   const trOptions = _transitionsCache || [];
   const moOptions = _motionsCache || [];
 
-  // 모션/전환 아이콘 맵
-  const MO_ICONS = { none:"⏸", random:"🎲", zoom_in:"🔍", zoom_out:"🔎", pan_right:"→", pan_left:"←", pan_down:"↓", pan_up:"↑" };
-  const TR_ICONS = { fade:"◐", dissolve:"◑", wipeleft:"◧", wiperight:"◨", slideup:"⬆", slidedown:"⬇",
-    slideleft:"⬅", slideright:"➡", circlecrop:"◎", radial:"↻", smoothleft:"⇠", smoothright:"⇢", smoothup:"⇡", smoothdown:"⇣" };
+  const MO_ICONS = { none:"\u23F8", random:"\uD83C\uDFB2", zoom_in:"\uD83D\uDD0D", zoom_out:"\uD83D\uDD0E", pan_right:"\u2192", pan_left:"\u2190", pan_down:"\u2193", pan_up:"\u2191" };
+  const TR_ICONS = { fade:"\u25D0", dissolve:"\u25D1", wipeleft:"\u25E7", wiperight:"\u25E8", slideup:"\u2B06", slidedown:"\u2B07",
+    slideleft:"\u2B05", slideright:"\u27A1", circlecrop:"\u25CE", radial:"\u21BB", smoothleft:"\u21E0", smoothright:"\u21E2", smoothup:"\u21E1", smoothdown:"\u21E3" };
+
+  // CSS 애니메이션 클래스 매핑
+  const MO_ANIM = { zoom_in:"fx-anim-zoom-in", zoom_out:"fx-anim-zoom-out", pan_right:"fx-anim-pan-right", pan_left:"fx-anim-pan-left", pan_down:"fx-anim-pan-down", pan_up:"fx-anim-pan-up" };
+  const TR_ANIM = { fade:"fx-anim-fade", dissolve:"fx-anim-dissolve", wipeleft:"fx-anim-wipe-left", wiperight:"fx-anim-wipe-right",
+    slideup:"fx-anim-slide-up", slidedown:"fx-anim-slide-down", slideleft:"fx-anim-slide-left", slideright:"fx-anim-slide-right",
+    circlecrop:"fx-anim-circle", radial:"fx-anim-radial",
+    smoothleft:"fx-anim-slide-left", smoothright:"fx-anim-slide-right", smoothup:"fx-anim-slide-up", smoothdown:"fx-anim-slide-down" };
+
+  const curMotion = (_selectedPreviewSlide >= 1 && _slideMotions[_selectedPreviewSlide - 1])
+    ? _slideMotions[_selectedPreviewSlide - 1].motion : null;
+  // 슬라이드 선택 시에도 해당 슬라이드의 전환(이전→현재) 표시
+  const _effTrIdx = _selectedTransitionIdx > 0
+    ? _selectedTransitionIdx
+    : (_selectedPreviewSlide > 1 ? _selectedPreviewSlide - 1 : 0);
+  const curTransition = (_effTrIdx >= 1 && _slideTransitions[_effTrIdx - 1])
+    ? _slideTransitions[_effTrIdx - 1].effect : null;
+  const curDurVal = (_effTrIdx >= 1 && _slideTransitions[_effTrIdx - 1])
+    ? _slideTransitions[_effTrIdx - 1].duration : defaultDur;
 
   let html = `<div class="wizard-step-content">`;
 
-  // ═══ 상단 2컬럼: 팔레트 + 미리보기 ═══
-  html += `<div class="flex gap-3 mb-3" style="min-height:220px;">`;
+  // ═══ 상단: 좌측 사이드바 + 중앙 미리보기 ═══
+  html += `<div class="fx-main-layout">`;
 
-  // 좌상단: 효과 팔레트
-  html += `<div class="flex-1 overflow-y-auto">`;
+  // ── 좌측: 효과 드롭다운 패널 ──
+  html += `<div class="fx-sidebar">`;
 
-  // 현재 선택된 슬라이드의 모션/전환 정보
-  const curMotion = (_selectedPreviewSlide >= 1 && _slideMotions[_selectedPreviewSlide - 1])
-    ? _slideMotions[_selectedPreviewSlide - 1].motion : null;
-  const curTransition = (_selectedTransitionIdx >= 1 && _slideTransitions[_selectedTransitionIdx - 1])
-    ? _slideTransitions[_selectedTransitionIdx - 1].effect : null;
+  // 선택 상태 표시
+  const selLabel = _selectedTransitionIdx > 0
+    ? `전환 ${_selectedTransitionIdx} → ${_selectedTransitionIdx + 1}`
+    : `슬라이드 ${_selectedPreviewSlide}`;
+  html += `<div class="fx-sel-badge">${selLabel}</div>`;
 
-  // 모션 팔레트
-  html += `<div class="mb-2">
-    <div class="text-[10px] text-gray-500 mb-1">모션 효과 <span class="text-gray-600">(슬라이드 선택 후 클릭)</span></div>
-    <div class="flex flex-wrap gap-1">`;
+  // 모션 효과 드롭다운
+  html += `<div class="fx-section-title">모션 효과</div>
+    <select id="fx-motion-select" class="fx-select" onchange="applyMotionToSelected('${jobId}', this.value)">`;
   for (const m of moOptions) {
-    const isActive = curMotion === m.id && _selectedTransitionIdx === 0;
-    html += `<button onclick="applyMotionToSelected('${jobId}','${m.id}')"
-      class="fx-btn${isActive ? ' active-motion' : ''}" title="${m.desc}">
-      <span class="text-sm">${MO_ICONS[m.id] || "✦"}</span><span class="text-[9px]">${m.label}</span>
-    </button>`;
+    const sel = (curMotion === m.id && _selectedTransitionIdx === 0) ? "selected" : "";
+    html += `<option value="${m.id}" ${sel}>${MO_ICONS[m.id] || "\u2726"} ${m.label}</option>`;
   }
-  html += `</div></div>`;
+  html += `</select>`;
 
-  // 전환 팔레트
-  html += `<div class="mb-2">
-    <div class="text-[10px] text-gray-500 mb-1">전환 효과 <span class="text-gray-600">(슬라이드 사이 선택 후 클릭)</span></div>
-    <div class="flex flex-wrap gap-1">`;
+  // 전환 효과 드롭다운
+  html += `<div class="fx-section-title" style="margin-top:10px;">전환 효과</div>
+    <select id="fx-transition-select" class="fx-select" onchange="applyTransitionToSelected(this.value)">`;
   for (const t of trOptions) {
-    const isActive = curTransition === t.id && _selectedTransitionIdx > 0;
-    html += `<button onclick="applyTransitionToSelected('${t.id}')"
-      class="fx-btn${isActive ? ' active-transition' : ''}" title="${t.desc}">
-      <span class="text-sm">${TR_ICONS[t.id] || "◆"}</span><span class="text-[9px]">${t.label}</span>
-    </button>`;
+    const sel = (curTransition === t.id && _effTrIdx > 0) ? "selected" : "";
+    html += `<option value="${t.id}" ${sel}>${TR_ICONS[t.id] || "\u25C6"} ${t.label}</option>`;
   }
-  html += `</div></div>`;
+  html += `</select>`;
 
-  // 일괄 + 전환 길이 — 현재 선택된 전환의 duration 또는 기본값
-  const curDurVal = (_selectedTransitionIdx >= 1 && _slideTransitions[_selectedTransitionIdx - 1])
-    ? _slideTransitions[_selectedTransitionIdx - 1].duration : defaultDur;
-  html += `<div class="flex items-center gap-2 mt-1">
-    <span class="text-[10px] text-gray-500">전환 길이:</span>
-    <input type="range" id="tr-dur-global" min="0" max="1.5" step="0.1" value="${curDurVal}"
-      style="width:80px;" oninput="document.getElementById('tr-dur-global-label').textContent=this.value+'초'">
-    <span id="tr-dur-global-label" class="text-[10px] text-gray-400">${curDurVal}초</span>
-    <button onclick="applyBulkAll()" class="px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded text-[10px] transition ml-2">전체 일괄</button>
+  // 전환 길이
+  html += `<div class="fx-section-title" style="margin-top:10px;">전환 길이</div>
+    <div class="flex items-center gap-2">
+      <input type="range" id="tr-dur-global" min="0" max="1.5" step="0.1" value="${curDurVal}"
+        class="flex-1 accent-blue-500" oninput="document.getElementById('tr-dur-global-label').textContent=this.value+'s'">
+      <span id="tr-dur-global-label" class="text-[10px] text-gray-400 w-6">${curDurVal}s</span>
+    </div>
+    <button onclick="applyBulkAll()" class="fx-bulk-btn mt-2">전체 일괄 적용</button>`;
+
+  html += `</div>`; // /fx-sidebar
+
+  // ── 중앙: 미리보기 ──
+  html += `<div class="fx-preview-area">
+    <div class="fx-preview-container" id="fx-preview-box">
+      <div class="flex items-center justify-center h-full text-gray-600 text-xs" id="tr-preview-placeholder">
+        슬라이드를 선택하세요
+      </div>
+      <div class="fx-preview-loading hidden" id="tr-preview-loading">
+        <span class="animate-pulse">로딩 중...</span>
+      </div>
+      <video id="tr-preview-video" class="hidden" style="width:100%;height:100%;object-fit:contain;" autoplay muted loop></video>
+      <div id="fx-css-preview" class="hidden" style="position:absolute;inset:0;overflow:hidden;">
+        <div id="fx-css-cur" style="position:absolute;inset:0;width:100%;height:100%;opacity:1;"></div>
+        <div id="fx-css-nxt" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;"></div>
+      </div>
+    </div>
+    <div class="flex items-center justify-center gap-2 mt-2">
+      <button onclick="_fullPreviewPlaying ? _stopFullPreview() : playFullPreview('${jobId}')" id="btn-full-preview" class="fx-play-btn">&#9654; 전체 재생</button>
+    </div>
+    <div id="fx-preview-status" class="text-[10px] text-gray-500 mt-1 text-center font-mono"></div>
   </div>`;
 
-  html += `</div>`;
+  html += `</div>`; // /fx-main-layout
 
-  // 우상단: 미리보기
-  html += `
-    <div class="flex-shrink-0 flex flex-col items-center" style="width:140px;">
-      <div class="text-[10px] text-gray-500 mb-1">미리보기</div>
-      <div class="rounded overflow-hidden" style="width:135px; height:240px; background:#0a0a0a; position:relative;" id="fx-preview-box">
-        <div class="flex items-center justify-center h-full text-gray-600 text-[10px]" id="tr-preview-placeholder">
-          슬라이드 선택
-        </div>
-        <div class="fx-preview-loading hidden" id="tr-preview-loading">
-          <span class="animate-pulse">로딩 중...</span>
-        </div>
-        <video id="tr-preview-video" class="hidden" style="width:100%;height:100%;object-fit:contain;" autoplay muted loop></video>
-        <!-- CSS 전체 미리보기용 레이어 -->
-        <div id="fx-css-preview" class="hidden" style="position:absolute;inset:0;overflow:hidden;">
-          <div id="fx-css-cur" style="position:absolute;inset:0;width:100%;height:100%;opacity:1;"></div>
-          <div id="fx-css-nxt" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;"></div>
-        </div>
-      </div>
-      <div class="flex gap-1 mt-2">
-        <button onclick="playFullPreview('${jobId}')" id="btn-full-preview"
-          class="px-3 py-1 rounded text-[10px] font-medium transition"
-          style="background:rgba(99,102,241,0.2);color:#a5b4fc;border:1px solid rgba(99,102,241,0.3);"
-          onmouseover="this.style.background='rgba(99,102,241,0.4)'" onmouseout="this.style.background='rgba(99,102,241,0.2)'">
-          ▶ 전체
-        </button>
-      </div>
-      <div id="fx-preview-status" class="text-[9px] text-gray-500 mt-1 font-mono"></div>
-    </div>`;
-
-  html += `</div>`;
-
-  // ═══ 하단: 타임라인 ═══
-  html += `<div class="rounded-lg p-2" style="background:rgba(255,255,255,0.02);">
+  // ═══ 하단: 타임라인 (CapCut 스타일 — 전환을 겹침 영역으로 표현) ═══
+  html += `<div class="fx-timeline-wrap">
     <div class="overflow-x-auto">
-      <div class="flex items-end gap-0" id="fx-timeline" style="min-width:max-content; padding-bottom:4px;">`;
+      <div class="fx-tl-strip" id="fx-timeline">`;
 
+  const _MO_LABELS = {none:"정적",random:"랜덤",zoom_in:"줌인",zoom_out:"줌아웃",pan_right:"우패닝",pan_left:"좌패닝",pan_down:"하패닝",pan_up:"상패닝"};
   for (let i = 1; i <= bgCount; i++) {
     const bgUrl = uploadedBgs[i] || null;
     const isVideo = bgUrl && bgUrl.includes(".mp4");
     const mo = _slideMotions[i - 1] || { motion: "random" };
-    const selected = (_selectedPreviewSlide === i) ? "ring-2 ring-orange-500" : "";
-
-    // 슬라이드 블록 (프레임 스트립 + 모션 배지 오버레이)
-    const _MO_LABELS = {none:"정적",random:"랜덤",zoom_in:"줌인",zoom_out:"줌아웃",pan_right:"우패닝",pan_left:"좌패닝",pan_down:"하패닝",pan_up:"상패닝"};
+    const selected = (_selectedPreviewSlide === i && _selectedTransitionIdx === 0);
+    const selCls = selected ? "fx-tl-slide-selected" : "";
     const moLabel = (moOptions.find(m=>m.id===mo.motion)||{}).label || _MO_LABELS[mo.motion] || "";
-    html += `<div class="relative cursor-pointer ${selected} rounded" style="flex-shrink:0;"
-                  onclick="selectSlideForFx('${jobId}', ${i})" id="fx-slide-${i}">`;
 
-    // 프레임 (단일 이미지 — 로드 속도 개선)
-    html += `<div style="height:50px; width:80px; position:relative; overflow:hidden;">`;
+    // 전환 버튼 (슬라이드 사이에 독립 배치, Composer 스타일)
+    if (i > 1) {
+      const tr = _slideTransitions[i - 2] || { effect: defaultEffect, duration: defaultDur };
+      const trSelected = (_selectedTransitionIdx === (i - 1));
+      const trSelCls = trSelected ? "fx-tl-tr-btn-selected" : "";
+      const trIcon = TR_ICONS[tr.effect] || "\u25C6";
+      const trLabel = (trOptions.find(t=>t.id===tr.effect)||{}).label || tr.effect;
+      html += `<div class="fx-tl-tr-btn ${trSelCls}" id="fx-tr-${i-1}"
+        onclick="selectTransitionForFx('${jobId}', ${i-1})"
+        title="${trLabel} ${tr.duration}s">
+        <span>${trIcon}</span>
+      </div>`;
+    }
+
+    html += `<div class="fx-tl-slide ${selCls}" onclick="selectSlideForFx('${jobId}', ${i})" id="fx-slide-${i}">`;
+    html += `<div class="fx-tl-thumb">`;
     html += bgUrl
       ? (isVideo
         ? `<video src="${bgUrl}" muted playsinline style="width:100%;height:100%;object-fit:cover;pointer-events:none;"></video>`
         : `<img src="${bgUrl}" loading="eager" decoding="async" style="width:100%;height:100%;object-fit:cover;" />`)
-      : `<div style="width:100%;height:100%;background:#1a1a2e;" class="flex items-center justify-center text-gray-600 text-[9px]">${i}</div>`;
-    // 모션 배지: 슬라이드 내부 좌상단 오버레이 (클릭 투과)
-    html += `<div style="position:absolute;top:2px;left:2px;background:rgba(139,92,246,0.7);color:#fff;
-                  font-size:8px;padding:1px 4px;border-radius:3px;white-space:nowrap;z-index:2;line-height:1.3;pointer-events:none;">
-      ${MO_ICONS[mo.motion] || "✦"} ${moLabel}
-    </div>`;
-    html += `</div>`;
+      : `<div class="fx-tl-placeholder">${i}</div>`;
+    html += `<div class="fx-tl-motion-badge">${MO_ICONS[mo.motion] || "\u2726"} ${moLabel}</div>`;
 
-    // 슬라이드 번호
-    html += `<div class="text-center text-[9px] text-gray-500 mt-0.5">${i}</div>`;
-    html += `</div>`;
-
-    // 전환 아이콘 (슬라이드 사이)
-    if (i < bgCount) {
-      const tr = _slideTransitions[i - 1] || { effect: defaultEffect, duration: defaultDur };
-      const trSelected = (_selectedTransitionIdx === i) ? "ring-2 ring-blue-500" : "";
-      html += `<div class="flex flex-col items-center justify-end cursor-pointer px-0.5 ${trSelected} rounded"
-                    onclick="selectTransitionForFx('${jobId}', ${i})" id="fx-tr-${i}"
-                    style="flex-shrink:0; min-width:28px;">
-        <div class="w-6 h-6 rounded-full flex items-center justify-center text-[11px]"
-             style="background:rgba(59,130,246,0.2); color:#93c5fd;">
-          ${TR_ICONS[tr.effect] || "◆"}
-        </div>
-        <div class="text-[8px] text-gray-500 mt-0.5">${tr.duration}초</div>
-      </div>`;
-    }
+    html += `</div>`; // /fx-tl-thumb
+    html += `<div class="fx-tl-num">${i}</div>`;
+    html += `</div>`; // /fx-tl-slide
   }
 
   html += `</div></div></div>`;
-  html += `</div>`;
+  html += `</div>`; // /wizard-step-content
 
   if (!_transitionsCache || !_motionsCache) _ensureEffectsLoaded(jobId);
   return html;
@@ -1280,52 +1337,50 @@ let _selectedPreviewSlide = 1;
 let _selectedTransitionIdx = 0; // 0 = none selected
 
 function _updatePaletteHighlights() {
-  // 모션 팔레트: 슬라이드 선택 시 해당 슬라이드의 모션 하이라이트
-  document.querySelectorAll(".fx-btn").forEach(b => b.classList.remove("active-motion", "active-transition"));
+  // 드롭다운 select 값 동기화
   if (_selectedTransitionIdx === 0 && _selectedPreviewSlide >= 1) {
     const curMotion = _slideMotions[_selectedPreviewSlide - 1]?.motion;
-    if (curMotion) {
-      document.querySelectorAll(".fx-btn").forEach(b => {
-        if (b.getAttribute("onclick")?.includes(`'${curMotion}'`) && b.getAttribute("onclick")?.includes("applyMotionToSelected"))
-          b.classList.add("active-motion");
-      });
-    }
+    const motionSel = document.getElementById("fx-motion-select");
+    if (motionSel && curMotion) motionSel.value = curMotion;
   }
-  // 전환 팔레트: 전환 선택 시 해당 전환의 효과 하이라이트
   if (_selectedTransitionIdx >= 1) {
     const curEffect = _slideTransitions[_selectedTransitionIdx - 1]?.effect;
-    if (curEffect) {
-      document.querySelectorAll(".fx-btn").forEach(b => {
-        if (b.getAttribute("onclick")?.includes(`'${curEffect}'`) && b.getAttribute("onclick")?.includes("applyTransitionToSelected"))
-          b.classList.add("active-transition");
-      });
-    }
+    const trSel = document.getElementById("fx-transition-select");
+    if (trSel && curEffect) trSel.value = curEffect;
   }
+  // 레거시 .fx-btn 호환 (다른 Step에서 사용)
+  document.querySelectorAll(".fx-btn").forEach(b => b.classList.remove("active-motion", "active-transition"));
+}
+
+function _updateSelBadge() {
+  const badge = document.querySelector('.fx-sel-badge');
+  if (!badge) return;
+  badge.textContent = _selectedTransitionIdx > 0
+    ? `전환 ${_selectedTransitionIdx} → ${_selectedTransitionIdx + 1}`
+    : `슬라이드 ${_selectedPreviewSlide}`;
 }
 
 function selectSlideForFx(jobId, slideIdx) {
   _selectedPreviewSlide = slideIdx;
   _selectedTransitionIdx = 0;
-  // 하이라이트
-  document.querySelectorAll("[id^='fx-slide-']").forEach(el => el.classList.remove("ring-2","ring-orange-500"));
-  document.querySelectorAll("[id^='fx-tr-']").forEach(el => el.classList.remove("ring-2","ring-blue-500"));
+  document.querySelectorAll("[id^='fx-slide-']").forEach(el => el.classList.remove("fx-tl-slide-selected","ring-2","ring-orange-500"));
+  document.querySelectorAll("[id^='fx-tr-']").forEach(el => el.classList.remove("fx-tl-tr-selected","fx-tl-tr-btn-selected","ring-2","ring-blue-500"));
   const el = document.getElementById(`fx-slide-${slideIdx}`);
-  if (el) el.classList.add("ring-2","ring-orange-500");
+  if (el) el.classList.add("fx-tl-slide-selected");
+  _updateSelBadge();
   _updatePaletteHighlights();
-  // 모션 미리보기
   _playMotionPreview(jobId, slideIdx);
 }
 
 function selectTransitionForFx(jobId, trIdx) {
   _selectedTransitionIdx = trIdx;
-  _selectedPreviewSlide = trIdx; // 전환은 slide trIdx → trIdx+1
-  // 하이라이트
-  document.querySelectorAll("[id^='fx-slide-']").forEach(el => el.classList.remove("ring-2","ring-orange-500"));
-  document.querySelectorAll("[id^='fx-tr-']").forEach(el => el.classList.remove("ring-2","ring-blue-500"));
+  _selectedPreviewSlide = trIdx;
+  document.querySelectorAll("[id^='fx-slide-']").forEach(el => el.classList.remove("fx-tl-slide-selected","ring-2","ring-orange-500"));
+  document.querySelectorAll("[id^='fx-tr-']").forEach(el => el.classList.remove("fx-tl-tr-selected","fx-tl-tr-btn-selected","ring-2","ring-blue-500"));
   const el = document.getElementById(`fx-tr-${trIdx}`);
-  if (el) el.classList.add("ring-2","ring-blue-500");
+  if (el) el.classList.add("fx-tl-tr-btn-selected");
+  _updateSelBadge();
   _updatePaletteHighlights();
-  // 전환 미리보기
   _playTransitionPreview(jobId, trIdx);
 }
 
@@ -1342,7 +1397,9 @@ function applyMotionToSelected(jobId, motionId) {
 }
 
 function applyTransitionToSelected(effectId) {
-  const idx = _selectedTransitionIdx;
+  let idx = _selectedTransitionIdx;
+  // 슬라이드 선택 시 → 해당 슬라이드 이전 전환에 적용
+  if (idx === 0 && _selectedPreviewSlide > 1) idx = _selectedPreviewSlide - 1;
   if (idx < 1 || idx > _slideTransitions.length) return;
   const dur = parseFloat(document.getElementById("tr-dur-global")?.value) || 0.5;
   _slideTransitions[idx - 1] = { slide: idx, effect: effectId, duration: dur };
@@ -1376,23 +1433,29 @@ function _autoSaveEffects() {
 }
 
 function _updateTimelineBadge(slideNum, motionId) {
-  const MO_ICONS = { none:"⏸", random:"🎲", zoom_in:"🔍", zoom_out:"🔎", pan_right:"→", pan_left:"←", pan_down:"↓", pan_up:"↑" };
+  const MO_ICONS = { none:"\u23F8", random:"\uD83C\uDFB2", zoom_in:"\uD83D\uDD0D", zoom_out:"\uD83D\uDD0E", pan_right:"\u2192", pan_left:"\u2190", pan_down:"\u2193", pan_up:"\u2191" };
   const _MO_LABELS = {none:"정적",random:"랜덤",zoom_in:"줌인",zoom_out:"줌아웃",pan_right:"우패닝",pan_left:"좌패닝",pan_down:"하패닝",pan_up:"상패닝"};
   const slideEl = document.getElementById(`fx-slide-${slideNum}`);
   if (!slideEl) return;
-  const badge = slideEl.querySelector('[style*="rgba(139,92,246"]');
-  if (badge) badge.innerHTML = `${MO_ICONS[motionId] || "✦"} ${_MO_LABELS[motionId] || ""}`;
+  const badge = slideEl.querySelector('.fx-tl-motion-badge') || slideEl.querySelector('[style*="rgba(139,92,246"]');
+  if (badge) badge.innerHTML = `${MO_ICONS[motionId] || "\u2726"} ${_MO_LABELS[motionId] || ""}`;
 }
 
 function _updateTimelineTransition(trIdx, effect, dur) {
-  const TR_ICONS = { fade:"◐", dissolve:"◑", wipeleft:"◧", wiperight:"◨", slideup:"⬆", slidedown:"⬇",
-    slideleft:"⬅", slideright:"➡", circlecrop:"◎", radial:"↻", smoothleft:"⇠", smoothright:"⇢", smoothup:"⇡", smoothdown:"⇣" };
+  const TR_ICONS = { fade:"\u25D0", dissolve:"\u25D1", wipeleft:"\u25E7", wiperight:"\u25E8", slideup:"\u2B06", slidedown:"\u2B07",
+    slideleft:"\u2B05", slideright:"\u27A1", circlecrop:"\u25CE", radial:"\u21BB", smoothleft:"\u21E0", smoothright:"\u21E2", smoothup:"\u21E1", smoothdown:"\u21E3" };
   const trEl = document.getElementById(`fx-tr-${trIdx}`);
   if (!trEl) return;
-  const iconEl = trEl.querySelector('[style*="rgba(59,130,246"]');
-  if (iconEl) iconEl.textContent = TR_ICONS[effect] || "◆";
-  const durEl = trEl.querySelector('.text-gray-500');
-  if (durEl) durEl.textContent = dur + "초";
+  // 아이콘 갱신
+  const iconSpan = trEl.querySelector('span');
+  if (iconSpan) iconSpan.textContent = TR_ICONS[effect] || "\u25C6";
+}
+
+function _setTransitionDur(trIdx, dur) {
+  if (trIdx < 1 || trIdx > _slideTransitions.length) return;
+  _slideTransitions[trIdx - 1].duration = dur;
+  _updateTimelineTransition(trIdx, _slideTransitions[trIdx - 1].effect, dur);
+  _autoSaveEffects();
 }
 
 function _showPreviewLoading() {
@@ -1467,22 +1530,53 @@ const _CSS_TRANSITIONS = {
   smoothright: (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateX(0)"; },
   smoothup:    (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateY(0)"; },
   smoothdown:  (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateY(0)"; },
+  // 추가 효과 — 매핑 없는 효과는 fade 폴백
+  fadeblack:   (cur, nxt, dur) => { cur.style.transition = `opacity ${dur*0.5}s`; cur.style.opacity = "0"; setTimeout(() => { nxt.style.transition = `opacity ${dur*0.5}s`; nxt.style.opacity = "1"; }, dur*500); },
+  fadewhite:   (cur, nxt, dur) => { cur.style.transition = `opacity ${dur*0.5}s`; cur.style.opacity = "0"; setTimeout(() => { nxt.style.transition = `opacity ${dur*0.5}s`; nxt.style.opacity = "1"; }, dur*500); },
+  wipeup:      (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "inset(0 0 0 0)"; },
+  wipedown:    (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "inset(0 0 0 0)"; },
+  circleclose: (cur, nxt, dur) => { cur.style.transition = `clip-path ${dur}s ease`; cur.style.clipPath = "circle(0% at 50% 50%)"; nxt.style.opacity = "1"; },
+  circleopen:  (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "circle(100% at 50% 50%)"; },
+  rectcrop:    (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "inset(0 0 0 0)"; },
+  horzclose:   (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "inset(0 0 0 0)"; },
+  horzopen:    (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "inset(0 0 0 0)"; },
+  vertclose:   (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "inset(0 0 0 0)"; },
+  vertopen:    (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `clip-path ${dur}s ease`; nxt.style.clipPath = "inset(0 0 0 0)"; },
+  coverleft:   (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateX(0)"; },
+  coverright:  (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateX(0)"; },
+  coverup:     (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateY(0)"; },
+  coverdown:   (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease`; nxt.style.transform = "translateY(0)"; },
+  pixelize:    (cur, nxt, dur) => { cur.style.transition = `opacity ${dur*0.5}s`; cur.style.opacity = "0"; setTimeout(() => { nxt.style.transition = `opacity ${dur*0.5}s`; nxt.style.opacity = "1"; }, dur*500); },
+  zoomin:      (cur, nxt, dur) => { nxt.style.opacity = "1"; nxt.style.transition = `transform ${dur}s ease, opacity ${dur}s`; nxt.style.transform = "scale(1)"; },
 };
 
 // 전환 초기 상태 (전환 시작 전 nxt 위치)
 const _CSS_TR_INIT = {
   wipeleft:    (nxt) => { nxt.style.clipPath = "inset(0 100% 0 0)"; },
   wiperight:   (nxt) => { nxt.style.clipPath = "inset(0 0 0 100%)"; },
+  wipeup:      (nxt) => { nxt.style.clipPath = "inset(100% 0 0 0)"; },
+  wipedown:    (nxt) => { nxt.style.clipPath = "inset(0 0 100% 0)"; },
   slideup:     (nxt) => { nxt.style.transform = "translateY(100%)"; },
   slidedown:   (nxt) => { nxt.style.transform = "translateY(-100%)"; },
   slideleft:   (nxt) => { nxt.style.transform = "translateX(100%)"; },
   slideright:  (nxt) => { nxt.style.transform = "translateX(-100%)"; },
   circlecrop:  (nxt) => { nxt.style.clipPath = "circle(0% at 50% 50%)"; },
+  circleopen:  (nxt) => { nxt.style.clipPath = "circle(0% at 50% 50%)"; },
   radial:      (nxt) => { nxt.style.clipPath = "circle(0% at 50% 50%)"; },
+  rectcrop:    (nxt) => { nxt.style.clipPath = "inset(50% 50% 50% 50%)"; },
+  horzclose:   (nxt) => { nxt.style.clipPath = "inset(0 50% 0 50%)"; },
+  horzopen:    (nxt) => { nxt.style.clipPath = "inset(0 0 0 0)"; },
+  vertclose:   (nxt) => { nxt.style.clipPath = "inset(50% 0 50% 0)"; },
+  vertopen:    (nxt) => { nxt.style.clipPath = "inset(0 0 0 0)"; },
   smoothleft:  (nxt) => { nxt.style.transform = "translateX(100%)"; },
   smoothright: (nxt) => { nxt.style.transform = "translateX(-100%)"; },
   smoothup:    (nxt) => { nxt.style.transform = "translateY(100%)"; },
   smoothdown:  (nxt) => { nxt.style.transform = "translateY(-100%)"; },
+  coverleft:   (nxt) => { nxt.style.transform = "translateX(100%)"; },
+  coverright:  (nxt) => { nxt.style.transform = "translateX(-100%)"; },
+  coverup:     (nxt) => { nxt.style.transform = "translateY(100%)"; },
+  coverdown:   (nxt) => { nxt.style.transform = "translateY(-100%)"; },
+  zoomin:      (nxt) => { nxt.style.transform = "scale(0.3)"; nxt.style.opacity = "0"; },
 };
 
 function playFullPreview(jobId) {
@@ -1823,6 +1917,81 @@ async function saveTransitionsAndResume(jobId) {
   }
 }
 
+// ─── Quick Render (효과 없이 바로 영상 제작) ───
+
+async function quickRender(jobId) {
+  const btn = document.getElementById("btn-quick-render");
+  if (btn) {
+    btn.textContent = "제작 중...";
+    btn.disabled = true;
+    btn.classList.add("opacity-50", "cursor-not-allowed");
+  }
+
+  try {
+    // compose_data에 효과 비활성화 플래그 저장
+    let composeData = {};
+    try {
+      const cdRes = await fetch(`/api/jobs/${jobId}/composer`);
+      if (cdRes.ok) composeData = await cdRes.json();
+    } catch {}
+
+    composeData.no_effects = false;  // Phase A 자동 생성 모션/전환 효과 적용
+
+    await fetch(`/api/jobs/${jobId}/composer/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(composeData),
+    });
+
+    // TTS 엔진/음성 수집
+    const _ttsPayload = {};
+    const _engineSel = document.getElementById("tts-engine-select");
+    const _engine = _engineSel ? _engineSel.value : (_lastScriptData?.channel_config?.tts_engine || "edge-tts");
+    _ttsPayload.tts_engine = _engine;
+    if (_engine === "google-cloud") {
+      const _gv = document.getElementById("google-voice-select");
+      const _gr = document.getElementById("google-rate");
+      _ttsPayload.tts_voice = _gv ? _gv.value : (_lastScriptData?.channel_config?.google_voice || "ko-KR-Wavenet-A");
+      _ttsPayload.tts_rate = _gr ? _gr.value : "0";
+    } else if (_engine === "gpt-sovits") {
+      const _ref = document.getElementById("sovits-ref-select");
+      _ttsPayload.sovits_ref_voice = _ref ? _ref.value : "";
+    } else {
+      const _ev = document.getElementById("tts-voice-select");
+      const _er = document.getElementById("tts-rate");
+      _ttsPayload.tts_voice = _ev ? _ev.value : (_lastScriptData?.channel_config?.tts_voice || "");
+      _ttsPayload.tts_rate = _er ? _er.value : "0";
+    }
+
+    const res = await fetch(`/api/jobs/${jobId}/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(_ttsPayload),
+    });
+    if (res.ok) {
+      _wizardStep = 4;
+      await refreshJobDetail(jobId);
+      loadAll();
+    } else {
+      const err = await res.json();
+      alert(err.detail || "영상 제작 시작 실패");
+      if (btn) {
+        btn.textContent = "영상 제작";
+        btn.disabled = false;
+        btn.classList.remove("opacity-50", "cursor-not-allowed");
+      }
+    }
+  } catch (e) {
+    alert("제작 시작 실패");
+    if (btn) {
+      btn.textContent = "영상 제작";
+      btn.disabled = false;
+      btn.classList.remove("opacity-50", "cursor-not-allowed");
+    }
+  }
+}
+
+
 // ─── Step 4: 영상 제작 ───
 
 function renderWizardStep4(jobId, scriptData, stepsData) {
@@ -1989,14 +2158,20 @@ function renderWizardFooter(step, jobId, scriptData, stepsData) {
       : "";
   } else if (step === 2) {
     centerHtml = `<span class="text-xs text-gray-500">${uploadedCount}/${bgCount}장 준비됨</span>`;
+    const isRunning2 = status === "running";
     rightBtn = `<div class="flex gap-2">
       <a href="/composer/${jobId}" target="_blank"
         class="px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm font-medium transition inline-block">
-        영상 편집
+        전문 편집
       </a>
       <button onclick="navigateWizard(3)"
-        class="px-4 py-2 ${uploadedCount >= bgCount ? 'bg-orange-600 hover:bg-orange-500' : 'bg-gray-700 hover:bg-gray-600'} rounded-lg text-sm font-medium transition">
-        전환효과 →
+        class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition">
+        효과 추가 →
+      </button>
+      <button id="btn-quick-render" onclick="quickRender('${jobId}')"
+        class="px-4 py-2 ${isRunning2 ? 'bg-gray-600 opacity-50 cursor-not-allowed' : uploadedCount >= bgCount ? 'bg-orange-600 hover:bg-orange-500' : 'bg-gray-700 hover:bg-gray-600'} rounded-lg text-sm font-medium transition"
+        ${isRunning2 ? 'disabled' : ''}>
+        ${isRunning2 ? '제작 중...' : '영상 제작'}
       </button>
     </div>`;
   } else if (step === 3) {
@@ -2080,23 +2255,8 @@ function renderJobDetail(scriptData, stepsData) {
   const statusText = displayStatus === "rendered" ? "영상 완성" : (STATUS_TEXT[status] || status);
   const statusClass = `status-${displayStatus}`;
 
-  // 파이프라인 단계 시각화
-  let pipelineHtml = "";
-  STEP_ORDER.forEach((name, idx) => {
-    if (idx > 0) {
-      const prevSt = stepStatus[STEP_ORDER[idx - 1]];
-      let arrowClass = "step-arrow";
-      if (prevSt === "completed" || prevSt === "skipped") arrowClass += " done";
-      if (stepStatus[name] === "running") arrowClass += " active";
-      pipelineHtml += `<div class="${arrowClass}">&#8594;</div>`;
-    }
-    const st = stepStatus[name] || "pending";
-    pipelineHtml += `
-      <div class="step-node step-${st}">
-        <div class="step-dot">${STEP_ICONS[name]}</div>
-        <div class="step-label">${STEP_LABELS[name]}</div>
-      </div>`;
-  });
+  // 파이프라인 단계 — 위자드 네비로 통합, 상단 아이콘 제거
+  const pipelineHtml = "";
 
   // Wizard body
   let bodyHtml = "";
@@ -2123,7 +2283,6 @@ function renderJobDetail(scriptData, stepsData) {
       </div>
       <button onclick="closeModal('job-detail-modal')" class="text-gray-500 hover:text-white text-lg transition">&times;</button>
     </div>
-    <div class="pipeline-steps" id="pipeline-steps-live">${pipelineHtml}</div>
     ${wizardNav}
     <div class="wizard-body">
       ${bodyHtml}
@@ -2181,9 +2340,7 @@ async function manualUpload(jobId) {
   const statusEl = document.getElementById(`upload-status-${jobId}`);
   if (!confirm("YouTube에 업로드하시겠습니까?")) return;
 
-  btn.disabled = true;
-  btn.textContent = "업로드 중...";
-  statusEl.innerHTML = `<span class="text-yellow-400">업로드 진행 중...</span>`;
+  btnLoading(btn, "업로드 중...");
 
   try {
     const res = await fetch(`/api/jobs/${jobId}/youtube-upload`, { method: "POST" });
@@ -2192,12 +2349,11 @@ async function manualUpload(jobId) {
       throw new Error(err.detail || "업로드 실패");
     }
     const data = await res.json();
-    statusEl.innerHTML = `<span class="text-green-400">업로드 완료! ID: ${data.video_id || ""}</span>`;
-    btn.textContent = "업로드 완료";
+    btnDone(btn, "업로드 완료", false);
+    if (statusEl) statusEl.innerHTML = `<span class="text-green-400">업로드 완료! ID: ${data.video_id || ""}</span>`;
   } catch (e) {
-    statusEl.innerHTML = `<span class="text-red-400">실패: ${e.message}</span>`;
-    btn.textContent = "YouTube 업로드";
-    btn.disabled = false;
+    btnError(btn, "업로드 실패");
+    if (statusEl) statusEl.innerHTML = `<span class="text-red-400">실패: ${e.message}</span>`;
   }
 }
 
@@ -2453,7 +2609,118 @@ async function previewVoice() {
   btn.disabled = false;
 }
 
-// ─── Channel Settings Tabs ───
+// ─── Channel Settings — Option Groups ───
+
+// 그룹 정의 캐시 (서버에서 로드)
+let _configGroups = null;
+let _enabledGroups = new Set();
+
+// 그룹 ID → 탭 ID 매핑 (basic/content는 탭 분리 없이 기존 ID 사용)
+const _GROUP_TAB_MAP = {
+  basic: "basic",
+  content: "content",
+  tts: "tts",
+  slide_style: "slide_style",
+  image: "image",
+  intro_outro: "intro_outro",
+  audio_fx: "audio_fx",
+  market_data: "market_data",
+  prompt: "prompt",
+  youtube: "youtube",
+  schedule: "schedule",
+};
+
+// 앱 시작 시 미리 로드
+let _configGroupsPromise = null;
+async function _loadConfigGroups() {
+  if (_configGroups) return _configGroups;
+  if (!_configGroupsPromise) {
+    _configGroupsPromise = fetch("/api/config/groups").then(r => r.json()).catch(e => {
+      console.error("Failed to load config groups:", e);
+      return { defaults: {}, groups: [] };
+    });
+  }
+  _configGroups = await _configGroupsPromise;
+  return _configGroups;
+}
+// 페이지 로드 시 미리 가져오기
+_loadConfigGroups();
+
+function _detectEnabledGroups(cfg) {
+  if (!_configGroups) return new Set(["basic", "content", "tts"]);
+  const enabled = new Set();
+  for (const g of _configGroups.groups) {
+    if (g.always_on) { enabled.add(g.id); continue; }
+    for (const field of g.fields) {
+      const val = cfg[field];
+      const def = _configGroups.defaults[field];
+      if (val !== undefined && val !== null && JSON.stringify(val) !== JSON.stringify(def)) {
+        enabled.add(g.id);
+        break;
+      }
+    }
+  }
+  // enabled_groups가 명시적으로 저장되어 있으면 그것을 우선
+  if (cfg.enabled_groups && Array.isArray(cfg.enabled_groups)) {
+    cfg.enabled_groups.forEach(g => enabled.add(g));
+  }
+  return enabled;
+}
+
+function _renderGroupChips() {
+  const container = document.getElementById("cs-group-chips");
+  if (!container || !_configGroups) return;
+  container.innerHTML = "";
+  for (const g of _configGroups.groups) {
+    if (g.always_on) continue; // always_on 그룹은 칩으로 표시 안 함
+    const chip = document.createElement("button");
+    const active = _enabledGroups.has(g.id);
+    chip.className = `cs-group-chip ${active ? "active" : ""}`;
+    chip.dataset.groupId = g.id;
+    chip.textContent = g.label;
+    chip.onclick = () => _toggleGroup(g.id);
+    container.appendChild(chip);
+  }
+}
+
+function _toggleGroup(groupId) {
+  if (_enabledGroups.has(groupId)) {
+    _enabledGroups.delete(groupId);
+  } else {
+    _enabledGroups.add(groupId);
+  }
+  _renderGroupChips();
+  _renderTabBar();
+}
+
+function _renderTabBar() {
+  const bar = document.getElementById("cs-tab-bar");
+  if (!bar || !_configGroups) return;
+  bar.innerHTML = "";
+  // 탭 순서: always_on 먼저, 그 다음 활성 그룹 순서대로
+  const visibleGroups = _configGroups.groups.filter(
+    g => g.always_on || _enabledGroups.has(g.id)
+  );
+  // 모든 탭 콘텐츠 숨김
+  document.querySelectorAll(".cs-tab-content").forEach(el => {
+    el.classList.add("hidden");
+    el.style.display = "none";
+  });
+  for (const g of visibleGroups) {
+    const tabId = _GROUP_TAB_MAP[g.id] || g.id;
+    const btn = document.createElement("button");
+    btn.className = "cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition text-gray-500 hover:text-gray-300";
+    btn.dataset.csTab = tabId;
+    btn.textContent = g.label;
+    btn.onclick = () => switchSettingsTab(tabId);
+    bar.appendChild(btn);
+  }
+  // 첫 번째 탭 자동 선택
+  if (visibleGroups.length > 0) {
+    const firstTab = _GROUP_TAB_MAP[visibleGroups[0].id] || visibleGroups[0].id;
+    switchSettingsTab(firstTab);
+  }
+}
 
 function switchSettingsTab(tabName) {
   document.querySelectorAll(".cs-tab-content").forEach(el => {
@@ -2467,8 +2734,7 @@ function switchSettingsTab(tabName) {
   const tab = document.getElementById("cs-tab-" + tabName);
   if (tab) {
     tab.classList.remove("hidden");
-    // 프롬프트 탭은 flex column으로 표시 (textarea가 남은 공간 채우도록)
-    tab.style.display = (tabName === "prompt") ? "flex" : "block";
+    tab.style.display = (tabName === "prompt" || tabName === "slide_style") ? "flex" : "block";
   }
   const btn = document.querySelector(`.cs-tab-btn[data-cs-tab="${tabName}"]`);
   if (btn) {
@@ -2566,13 +2832,7 @@ async function deleteCharacterRef() {
 
 
 function toggleAutoBgSource() {
-  const mode = document.getElementById("cs-production-mode").value;
-  const section = document.getElementById("auto-bg-source-section");
-  if (mode === "auto") {
-    section.classList.remove("hidden");
-  } else {
-    section.classList.add("hidden");
-  }
+  // 배경 이미지 소스는 항상 표시 (수동/자동 모두 사용)
 }
 
 function toggleBgDisplayMode() {
@@ -2602,6 +2862,264 @@ function toggleTtsEngine() {
     checkSovitsStatus();
   } else {
     edgeSection.classList.remove("hidden");
+  }
+}
+
+// ─── 자막 설정 토글 ───
+function toggleSubtitleSection() {
+  const enabled = document.getElementById("cs-subtitle-enabled").checked;
+  const section = document.getElementById("cs-subtitle-section");
+  if (enabled) section.classList.remove("hidden");
+  else section.classList.add("hidden");
+  updateSlidePreview();
+}
+
+// ─── 슬라이드 미리보기 업데이트 ───
+function updateSlidePreview() {
+  const pvTop = document.getElementById("cs-pv-top");
+  const pvMid = document.getElementById("cs-pv-mid");
+  const pvBot = document.getElementById("cs-pv-bot");
+  const pvSub = document.getElementById("cs-pv-subtitle");
+  const pvWrap = document.getElementById("cs-slide-preview");
+  if (!pvTop || !pvMid || !pvBot || !pvSub || !pvWrap) return;
+
+  // Read settings
+  const layout = document.getElementById("cs-slide-layout").value;
+  const ratioStr = document.getElementById("cs-zone-ratio").value.trim();
+  const mainZone = document.getElementById("cs-main-zone").value;
+  const subZone = document.getElementById("cs-sub-zone").value;
+  const textBgVal = parseInt(document.getElementById("cs-text-bg").value) || 4;
+  const mainTextSize = parseInt(document.getElementById("cs-slide-main-text-size").value) || 0;
+  const subTextSize = parseInt(document.getElementById("cs-sub-text-size").value) || 0;
+
+  // Parse zone ratio
+  const parts = ratioStr.split(":").map(Number).filter(n => !isNaN(n) && n >= 0);
+  const zr = parts.length === 3 ? parts : [3, 4, 3];
+  const zrTotal = zr[0] + zr[1] + zr[2];
+  const topPct = (zr[0] / zrTotal * 100).toFixed(1);
+  const midPct = (zr[1] / zrTotal * 100).toFixed(1);
+  const botPct = (zr[2] / zrTotal * 100).toFixed(1);
+
+  // Text bg opacity
+  const textBgOpacity = (textBgVal * 0.1).toFixed(2);
+  const textBgColor = `rgba(5,8,20,${textBgOpacity})`;
+
+  // Bg gradient
+  const bgGradStr = (document.getElementById("cs-slide-bg-gradient").value || "").trim();
+  const bgCols = bgGradStr.split(",").map(s => s.trim()).filter(s => /^#[0-9a-fA-F]{3,8}$/.test(s));
+  const bg0 = bgCols[0] || "#0b0e1a";
+  const bg1 = bgCols[1] || "#141b2d";
+  const bg2 = bgCols[2] || "#1a2238";
+  pvWrap.style.background = bg0;
+
+  // Scaled font sizes (dynamic preview height vs 1920px actual)
+  const pvHeight = pvWrap.clientHeight || 320;
+  const scale = pvHeight / 1920;
+  const mainFontPx = ((mainTextSize || 100) * scale).toFixed(0);
+  const subFontPx = ((subTextSize || 56) * scale).toFixed(0);
+
+  // Sample texts
+  const mainText = `<div style="font-weight:900;font-size:${mainFontPx}px;line-height:1.25;text-align:center;word-break:keep-all;">반도체 수출 급증</div>`;
+  const subText = `<div style="font-weight:400;font-size:${subFontPx}px;line-height:1.3;text-align:center;color:rgba(255,255,255,0.7);word-break:keep-all;margin-top:4px;">환율 상승 / 금리 동결 등 주요 이슈</div>`;
+
+  // Reset all zones (레이아웃 전환 시 이전 스타일 잔류 방지)
+  pvTop.innerHTML = "";
+  pvMid.innerHTML = `<span style="font-size:11px;color:rgba(255,255,255,0.3);">IMAGE ZONE</span>`;
+  pvBot.innerHTML = "";
+  pvTop.style.background = textBgColor;
+  pvBot.style.background = textBgColor;
+  pvMid.style.background = `linear-gradient(135deg,${bg1} 0%,${bg2} 50%,${bg1} 100%)`;
+  pvTop.style.display = "flex";
+  pvBot.style.display = "flex";
+  pvMid.style.display = "flex";
+  pvTop.style.justifyContent = "center";
+  pvBot.style.justifyContent = "center";
+  pvTop.style.paddingBottom = "8px";
+  pvTop.style.paddingTop = "8px";
+  pvBot.style.paddingBottom = "8px";
+  pvBot.style.paddingTop = "8px";
+  pvBot.style.top = "auto";
+  pvBot.style.bottom = "0";
+  pvBot.style.height = "";
+
+  if (layout === "full") {
+    // Full layout: no zone split, text at bottom
+    pvTop.style.display = "none";
+    pvMid.style.display = "none";
+    pvBot.style.top = "0";
+    pvBot.style.bottom = "0";
+    pvBot.style.height = "100%";
+    pvBot.style.background = `linear-gradient(135deg,${bg1} 0%,${bg2} 100%)`;
+    pvBot.style.justifyContent = "flex-end";
+    pvBot.style.paddingBottom = "24px";
+    pvBot.innerHTML = mainText + subText;
+  } else {
+    pvTop.style.display = "flex";
+    pvMid.style.display = "flex";
+
+    if (layout === "center") {
+      pvTop.style.top = "0";
+      pvTop.style.height = topPct + "%";
+      pvTop.style.justifyContent = "flex-end";
+      pvTop.style.paddingBottom = "6px";
+      pvMid.style.top = topPct + "%";
+      pvMid.style.height = midPct + "%";
+      pvBot.style.top = "auto";
+      pvBot.style.bottom = "0";
+      pvBot.style.height = botPct + "%";
+      pvBot.style.justifyContent = "flex-start";
+      pvBot.style.paddingTop = "6px";
+
+      // Place main/sub according to mainZone/subZone
+      const topTexts = [];
+      const botTexts = [];
+      if (mainZone === "top") topTexts.push(mainText); else botTexts.push(mainText);
+      if (subZone === "top") topTexts.push(subText); else botTexts.push(subText);
+      pvTop.innerHTML = topTexts.join("");
+      pvBot.innerHTML = botTexts.join("");
+    } else if (layout === "top") {
+      // Image top+mid, text bottom (하단 영역 → 텍스트 top 기준)
+      pvTop.style.display = "none";
+      pvMid.style.top = "0";
+      pvMid.style.height = (parseFloat(topPct) + parseFloat(midPct)).toFixed(1) + "%";
+      pvBot.style.top = "auto";
+      pvBot.style.bottom = "0";
+      pvBot.style.height = botPct + "%";
+      pvBot.style.justifyContent = "flex-start";
+      pvBot.style.paddingTop = "8px";
+      pvBot.innerHTML = mainText + subText;
+    } else if (layout === "bottom") {
+      // Text top, image mid+bottom (상단 영역 → 텍스트 bottom 기준)
+      pvTop.style.top = "0";
+      pvTop.style.height = topPct + "%";
+      pvTop.style.justifyContent = "flex-end";
+      pvTop.style.paddingBottom = "8px";
+      pvMid.style.top = topPct + "%";
+      pvMid.style.height = (parseFloat(midPct) + parseFloat(botPct)).toFixed(1) + "%";
+      pvBot.style.display = "none";
+      pvTop.innerHTML = mainText + subText;
+    }
+  }
+
+  // Subtitle overlay
+  const subtitleEnabled = document.getElementById("cs-subtitle-enabled").checked;
+  if (subtitleEnabled) {
+    const subFont = document.getElementById("cs-subtitle-font").value;
+    const subSize = parseInt(document.getElementById("cs-subtitle-size").value) || 20;
+    const subOutline = parseInt(document.getElementById("cs-subtitle-outline").value) || 3;
+    const subAlign = document.getElementById("cs-subtitle-alignment").value;
+    const subMargin = parseInt(document.getElementById("cs-subtitle-margin").value) || 120;
+
+    // ASS subtitle uses PlayResY=288 (ffmpeg SRT default)
+    const assScale = pvHeight / 288;
+    const scaledSize = (subSize * assScale).toFixed(0);
+    const scaledOutline = Math.max(1, Math.round(subOutline * assScale));
+    const scaledMargin = Math.round(subMargin * assScale);
+
+    pvSub.style.display = "block";
+    pvSub.style.fontFamily = `'${subFont}', sans-serif`;
+    pvSub.style.fontSize = scaledSize + "px";
+    pvSub.style.fontWeight = "700";
+    pvSub.style.color = "#ffffff";
+    pvSub.style.textShadow = `0 0 ${scaledOutline}px #000, 0 0 ${scaledOutline}px #000, 0 0 ${scaledOutline * 2}px #000`;
+    pvSub.innerHTML = "반도체 수출이 크게 늘고 있는데<br>시장 기대가 커졌습니다";
+
+    // Position based on alignment
+    pvSub.style.top = "auto";
+    pvSub.style.bottom = "auto";
+    pvSub.style.transform = "none";
+    const _isZonedLayout = (layout === "center" || layout === "top" || layout === "bottom");
+    if (subAlign === "8") {
+      if (_isZonedLayout) {
+        // 상단: 상단 텍스트 영역 바로 아래 (이미지 존 위쪽)
+        pvSub.style.top = "4px";
+      } else {
+        pvSub.style.top = scaledMargin + "px";
+      }
+    } else if (subAlign === "5") {
+      pvSub.style.top = "50%";
+      pvSub.style.transform = "translateY(-50%)";
+    } else {
+      // default: bottom (2)
+      if (_isZonedLayout) {
+        // 하단: 이미지 존 바로 아래 (하단 영역 위쪽에 배치)
+        const botZoneTop = parseFloat(topPct) + parseFloat(midPct);
+        pvSub.style.top = (botZoneTop + 1) + "%";
+        pvSub.style.paddingTop = "4px";
+      } else {
+        pvSub.style.bottom = scaledMargin + "px";
+      }
+    }
+  } else {
+    pvSub.style.display = "none";
+  }
+}
+
+// ─── RVC 음성 변환 ───
+
+function toggleRvcSection() {
+  const enabled = document.getElementById("cs-rvc-enabled").checked;
+  const section = document.getElementById("cs-rvc-section");
+  if (enabled) {
+    section.classList.remove("hidden");
+    loadRvcModels();
+  } else {
+    section.classList.add("hidden");
+  }
+}
+
+async function loadRvcModels() {
+  try {
+    const r = await fetch("/api/rvc-models");
+    const models = await r.json();
+    const sel = document.getElementById("cs-rvc-model");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">-- 선택하세요 --</option>';
+    models.forEach(m => {
+      sel.innerHTML += `<option value="${m.id}">${m.label}</option>`;
+    });
+    if (cur) sel.value = cur;
+  } catch (e) {
+    console.error("RVC 모델 목록 로드 실패:", e);
+  }
+}
+
+async function previewRvcVoice() {
+  const model = document.getElementById("cs-rvc-model").value;
+  if (!model) { alert("RVC 모델을 선택하세요"); return; }
+  const btn = document.getElementById("btn-cs-preview-rvc");
+  btn.textContent = "변환 중..."; btn.disabled = true;
+
+  const pitch = document.getElementById("cs-rvc-pitch").value;
+  const index = document.getElementById("cs-rvc-index").value;
+
+  // 현재 선택된 TTS 음성 + 속도 가져오기
+  const voiceSel = document.getElementById("cs-tts-voice");
+  const tts_voice = voiceSel ? voiceSel.value : "ko-KR-SunHiNeural";
+  const rateSel = document.getElementById("cs-tts-rate");
+  const tts_rate = rateSel ? +rateSel.value : 0;
+
+  try {
+    const r = await fetch("/api/rvc-preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, pitch: +pitch, index_influence: +index, tts_voice, tts_rate }),
+    });
+    if (r.ok) {
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = document.getElementById("cs-rvc-preview");
+      audio.src = url;
+      audio.classList.remove("hidden");
+      audio.play();
+    } else {
+      const err = await r.json();
+      alert("미리듣기 실패: " + (err.detail || "알 수 없는 오류"));
+    }
+  } catch (e) {
+    alert("미리듣기 오류: " + e.message);
+  } finally {
+    btn.textContent = "RVC 미리듣기"; btn.disabled = false;
   }
 }
 
@@ -3097,9 +3615,8 @@ function togglePromptEdit(jobId, index) {
   // 레이아웃별 권장 사이즈 표시
   const sizeHint = document.getElementById("prompt-size-hint");
   if (sizeHint) {
-    const ly = window._slideLayout || "full";
-    sizeHint.textContent = (ly === "center" || ly === "top" || ly === "bottom")
-      ? "📐 1080×960 (1:1 정사각형)"
+    sizeHint.textContent = window._imgSizeLabel
+      ? `${window._imgSizeLabel} (${window._imgSizeLabel.includes("1920") ? "9:16 세로" : "zone 비율"})`
       : "📐 1080×1920 (9:16 세로)";
   }
 
@@ -3573,41 +4090,36 @@ function _flashMsg(id, msg) {
 }
 
 function copySlideNarration(slideNum) {
-  const inputs = document.querySelectorAll(`.narration-edit-input[data-sen-slide="${slideNum}"]`);
-  if (!inputs.length) return;
-  const text = Array.from(inputs).map(el => el.value).join(" ");
-  navigator.clipboard.writeText(text).then(() => {
+  const ta = document.querySelector(`.narration-slide-input[data-slide="${slideNum}"]`);
+  if (!ta) return;
+  navigator.clipboard.writeText(ta.value).then(() => {
     _flashMsg("narration-save-msg", `슬라이드 ${slideNum} 복사됨`);
   });
 }
 
 function copyAllNarration() {
-  const inputs = document.querySelectorAll(".narration-edit-input");
-  if (!inputs.length) return;
-  let lines = [];
-  let curSlide = 0;
-  inputs.forEach(el => {
-    const s = parseInt(el.dataset.senSlide);
-    if (s !== curSlide) {
-      if (curSlide > 0) lines.push("", "");  // 슬라이드 경계: 빈 줄 2개 (TTS 자연 pause)
-      curSlide = s;
-    }
-    lines.push(el.value);
-  });
-  navigator.clipboard.writeText(lines.join("\n")).then(() => {
+  const textareas = document.querySelectorAll(".narration-slide-input");
+  if (!textareas.length) return;
+  const blocks = Array.from(textareas).map(ta => ta.value.trim());
+  navigator.clipboard.writeText(blocks.join("\n\n")).then(() => {
     _flashMsg("narration-save-msg", "전체 복사됨");
   });
 }
 
 async function saveNarrationScript(jobId) {
-  const inputs = document.querySelectorAll(".narration-edit-input");
-  if (!inputs.length) return;
-  const sentences = Array.from(inputs).map(el => ({
-    text: el.value,
-    slide: parseInt(el.dataset.senSlide || "0", 10),
-  }));
+  const textareas = document.querySelectorAll(".narration-slide-input");
+  if (!textareas.length) return;
+  // 슬라이드별 textarea → 줄 단위로 분리하여 sentences 배열 생성
+  const sentences = [];
+  textareas.forEach(ta => {
+    const slideNum = parseInt(ta.dataset.slide || "0", 10);
+    ta.value.split("\n").forEach(line => {
+      const text = line.trim();
+      if (text) sentences.push({ text, slide: slideNum });
+    });
+  });
   const btn = document.getElementById("btn-save-narration");
-  if (btn) { btn.disabled = true; btn.textContent = "저장 중..."; }
+  btnLoading(btn, "저장중...");
   try {
     const res = await fetch(`/api/jobs/${jobId}/script`, {
       method: "PUT",
@@ -3615,15 +4127,15 @@ async function saveNarrationScript(jobId) {
       body: JSON.stringify({ sentences }),
     });
     if (res.ok) {
-      _flashMsg("narration-save-msg", "저장 완료");
+      btnDone(btn, "저장 완료");
     } else {
       const err = await res.json();
+      btnError(btn, "저장 실패");
       alert(err.detail || "저장 실패");
     }
   } catch (e) {
+    btnError(btn, "요청 실패");
     alert("저장 요청 실패");
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "💾 저장"; }
   }
 }
 
@@ -3638,8 +4150,7 @@ async function saveSlideScript(jobId) {
     sub: subs[i] ? subs[i].value.replace(/\n/g, "<br>") : "",
   }));
   const btn = document.getElementById("btn-save-slides");
-  const msg = document.getElementById("slide-save-msg");
-  if (btn) btn.disabled = true;
+  btnLoading(btn, "저장중...");
   try {
     const res = await fetch(`/api/jobs/${jobId}/slides`, {
       method: "PUT",
@@ -3647,15 +4158,15 @@ async function saveSlideScript(jobId) {
       body: JSON.stringify({ slides }),
     });
     if (res.ok) {
-      if (msg) { msg.classList.remove("hidden"); setTimeout(() => msg.classList.add("hidden"), 2000); }
+      btnDone(btn, "저장 완료");
     } else {
       const err = await res.json();
+      btnError(btn, "저장 실패");
       alert(err.detail || "저장 실패");
     }
   } catch (e) {
+    btnError(btn, "요청 실패");
     alert("저장 요청 실패");
-  } finally {
-    if (btn) btn.disabled = false;
   }
 }
 
@@ -3690,16 +4201,21 @@ function slideInsertBR() {
 // ─── Retry / Reset Job ───
 
 async function retryJob(jobId) {
+  const _btn = event?.target;
+  btnLoading(_btn, "재시도중...");
   try {
     const res = await fetch(`/api/jobs/${jobId}/retry`, { method: "POST" });
     if (res.ok) {
+      btnDone(_btn, "재시도 시작");
       await refreshJobDetail(jobId);
       loadAll();
     } else {
       const err = await res.json();
+      btnError(_btn, "재시도 실패");
       alert(err.detail || "재시도 실패");
     }
   } catch (e) {
+    btnError(_btn, "요청 실패");
     alert("재시도 요청 실패");
   }
 }
@@ -3770,11 +4286,7 @@ async function deleteJob(jobId, status) {
 
 async function resumeJob(jobId) {
   const btn = document.getElementById("btn-resume-job");
-  if (btn) {
-    btn.textContent = "영상 제작 중...";
-    btn.disabled = true;
-    btn.classList.add("opacity-50", "cursor-not-allowed");
-  }
+  btnLoading(btn, "영상 제작 중...");
 
   // 선택된 TTS 엔진 + 음성 + 속도
   const engineSelect = document.getElementById("tts-engine-select");
@@ -4028,6 +4540,12 @@ async function openChannelSettings(channelId) {
   const ch = channelsCache.find(c => c.id === channelId);
   if (!ch) { console.error("Channel not found:", channelId); return; }
 
+  // 그룹 정의 로드
+  await _loadConfigGroups();
+
+  // channelId를 먼저 세팅 (loadCharacterRefPreview 등이 참조)
+  document.getElementById("channel-settings-modal").dataset.channelId = channelId;
+
   document.getElementById("cs-name").value = ch.name || "";
   document.getElementById("cs-handle").value = ch.handle || "";
   document.getElementById("cs-desc").value = ch.description || "";
@@ -4037,38 +4555,36 @@ async function openChannelSettings(channelId) {
   let cfg = {};
   try { cfg = JSON.parse(ch.config || "{}"); } catch {}
 
-  document.getElementById("cs-image-prompt-style").value = cfg.image_prompt_style || "";
-  document.getElementById("cs-image-scene-references").value = cfg.image_scene_references || "";
-  loadCharacterRefPreview();
-  document.getElementById("cs-script-rules").value = cfg.script_rules || "";
-  document.getElementById("cs-roundup-rules").value = cfg.roundup_rules || "";
-  document.getElementById("cs-image-style").value = cfg.image_style || "mixed";
-  document.getElementById("cs-format").value = cfg.format || "single";
-  document.getElementById("cs-bg-media-type").value = cfg.bg_media_type || "auto";
-  document.getElementById("cs-first-slide-single-bg").checked = !!cfg.first_slide_single_bg;
-  document.getElementById("cs-slide-layout").value = cfg.slide_layout || "full";
+  // 활성 그룹 감지 및 UI 렌더
+  _enabledGroups = _detectEnabledGroups(cfg);
+  _renderGroupChips();
 
+  // ── 기본 (basic) ──
+  document.getElementById("cs-fixed-topic").checked = !!cfg.fixed_topic;
+  document.getElementById("cs-use-subagent").checked = !!cfg.use_subagent;
+
+  // ── 콘텐츠 (content) ──
+  document.getElementById("cs-target-duration").value = cfg.target_duration || 60;
+  document.getElementById("cs-target-duration-label").textContent = cfg.target_duration || 60;
+  document.getElementById("cs-format").value = cfg.format || "single";
+  document.getElementById("cs-dedup-hours").value = cfg.dedup_hours != null ? cfg.dedup_hours : 24;
+  document.getElementById("cs-skip-web-search").checked = !!cfg.skip_web_search;
+  document.getElementById("cs-auto-bg-source").value = cfg.auto_bg_source || "gemini";
+  document.getElementById("cs-auto-video-source").value = cfg.auto_video_source || "none";
+  toggleAutoBgSource();
+  document.getElementById("cs-image-style").value = cfg.image_style || "mixed";
+
+  // ── 슬라이드 스타일 (slide_style) ──
+  document.getElementById("cs-slide-layout").value = cfg.slide_layout || "full";
   document.getElementById("cs-bg-display-mode").value = cfg.bg_display_mode || "zone";
   toggleBgDisplayMode();
   document.getElementById("cs-zone-ratio").value = cfg.slide_zone_ratio || "";
+  document.getElementById("cs-main-zone").value = cfg.slide_main_zone || "top";
+  document.getElementById("cs-sub-zone").value = cfg.slide_sub_zone || "bottom";
   document.getElementById("cs-text-bg").value = cfg.slide_text_bg != null ? cfg.slide_text_bg : 4;
   document.getElementById("cs-text-bg-label").textContent = cfg.slide_text_bg != null ? cfg.slide_text_bg : 4;
   document.getElementById("cs-sub-text-size").value = cfg.sub_text_size || 0;
   document.getElementById("cs-sub-text-size-label").textContent = cfg.sub_text_size || 0;
-  document.getElementById("cs-production-mode").value = cfg.production_mode || "manual";
-  document.getElementById("cs-auto-bg-source").value = cfg.auto_bg_source || "sd_image";
-  document.getElementById("cs-gemini-api-key").value = cfg.gemini_api_key || "";
-  document.getElementById("cs-use-subagent").checked = !!cfg.use_subagent;
-  // 기본 탭 — 고정 주제
-  document.getElementById("cs-fixed-topic").checked = !!cfg.fixed_topic;
-  // 콘텐츠 탭
-  document.getElementById("cs-target-duration").value = cfg.target_duration || 60;
-  document.getElementById("cs-target-duration-label").textContent = cfg.target_duration || 60;
-  document.getElementById("cs-skip-web-search").checked = !!cfg.skip_web_search;
-  document.getElementById("cs-dedup-hours").value = cfg.dedup_hours != null ? cfg.dedup_hours : 24;
-  const mds = cfg.market_data_sources || [];
-  document.querySelectorAll(".cs-market-source").forEach(cb => cb.checked = mds.includes(cb.value));
-  // 슬라이드 탭 — 스타일
   document.getElementById("cs-slide-main-text-size").value = cfg.slide_main_text_size || 0;
   document.getElementById("cs-slide-main-text-size-label").textContent = cfg.slide_main_text_size || 0;
   document.getElementById("cs-slide-badge-size").value = cfg.slide_badge_size || 0;
@@ -4078,25 +4594,39 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-slide-hl-color").value = cfg.slide_hl_color || "#ffd700";
   document.getElementById("cs-slide-hl-color-text").value = cfg.slide_hl_color || "#ffd700";
   document.getElementById("cs-slide-bg-gradient").value = cfg.slide_bg_gradient || "";
-  toggleAutoBgSource();
-  document.getElementById("cs-yt-client-id").value = cfg.youtube_client_id || "";
-  document.getElementById("cs-yt-client-secret").value = cfg.youtube_client_secret || "";
-  document.getElementById("cs-yt-refresh-token").value = cfg.youtube_refresh_token || "";
-  document.getElementById("cs-yt-privacy").value = cfg.youtube_privacy || "private";
-  document.getElementById("cs-yt-upload-mode").value = cfg.youtube_upload_mode || "manual";
+  updateSlidePreview();
 
-  // TTS 설정
+  // ── 이미지 (image) ──
+  document.getElementById("cs-bg-media-type").value = cfg.bg_media_type || "auto";
+  document.getElementById("cs-first-slide-single-bg").checked = !!cfg.first_slide_single_bg;
+  document.getElementById("cs-image-prompt-style").value = cfg.image_prompt_style || "";
+  document.getElementById("cs-image-scene-references").value = cfg.image_scene_references || "";
+  loadCharacterRefPreview();
+
+  // ── 인트로/아웃트로 (intro_outro) ──
+  _showChannelBg("intro", !!ch.has_intro_bg, channelId);
+  _showChannelBg("outro", !!ch.has_outro_bg, channelId);
+  document.getElementById("cs-intro-duration").value = cfg.intro_duration || 3;
+  document.getElementById("cs-outro-duration").value = cfg.outro_duration || 3;
+  document.getElementById("cs-intro-narration").value = cfg.intro_narration || "";
+  document.getElementById("cs-outro-narration").value = cfg.outro_narration || "";
+  const nDelay = cfg.narration_delay ?? 2;
+  document.getElementById("cs-narration-delay").value = nDelay;
+  document.getElementById("cs-narration-delay-label").textContent = nDelay;
+
+  // ── TTS (tts) ──
+  const _ttsEnabled = cfg.tts_enabled !== false;  // 기본 true
+  document.getElementById("cs-tts-enabled").checked = _ttsEnabled;
+  document.getElementById("cs-tts-settings").classList.toggle("hidden", !_ttsEnabled);
   document.getElementById("cs-tts-engine").value = cfg.tts_engine || "edge-tts";
   document.getElementById("cs-tts-voice").value = cfg.tts_voice || "ko-KR-SunHiNeural";
   const rateVal = parseInt((cfg.tts_rate || "+0%").replace("%", "").replace("+", "")) || 0;
   document.getElementById("cs-tts-rate").value = rateVal;
   document.getElementById("cs-tts-rate-label").textContent = rateVal + "%";
-  // Google Cloud TTS
   document.getElementById("cs-google-voice").value = cfg.google_voice || "ko-KR-Wavenet-A";
   const googleRate = parseInt((cfg.google_rate || "+0%").replace("%", "").replace("+", "")) || 0;
   document.getElementById("cs-google-rate").value = googleRate;
   document.getElementById("cs-google-rate-label").textContent = googleRate + "%";
-  toggleTtsEngine();
   document.getElementById("cs-sovits-ref-text").value = cfg.sovits_ref_text || "";
   const sovitsSpeed = cfg.sovits_speed || 1.0;
   document.getElementById("cs-sovits-speed").value = sovitsSpeed;
@@ -4104,16 +4634,34 @@ async function openChannelSettings(channelId) {
   toggleTtsEngine();
   loadRefVoices(cfg.sovits_ref_voice || "");
 
-  // BGM / 음향 설정
-  const nDelay = cfg.narration_delay ?? 2;
-  document.getElementById("cs-narration-delay").value = nDelay;
-  document.getElementById("cs-narration-delay-label").textContent = nDelay;
+  // ── RVC ──
+  document.getElementById("cs-rvc-enabled").checked = !!cfg.rvc_enabled;
+  document.getElementById("cs-rvc-pitch").value = cfg.rvc_pitch || 0;
+  document.getElementById("cs-rvc-pitch-label").textContent = cfg.rvc_pitch || 0;
+  document.getElementById("cs-rvc-index").value = cfg.rvc_index_influence || 0.5;
+  document.getElementById("cs-rvc-index-label").textContent = cfg.rvc_index_influence || 0.5;
+  toggleRvcSection();
+  if (cfg.rvc_model) {
+    loadRvcModels().then(() => {
+      document.getElementById("cs-rvc-model").value = cfg.rvc_model;
+    });
+  }
+
+  // ── BGM/SFX (audio_fx) ──
   document.getElementById("cs-bgm-enabled").checked = !!cfg.bgm_enabled;
   document.getElementById("cs-bgm-volume").value = cfg.bgm_volume || 10;
   document.getElementById("cs-bgm-volume-label").textContent = cfg.bgm_volume || 10;
   loadBgmFiles(cfg);
-
-  // 효과음 설정
+  document.getElementById("cs-subtitle-enabled").checked = !!cfg.subtitle_enabled;
+  document.getElementById("cs-subtitle-font").value = cfg.subtitle_font || "Noto Sans KR";
+  document.getElementById("cs-subtitle-size").value = cfg.subtitle_font_size || 20;
+  document.getElementById("cs-subtitle-size-label").textContent = (cfg.subtitle_font_size || 20) + "px";
+  document.getElementById("cs-subtitle-outline").value = cfg.subtitle_outline || 3;
+  document.getElementById("cs-subtitle-outline-label").textContent = cfg.subtitle_outline || 3;
+  document.getElementById("cs-subtitle-alignment").value = cfg.subtitle_alignment || 2;
+  document.getElementById("cs-subtitle-margin").value = cfg.subtitle_margin_v || 120;
+  document.getElementById("cs-subtitle-margin-label").textContent = (cfg.subtitle_margin_v || 120) + "px";
+  toggleSubtitleSection();
   document.getElementById("cs-sfx-enabled").checked = !!cfg.sfx_enabled;
   document.getElementById("cs-sfx-volume").value = cfg.sfx_volume || 15;
   document.getElementById("cs-sfx-volume-label").textContent = cfg.sfx_volume || 15;
@@ -4123,28 +4671,23 @@ async function openChannelSettings(channelId) {
   loadTransitionOptions(cfg.crossfade_transition || "fade");
   loadSfxFiles(cfg);
 
-  // 채널 고정 배경 이미지
-  _showChannelBg("intro", !!ch.has_intro_bg, channelId);
-  _showChannelBg("outro", !!ch.has_outro_bg, channelId);
-  document.getElementById("cs-intro-duration").value = cfg.intro_duration || 3;
-  document.getElementById("cs-outro-duration").value = cfg.outro_duration || 3;
-  document.getElementById("cs-intro-narration").value = cfg.intro_narration || "";
-  document.getElementById("cs-outro-narration").value = cfg.outro_narration || "";
+  // ── 시장 데이터 (market_data) ──
+  const mds = cfg.market_data_sources || [];
+  document.querySelectorAll(".cs-market-source").forEach(cb => cb.checked = mds.includes(cb.value));
 
-  // 트렌드 소스 설정 (UI 제거됨, hidden input 호환용)
-  document.getElementById("cs-trend-google").value = "";
-  document.getElementById("cs-trend-youtube").value = "";
-  document.getElementById("cs-youtube-api-key").value = "";
+  // ── 프롬프트 (prompt) ──
+  document.getElementById("cs-script-rules").value = cfg.script_rules || "";
+  document.getElementById("cs-roundup-rules").value = cfg.roundup_rules || "";
 
-  // 복사 버튼: 원본 채널(cloned_from이 없는)에서만 표시
-  const cloneBtn = document.getElementById("btn-clone-channel");
-  if (ch.cloned_from) {
-    cloneBtn.classList.add("hidden");
-  } else {
-    cloneBtn.classList.remove("hidden");
-  }
+  // ── YouTube (youtube) ──
+  document.getElementById("cs-gemini-api-key").value = cfg.gemini_api_key || "";
+  document.getElementById("cs-yt-client-id").value = cfg.youtube_client_id || "";
+  document.getElementById("cs-yt-client-secret").value = cfg.youtube_client_secret || "";
+  document.getElementById("cs-yt-refresh-token").value = cfg.youtube_refresh_token || "";
+  document.getElementById("cs-yt-privacy").value = cfg.youtube_privacy || "private";
+  document.getElementById("cs-yt-upload-mode").value = cfg.youtube_upload_mode || "manual";
 
-  // 스케줄 설정
+  // ── 스케줄 (schedule) ──
   document.getElementById("cs-schedule-enabled").checked = !!cfg.schedule_enabled;
   _renderScheduleTimes(cfg.schedule_times || []);
   const defaultDays = ["mon", "tue", "wed", "thu", "fri"];
@@ -4153,12 +4696,28 @@ async function openChannelSettings(channelId) {
     cb.checked = scheduleDays.includes(cb.value);
   });
 
-  switchSettingsTab("basic");
-  document.getElementById("channel-settings-modal").dataset.channelId = channelId;
+  // 트렌드 소스 설정 (UI 제거됨, hidden input 호환용)
+  document.getElementById("cs-trend-google").value = "";
+  document.getElementById("cs-trend-youtube").value = "";
+  document.getElementById("cs-youtube-api-key").value = "";
+
+  // 복사 버튼
+  const cloneBtn = document.getElementById("btn-clone-channel");
+  if (ch.cloned_from) {
+    cloneBtn.classList.add("hidden");
+  } else {
+    cloneBtn.classList.remove("hidden");
+  }
+
+  // 탭 바 렌더 + 첫 탭 선택
+  _renderTabBar();
   document.getElementById("channel-settings-modal").classList.remove("hidden");
 }
 
 async function saveChannelSettings() {
+  const _btn = document.getElementById("btn-save-channel");
+  btnLoading(_btn, "저장중...");
+
   const modal = document.getElementById("channel-settings-modal");
   const channelId = modal.dataset.channelId;
 
@@ -4187,10 +4746,13 @@ async function saveChannelSettings() {
 
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.slide_zone_ratio = document.getElementById("cs-zone-ratio").value.trim();
+  cfg.slide_main_zone = document.getElementById("cs-main-zone").value;
+  cfg.slide_sub_zone = document.getElementById("cs-sub-zone").value;
   cfg.slide_text_bg = parseInt(document.getElementById("cs-text-bg").value) || 4;
   cfg.sub_text_size = parseInt(document.getElementById("cs-sub-text-size").value) || 0;
-  cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
+  cfg.auto_video_source = document.getElementById("cs-auto-video-source").value;
+  cfg.production_mode = cfg.auto_bg_source === "manual" ? "manual" : "auto";
   _setIfPresent("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
   cfg.use_subagent = document.getElementById("cs-use-subagent").checked;
 
@@ -4209,6 +4771,7 @@ async function saveChannelSettings() {
   cfg.slide_bg_gradient = document.getElementById("cs-slide-bg-gradient").value.trim();
 
   // TTS 설정 저장
+  cfg.tts_enabled = document.getElementById("cs-tts-enabled").checked;
   cfg.tts_engine = document.getElementById("cs-tts-engine").value;
   cfg.tts_voice = document.getElementById("cs-tts-voice").value;
   const rateN = parseInt(document.getElementById("cs-tts-rate").value) || 0;
@@ -4221,11 +4784,25 @@ async function saveChannelSettings() {
   cfg.sovits_ref_text = document.getElementById("cs-sovits-ref-text").value.trim();
   cfg.sovits_speed = parseFloat(document.getElementById("cs-sovits-speed").value) || 1.0;
 
+  // RVC 설정 저장
+  cfg.rvc_enabled = document.getElementById("cs-rvc-enabled").checked;
+  cfg.rvc_model = document.getElementById("cs-rvc-model").value;
+  cfg.rvc_pitch = parseInt(document.getElementById("cs-rvc-pitch").value) || 0;
+  cfg.rvc_index_influence = parseFloat(document.getElementById("cs-rvc-index").value) || 0.5;
+
   // BGM / 음향 설정 저장
   cfg.narration_delay = parseFloat(document.getElementById("cs-narration-delay").value) || 0;
   cfg.bgm_enabled = document.getElementById("cs-bgm-enabled").checked;
   cfg.bgm_file = document.getElementById("cs-bgm-file").value;
   cfg.bgm_volume = parseInt(document.getElementById("cs-bgm-volume").value) || 10;
+
+  // 자막 설정 저장
+  cfg.subtitle_enabled = document.getElementById("cs-subtitle-enabled").checked;
+  cfg.subtitle_font = document.getElementById("cs-subtitle-font").value;
+  cfg.subtitle_font_size = parseInt(document.getElementById("cs-subtitle-size").value) || 20;
+  cfg.subtitle_outline = parseInt(document.getElementById("cs-subtitle-outline").value) || 3;
+  cfg.subtitle_alignment = parseInt(document.getElementById("cs-subtitle-alignment").value) || 2;
+  cfg.subtitle_margin_v = parseInt(document.getElementById("cs-subtitle-margin").value) || 120;
 
   // 효과음 설정 저장
   cfg.sfx_enabled = document.getElementById("cs-sfx-enabled").checked;
@@ -4260,6 +4837,30 @@ async function saveChannelSettings() {
   cfg.schedule_days = Array.from(document.querySelectorAll(".cs-schedule-day:checked"))
     .map(cb => cb.value);
 
+  // 활성 그룹 저장 (always_on 제외, 사용자가 켠 그룹만)
+  const optionalGroups = [];
+  for (const gId of _enabledGroups) {
+    const g = _configGroups?.groups?.find(x => x.id === gId);
+    if (g && !g.always_on) optionalGroups.push(gId);
+  }
+  if (optionalGroups.length > 0) {
+    cfg.enabled_groups = optionalGroups;
+  } else {
+    delete cfg.enabled_groups;
+  }
+
+  // 비활성 그룹의 필드는 제거 (기본값 사용)
+  if (_configGroups) {
+    for (const g of _configGroups.groups) {
+      if (g.always_on) continue;
+      if (!_enabledGroups.has(g.id)) {
+        for (const field of g.fields) {
+          delete cfg[field];
+        }
+      }
+    }
+  }
+
   await fetch(`/api/channels/${channelId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -4273,8 +4874,11 @@ async function saveChannelSettings() {
     }),
   });
 
-  closeModal("channel-settings-modal");
-  loadAll();
+  btnDone(_btn, "저장 완료");
+  setTimeout(() => {
+    closeModal("channel-settings-modal");
+    loadAll();
+  }, 800);
 }
 
 // ─── Schedule Time Management ───
@@ -4465,10 +5069,13 @@ async function saveChannelSettingsSilent() {
 
   cfg.bg_display_mode = document.getElementById("cs-bg-display-mode").value;
   cfg.slide_zone_ratio = document.getElementById("cs-zone-ratio").value.trim();
+  cfg.slide_main_zone = document.getElementById("cs-main-zone").value;
+  cfg.slide_sub_zone = document.getElementById("cs-sub-zone").value;
   cfg.slide_text_bg = parseInt(document.getElementById("cs-text-bg").value) || 4;
   cfg.sub_text_size = parseInt(document.getElementById("cs-sub-text-size").value) || 0;
-  cfg.production_mode = document.getElementById("cs-production-mode").value;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
+  cfg.auto_video_source = document.getElementById("cs-auto-video-source").value;
+  cfg.production_mode = cfg.auto_bg_source === "manual" ? "manual" : "auto";
   _set("gemini_api_key", document.getElementById("cs-gemini-api-key").value.trim());
   cfg.use_subagent = document.getElementById("cs-use-subagent").checked;
 
@@ -4493,6 +5100,30 @@ async function saveChannelSettingsSilent() {
   _set("youtube_client_secret", document.getElementById("cs-yt-client-secret").value.trim());
   _set("youtube_refresh_token", document.getElementById("cs-yt-refresh-token").value.trim());
   cfg.youtube_privacy = document.getElementById("cs-yt-privacy").value;
+
+  // 활성 그룹 저장
+  const optionalGroups = [];
+  for (const gId of _enabledGroups) {
+    const g = _configGroups?.groups?.find(x => x.id === gId);
+    if (g && !g.always_on) optionalGroups.push(gId);
+  }
+  if (optionalGroups.length > 0) {
+    cfg.enabled_groups = optionalGroups;
+  } else {
+    delete cfg.enabled_groups;
+  }
+
+  // 비활성 그룹 필드 제거
+  if (_configGroups) {
+    for (const g of _configGroups.groups) {
+      if (g.always_on) continue;
+      if (!_enabledGroups.has(g.id)) {
+        for (const field of g.fields) {
+          delete cfg[field];
+        }
+      }
+    }
+  }
 
   await fetch(`/api/channels/${channelId}`, {
     method: "PUT",
@@ -4738,8 +5369,12 @@ function toggleJsonPaste() {
 }
 
 function applyJsonPaste() {
-  const raw = document.getElementById("manual-json-input").value.trim();
+  let raw = document.getElementById("manual-json-input").value.trim();
   if (!raw) { alert("JSON을 붙여넣어 주세요."); return; }
+  // markdown 코드블록 제거
+  raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
+  // <span class="hl"> 등 HTML 속성의 이스케이프 안 된 따옴표 수정
+  raw = raw.replace(/<span\s+class="hl">/g, '<span class=\\"hl\\">');
   try {
     const data = JSON.parse(raw);
 
@@ -4995,6 +5630,10 @@ async function submitManualJob(channelId) {
   if (!topic) { alert("주제를 입력하세요."); return; }
   if (!ytTitle) { alert("YouTube 제목을 입력하세요."); return; }
 
+  // 버튼 로딩 상태
+  const _btn = event?.target;
+  if (_btn) btnLoading(_btn, "생성중...");
+
   // 빈 메인 텍스트 검증
   for (let i = 0; i < _manualSlides.length; i++) {
     if (!_manualSlides[i].main.trim()) {
@@ -5065,9 +5704,11 @@ async function submitManualJob(channelId) {
       return;
     }
     const data = await res.json();
+    if (_btn) btnDone(_btn, "생성 완료");
     closeModal("manual-modal");
     await loadAll();
   } catch (e) {
+    if (_btn) btnError(_btn, "생성 실패");
     alert("작업 생성 실패: " + e.message);
   }
 }

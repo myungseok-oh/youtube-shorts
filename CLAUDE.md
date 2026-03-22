@@ -482,6 +482,38 @@ ffmpeg -i input.wav -af silenceremove=1:0:-50dB output.wav
 
 ---
 
+---
+
+## Playwright UI 테스트 절차
+
+프론트엔드(HTML/JS/CSS) 수정 후 Playwright MCP로 동작 테스트할 때 아래 절차를 따른다.
+
+### 1. 서버 시작
+```bash
+# 기존 서버 종료 (bash 쉘)
+netstat -ano | grep ':9999' | grep LISTENING | awk '{print $5}' | xargs taskkill //F //PID 2>/dev/null
+# 서버 시작 (백그라운드)
+python app.py &
+sleep 3
+```
+
+### 2. 테스트 실행
+- `mcp__playwright__browser_navigate` → `http://127.0.0.1:9999`
+- 페이지 로드 확인 후 `browser_run_code` / `browser_click` / `browser_snapshot` / `browser_take_screenshot`으로 동작 검증
+- 콘솔 에러 확인: `browser_console_messages`
+
+### 3. 테스트 완료 후 서버 종료
+```bash
+netstat -ano | grep ':9999' | grep LISTENING | awk '{print $5}' | xargs taskkill //F //PID
+```
+
+### 주의사항
+- 캐시 버스팅: HTML/JS/CSS 수정 시 `?v=` 쿼리스트링 버전을 반드시 올릴 것
+- 서버 재시작 필수: Python 모듈(pipeline/) 수정 시 서버 재시작 없으면 반영 안 됨
+- `localhost` 접속 실패 시 `127.0.0.1` 사용
+
+---
+
 # 피드백
 
 - [2026-03-10] 서버 재시작: `kill $(lsof -ti :9999 -sTCP:LISTEN)` 으로 LISTEN 프로세스만 종료할 것. `lsof -ti :9999`는 해당 포트에 연결된 브라우저까지 죽여서 세션 날아감. **절대 -sTCP:LISTEN 빼지 마라**

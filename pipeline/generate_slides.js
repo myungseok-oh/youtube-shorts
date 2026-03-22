@@ -41,12 +41,17 @@ const total = slides.length;
 
 // 상:중:하 비율 (center/top/bottom 레이아웃 전용)
 const _zoneRatioRaw = data.zoneRatio || '';  // "1.5:7:1.5", "2:6:2" 등
-const _zoneRatioParts = _zoneRatioRaw.split(':').map(Number).filter(n => n > 0);
+const _zoneRatioParts = _zoneRatioRaw.split(':').map(Number).filter(n => !isNaN(n) && n >= 0);
 const zoneRatio = _zoneRatioParts.length === 3 ? _zoneRatioParts : [3, 4, 3]; // 기본값
 const _zrTotal = zoneRatio[0] + zoneRatio[1] + zoneRatio[2];
 const zoneTopPct = (zoneRatio[0] / _zrTotal * 100).toFixed(1);
 const zoneMidPct = (zoneRatio[1] / _zrTotal * 100).toFixed(1);
 const zoneBotPct = (zoneRatio[2] / _zrTotal * 100).toFixed(1);
+
+// 메인/서브 텍스트 zone 배치 (center 레이아웃 전용)
+// "top" = 상단 zone, "bottom" = 하단 zone
+const mainZone = data.mainZone || 'top';
+const subZone = data.subZone || 'bottom';
 
 // 텍스트 영역 배경 불투명도 (0~10, 기본 4)
 const _textBgVal = data.textBg != null ? Number(data.textBg) : 4;
@@ -446,6 +451,14 @@ function zonedStyles(accent) {
       padding: 40px 60px;
       background: rgba(5,8,20,${textBgOpacity});
     }
+    .text-zone-top {
+      justify-content: flex-end !important; padding-bottom: 30px;
+      border-bottom: 2px solid rgba(255,255,255,0.12);
+    }
+    .text-zone-bot {
+      justify-content: flex-start !important; padding-top: 16px !important;
+      border-top: 2px solid rgba(255,255,255,0.12);
+    }
     .main-text {
       font-size: ${_mainTextSize || 100}px; font-weight: 900;
       text-align: center; line-height: 1.25;
@@ -556,6 +569,12 @@ function fullscreenZonedStyles(accent, bgImg) {
       background: linear-gradient(180deg, rgba(5,8,20,0.40) 0%, rgba(5,8,20,0.20) 100%);
       backdrop-filter: blur(4px);
     }
+    .text-zone-top {
+      justify-content: flex-end !important; padding-bottom: 30px;
+    }
+    .text-zone-bot {
+      justify-content: flex-start !important; padding-top: 16px !important;
+    }
     .main-text {
       font-size: ${_mainTextSize || 100}px; font-weight: 900;
       text-align: center; line-height: 1.25;
@@ -591,10 +610,8 @@ function fullscreenZonedStyles(accent, bgImg) {
 
 // ──── Image zone HTML for zoned layouts ────
 function imageZoneHTML(bgData, heightPct) {
-  // top/bottom 레이아웃: contain으로 이미지 전체 표시 (잘림 없음)
-  // center 레이아웃: cover로 영역 채움
-  const isTopBot = (layout === 'top' || layout === 'bottom');
-  const fit = isTopBot ? 'contain' : 'cover';
+  // 모든 레이아웃에서 cover 사용 (9:16 이미지 대응, 좌우 빈 공간 방지)
+  const fit = 'cover';
   const pos = layout === 'bottom' ? 'top' : layout === 'top' ? 'bottom' : 'center';
   const imgTag = bgData.dataUrl
     ? `<img src="${bgData.dataUrl}" style="width:100%;height:100%;object-fit:${fit};object-position:${pos};">`
@@ -807,7 +824,11 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   .bg-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     background: ${bgImg
-      ? 'linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.10) 40%, rgba(0,0,0,0.65) 100%)'
+      ? (layout === 'full'
+        ? 'linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.10) 40%, rgba(0,0,0,0.65) 100%)'
+        : layout === 'top'
+        ? 'linear-gradient(180deg, rgba(0,0,0,0.10) 0%, rgba(0,0,0,0.15) 50%, rgba(0,0,0,0.60) 100%)'
+        : 'linear-gradient(180deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.25) 40%, rgba(0,0,0,0.10) 100%)')
       : 'transparent'};
     z-index: 1;
   }
@@ -819,8 +840,21 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
     position: relative; z-index: 5;
     width: 100%; height: 100%;
     display: flex; flex-direction: column;
-    justify-content: flex-end;
-    padding: 0 70px 140px;
+    ${layout === 'full' ? 'justify-content: flex-end; padding: 0 70px 140px;'
+    : layout === 'top' ? `justify-content: flex-end; padding: 0 70px ${zoneTopPct === '0.0' ? '40' : '60'}px;`
+    : layout === 'bottom' ? ''
+    : 'justify-content: center; padding: 0 70px;'}
+  }
+  .ov-spacer {
+    height: ${layout === 'bottom' ? zoneTopPct : layout === 'top' ? (parseFloat(zoneTopPct) + parseFloat(zoneMidPct)).toFixed(1) : '0'}%;
+    ${layout === 'full' || layout === 'center' ? 'display: none;' : ''}
+  }
+  .ov-content {
+    ${layout === 'bottom' ? `height: ${(parseFloat(zoneMidPct) + parseFloat(zoneBotPct)).toFixed(1)}%;` : ''}
+    ${layout === 'top' ? `height: ${zoneBotPct}%;` : ''}
+    display: flex; flex-direction: column;
+    justify-content: flex-start;
+    padding: ${layout === 'full' ? '0' : '40px 70px 0'};
   }
   /* 카테고리 배지 */
   .badge {
@@ -866,10 +900,9 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
     display: flex; align-items: center;
     gap: 20px;
     padding: 20px 28px;
-    background: rgba(0,0,0,0.40);
+    background: rgba(0,0,0,0.55);
     border-left: 5px solid ${accent};
     border-radius: 0 10px 10px 0;
-    backdrop-filter: blur(8px);
   }
   .headline-num {
     font-size: 32px; font-weight: 900;
@@ -900,11 +933,14 @@ function buildOverview(slide, accent, bgImg, progressPct, bgSource) {
   <div class="bg-overlay"></div>
   ${grainSVG()}
   <div class="content-wrap">
-    ${badgeHTML(slide.category)}
-    <div class="main-title">${slide.main}</div>
-    <div class="accent-bar"></div>
-    <div class="headline-list">
-      ${listHTML}
+    <div class="ov-spacer"></div>
+    <div class="ov-content">
+      ${badgeHTML(slide.category)}
+      <div class="main-title">${slide.main}</div>
+      <div class="accent-bar"></div>
+      <div class="headline-list">
+        ${listHTML}
+      </div>
     </div>
   </div>
   ${sourceLabel(bgSource)}
@@ -927,11 +963,11 @@ function buildFullscreenOpening(slide, accent, bgData, progressPct) {
   let bodyContent = '';
   if (layout === 'center') {
     bodyContent = `
-      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
+      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:center;padding-bottom:20px;">
         <div class="main-text" style="font-size:${_mainTextSize ? _mainTextSize + 20 : 120}px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
       </div>
       <div style="height:${zoneMidPct}%;"></div>
-      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
+      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:center;padding-top:20px;">
         ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
       </div>
     `;
@@ -984,11 +1020,11 @@ function buildFullscreenContent(slide, accent, bgData, progressPct, index) {
   let bodyContent = '';
   if (layout === 'center') {
     bodyContent = `
-      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
+      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:center;padding-bottom:20px;">
         <div class="main-text" style="font-size:${_mainTextSize || 100}px;">${slide.main}</div>
       </div>
       <div style="height:${zoneMidPct}%;"></div>
-      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
+      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:center;padding-top:20px;">
         ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
       </div>
     `;
@@ -1043,27 +1079,21 @@ function buildZonedOpening(slide, accent, bgData, progressPct) {
 
   let bodyContent = '';
   if (layout === 'center') {
-    bodyContent = `
-      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
-        <div class="main-text" style="font-size:${_mainTextSize ? _mainTextSize + 20 : 120}px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>
-      </div>
-      ${imageZoneHTML(bgData, parseFloat(zoneMidPct))}
-      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
-        ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
-      </div>
-    `;
+    bodyContent = _buildCenterZoned(bgData,
+      `<div class="main-text" style="font-size:${_mainTextSize ? _mainTextSize + 20 : 120}px;line-height:1.2;letter-spacing:-2px;">${slide.main}</div>`,
+      slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : '');
   } else if (layout === 'top') {
     const imgPct = parseFloat(zoneTopPct) + parseFloat(zoneMidPct);
     bodyContent = `
       ${imageZoneHTML(bgData, imgPct)}
-      <div class="text-zone" style="height:${zoneBotPct}%;">
+      <div class="text-zone text-zone-bot" style="height:${zoneBotPct}%;">
         ${textHTML}
       </div>
     `;
   } else if (layout === 'bottom') {
     const imgPct = parseFloat(zoneMidPct) + parseFloat(zoneBotPct);
     bodyContent = `
-      <div class="text-zone" style="height:${zoneTopPct}%;">
+      <div class="text-zone text-zone-top" style="height:${zoneTopPct}%;">
         ${textHTML}
       </div>
       ${imageZoneHTML(bgData, imgPct)}
@@ -1091,27 +1121,21 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
 
   let bodyContent = '';
   if (layout === 'center') {
-    bodyContent = `
-      <div class="text-zone" style="height:${zoneTopPct}%;justify-content:flex-end;padding-bottom:20px;">
-        <div class="main-text" style="font-size:${_mainTextSize || 100}px;">${slide.main}</div>
-      </div>
-      ${imageZoneHTML(bgData, parseFloat(zoneMidPct))}
-      <div class="text-zone" style="height:${zoneBotPct}%;justify-content:flex-start;padding-top:20px;">
-        ${slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : ''}
-      </div>
-    `;
+    bodyContent = _buildCenterZoned(bgData,
+      `<div class="main-text" style="font-size:${_mainTextSize || 100}px;">${slide.main}</div>`,
+      slide.sub ? `<div class="sub-text" style="margin-top:0;">${slide.sub}</div>` : '');
   } else if (layout === 'top') {
     const imgPct = parseFloat(zoneTopPct) + parseFloat(zoneMidPct);
     bodyContent = `
       ${imageZoneHTML(bgData, imgPct)}
-      <div class="text-zone" style="height:${zoneBotPct}%;">
+      <div class="text-zone text-zone-bot" style="height:${zoneBotPct}%;">
         ${textHTML}
       </div>
     `;
   } else if (layout === 'bottom') {
     const imgPct = parseFloat(zoneMidPct) + parseFloat(zoneBotPct);
     bodyContent = `
-      <div class="text-zone" style="height:${zoneTopPct}%;">
+      <div class="text-zone text-zone-top" style="height:${zoneTopPct}%;">
         ${textHTML}
       </div>
       ${imageZoneHTML(bgData, imgPct)}
@@ -1130,6 +1154,27 @@ function buildZonedContent(slide, accent, bgData, progressPct, index) {
   ${_showSlideNum ? `<div class="slide-num">${String(index).padStart(2, '0')}</div>` : ''}
   ${sourceLabel(bgData.source)}
 </body></html>`;
+}
+
+// ──── Center zone 배치 헬퍼 (mainZone/subZone 지원) ────
+function _buildCenterZoned(bgData, mainHTML, subHTML) {
+  const topTexts = [];
+  const botTexts = [];
+  if (mainZone === 'top') topTexts.push(mainHTML);
+  else botTexts.push(mainHTML);
+  if (subHTML) {
+    if (subZone === 'top') topTexts.push(subHTML);
+    else botTexts.push(subHTML);
+  }
+  return `
+    <div class="text-zone text-zone-top" style="height:${zoneTopPct}%;">
+      ${topTexts.join('\n')}
+    </div>
+    ${imageZoneHTML(bgData, parseFloat(zoneMidPct))}
+    <div class="text-zone text-zone-bot" style="height:${zoneBotPct}%;">
+      ${botTexts.join('\n')}
+    </div>
+  `;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1176,7 +1221,9 @@ async function main() {
         await page.evaluate(() => {
           document.body.style.background = 'transparent';
           const imgZone = document.querySelector('.image-zone');
-          if (imgZone) { imgZone.style.background = 'transparent'; imgZone.innerHTML = ''; }
+          if (imgZone) { imgZone.style.background = 'transparent'; imgZone.innerHTML = ''; imgZone.style.border = 'none'; }
+          const grain = document.querySelector('.grain');
+          if (grain) grain.style.display = 'none';
         });
       }
       await new Promise(r => setTimeout(r, 200));

@@ -1,6 +1,7 @@
 """ffmpeg 기반 영상 합성기"""
 from __future__ import annotations
 import glob
+import json
 import os
 import random
 import subprocess
@@ -9,20 +10,67 @@ from pipeline import config
 
 # ── 지원하는 xfade 전환 효과 목록 ──
 XFADE_TRANSITIONS = [
+    # ── 기본 ──
     {"id": "fade", "label": "페이드", "desc": "부드러운 밝기 전환"},
     {"id": "dissolve", "label": "디졸브", "desc": "녹아드는 전환"},
+    {"id": "fadeblack", "label": "페이드 블랙", "desc": "검은색으로 전환"},
+    {"id": "fadewhite", "label": "페이드 화이트", "desc": "흰색으로 전환"},
+    {"id": "fadegrays", "label": "페이드 그레이", "desc": "회색으로 전환"},
+    # ── 와이프 ──
     {"id": "wipeleft", "label": "왼쪽 와이프", "desc": "왼쪽으로 밀기"},
     {"id": "wiperight", "label": "오른쪽 와이프", "desc": "오른쪽으로 밀기"},
+    {"id": "wipeup", "label": "위로 와이프", "desc": "위로 밀기"},
+    {"id": "wipedown", "label": "아래로 와이프", "desc": "아래로 밀기"},
+    # ── 슬라이드 ──
     {"id": "slideup", "label": "위로 슬라이드", "desc": "위로 밀어올리기"},
     {"id": "slidedown", "label": "아래로 슬라이드", "desc": "아래로 내리기"},
     {"id": "slideleft", "label": "왼쪽 슬라이드", "desc": "왼쪽으로 밀기 (겹침)"},
     {"id": "slideright", "label": "오른쪽 슬라이드", "desc": "오른쪽으로 밀기 (겹침)"},
-    {"id": "circlecrop", "label": "원형", "desc": "원형으로 확대"},
-    {"id": "radial", "label": "시계방향", "desc": "시계 방향 회전"},
+    # ── 부드러운 이동 ──
     {"id": "smoothleft", "label": "부드러운 좌측", "desc": "부드럽게 좌측 이동"},
     {"id": "smoothright", "label": "부드러운 우측", "desc": "부드럽게 우측 이동"},
     {"id": "smoothup", "label": "부드러운 상단", "desc": "부드럽게 위로 이동"},
     {"id": "smoothdown", "label": "부드러운 하단", "desc": "부드럽게 아래로 이동"},
+    # ── 도형 ──
+    {"id": "circlecrop", "label": "원형 확대", "desc": "원형으로 확대"},
+    {"id": "circleclose", "label": "원형 축소", "desc": "원형으로 축소"},
+    {"id": "circleopen", "label": "원형 열기", "desc": "원형으로 열림"},
+    {"id": "radial", "label": "시계방향", "desc": "시계 방향 회전"},
+    {"id": "rectcrop", "label": "사각형 확대", "desc": "사각형으로 확대"},
+    {"id": "horzclose", "label": "수평 닫기", "desc": "좌우에서 닫힘"},
+    {"id": "horzopen", "label": "수평 열기", "desc": "중앙에서 좌우로 열림"},
+    {"id": "vertclose", "label": "수직 닫기", "desc": "상하에서 닫힘"},
+    {"id": "vertopen", "label": "수직 열기", "desc": "중앙에서 상하로 열림"},
+    # ── 특수 ──
+    {"id": "diagtl", "label": "대각선 좌상", "desc": "좌상단 대각선"},
+    {"id": "diagtr", "label": "대각선 우상", "desc": "우상단 대각선"},
+    {"id": "diagbl", "label": "대각선 좌하", "desc": "좌하단 대각선"},
+    {"id": "diagbr", "label": "대각선 우하", "desc": "우하단 대각선"},
+    {"id": "hlslice", "label": "수평 슬라이스", "desc": "수평 줄무늬 전환"},
+    {"id": "hrslice", "label": "수평 슬라이스(역)", "desc": "수평 줄무늬 역전환"},
+    {"id": "vuslice", "label": "수직 슬라이스", "desc": "수직 줄무늬 전환"},
+    {"id": "vdslice", "label": "수직 슬라이스(역)", "desc": "수직 줄무늬 역전환"},
+    {"id": "squeezeh", "label": "수평 압축", "desc": "수평으로 눌림"},
+    {"id": "squeezev", "label": "수직 압축", "desc": "수직으로 눌림"},
+    {"id": "pixelize", "label": "픽셀화", "desc": "픽셀로 변환"},
+    {"id": "zoomin", "label": "줌 인", "desc": "확대하며 전환"},
+    {"id": "coverleft", "label": "커버 좌측", "desc": "좌측으로 덮기"},
+    {"id": "coverright", "label": "커버 우측", "desc": "우측으로 덮기"},
+    {"id": "coverup", "label": "커버 상단", "desc": "위로 덮기"},
+    {"id": "coverdown", "label": "커버 하단", "desc": "아래로 덮기"},
+    {"id": "revealleft", "label": "리빌 좌측", "desc": "좌측으로 벗기기"},
+    {"id": "revealright", "label": "리빌 우측", "desc": "우측으로 벗기기"},
+    {"id": "revealup", "label": "리빌 상단", "desc": "위로 벗기기"},
+    {"id": "revealdown", "label": "리빌 하단", "desc": "아래로 벗기기"},
+    # ── 대각선 와이프 ──
+    {"id": "wipetl", "label": "와이프 좌상", "desc": "좌상단에서 시작"},
+    {"id": "wipetr", "label": "와이프 우상", "desc": "우상단에서 시작"},
+    {"id": "wipebl", "label": "와이프 좌하", "desc": "좌하단에서 시작"},
+    {"id": "wipebr", "label": "와이프 우하", "desc": "우하단에서 시작"},
+    # ── 속도 변형 ──
+    {"id": "fadefast", "label": "빠른 페이드", "desc": "빠르게 페이드"},
+    {"id": "fadeslow", "label": "느린 페이드", "desc": "느리게 페이드"},
+    {"id": "distance", "label": "디스턴스", "desc": "색상 거리 기반 전환"},
 ]
 
 XFADE_IDS = [t["id"] for t in XFADE_TRANSITIONS]
@@ -314,24 +362,58 @@ def generate_full_preview(job_id: str, output_dir: str,
 # 각 프리셋: (zoom_expr, x_expr, y_expr, 설명)
 # 출력 해상도 1080x1920, 입력은 여유 있게 스케일 (1.15배)
 _KB_PRESETS = {
+    # ── 줌 ──
     "zoom_in": ("min(1.15,1+0.0015*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
     "zoom_out": ("if(eq(on,1),1.15,max(1,zoom-0.0015))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+    "zoom_in_slow": ("min(1.08,1+0.0008*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+    "zoom_out_slow": ("if(eq(on,1),1.08,max(1,zoom-0.0008))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+    # ── 패닝 ──
     "pan_right": ("min(1.15,1+0.001*on)", "iw/2-(iw/zoom/2)+on*0.3", "ih/2-(ih/zoom/2)"),
     "pan_left": ("min(1.15,1+0.001*on)", "iw/2-(iw/zoom/2)-on*0.3", "ih/2-(ih/zoom/2)"),
     "pan_down": ("min(1.15,1+0.001*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)+on*0.2"),
     "pan_up": ("if(eq(on,1),1.15,max(1,zoom-0.001))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)-on*0.2"),
+    # ── 대각선 패닝 ──
+    "pan_topright": ("min(1.12,1+0.001*on)", "iw/2-(iw/zoom/2)+on*0.2", "ih/2-(ih/zoom/2)-on*0.15"),
+    "pan_topleft": ("min(1.12,1+0.001*on)", "iw/2-(iw/zoom/2)-on*0.2", "ih/2-(ih/zoom/2)-on*0.15"),
+    "pan_bottomright": ("min(1.12,1+0.001*on)", "iw/2-(iw/zoom/2)+on*0.2", "ih/2-(ih/zoom/2)+on*0.15"),
+    "pan_bottomleft": ("min(1.12,1+0.001*on)", "iw/2-(iw/zoom/2)-on*0.2", "ih/2-(ih/zoom/2)+on*0.15"),
+    # ── 코너 줌 ──
+    "zoom_in_topleft": ("min(1.15,1+0.0015*on)", "iw/4-(iw/zoom/4)", "ih/4-(ih/zoom/4)"),
+    "zoom_in_topright": ("min(1.15,1+0.0015*on)", "3*iw/4-(iw/zoom/2)", "ih/4-(ih/zoom/4)"),
+    "zoom_in_bottomleft": ("min(1.15,1+0.0015*on)", "iw/4-(iw/zoom/4)", "3*ih/4-(ih/zoom/2)"),
+    "zoom_in_bottomright": ("min(1.15,1+0.0015*on)", "3*iw/4-(iw/zoom/2)", "3*ih/4-(ih/zoom/2)"),
+    # ── 떨림/흩뿌리기 ──
+    "shake": ("min(1.08,1+0.0008*on)", "iw/2-(iw/zoom/2)+sin(on*0.15)*8", "ih/2-(ih/zoom/2)+cos(on*0.12)*6"),
+    "shake_strong": ("min(1.10,1+0.001*on)", "iw/2-(iw/zoom/2)+sin(on*0.2)*15", "ih/2-(ih/zoom/2)+cos(on*0.18)*12"),
 }
 
 # UI 표시용 모션 프리셋 목록
 MOTION_PRESETS = [
     {"id": "none", "label": "정적", "desc": "모션 없음"},
     {"id": "random", "label": "랜덤", "desc": "랜덤 Ken Burns"},
+    # ── 줌 ──
     {"id": "zoom_in", "label": "줌 인", "desc": "느린 확대"},
     {"id": "zoom_out", "label": "줌 아웃", "desc": "느린 축소"},
+    {"id": "zoom_in_slow", "label": "줌 인 (느림)", "desc": "아주 느린 확대"},
+    {"id": "zoom_out_slow", "label": "줌 아웃 (느림)", "desc": "아주 느린 축소"},
+    # ── 패닝 ──
     {"id": "pan_right", "label": "우측 패닝", "desc": "좌→우 이동 + 줌"},
     {"id": "pan_left", "label": "좌측 패닝", "desc": "우→좌 이동 + 줌"},
     {"id": "pan_down", "label": "하단 패닝", "desc": "위→아래 이동"},
     {"id": "pan_up", "label": "상단 패닝", "desc": "아래→위 이동"},
+    # ── 대각선 ──
+    {"id": "pan_topright", "label": "우상 패닝", "desc": "좌하→우상 이동"},
+    {"id": "pan_topleft", "label": "좌상 패닝", "desc": "우하→좌상 이동"},
+    {"id": "pan_bottomright", "label": "우하 패닝", "desc": "좌상→우하 이동"},
+    {"id": "pan_bottomleft", "label": "좌하 패닝", "desc": "우상→좌하 이동"},
+    # ── 코너 줌 ──
+    {"id": "zoom_in_topleft", "label": "좌상 줌 인", "desc": "좌상단 기준 확대"},
+    {"id": "zoom_in_topright", "label": "우상 줌 인", "desc": "우상단 기준 확대"},
+    {"id": "zoom_in_bottomleft", "label": "좌하 줌 인", "desc": "좌하단 기준 확대"},
+    {"id": "zoom_in_bottomright", "label": "우하 줌 인", "desc": "우하단 기준 확대"},
+    # ── 떨림 ──
+    {"id": "shake", "label": "흩뿌리기", "desc": "가볍게 흔들리는 효과"},
+    {"id": "shake_strong", "label": "강한 흩뿌리기", "desc": "강하게 흔들리는 효과"},
 ]
 
 # motion 힌트 → Ken Burns 프리셋 매핑
@@ -513,7 +595,10 @@ def render_static_with_audio(image_path: str, audio_path: str,
 def render_segments(slide_durations: dict, image_dir: str,
                     merged_audio: dict, segment_dir: str,
                     motion_hints: dict | None = None,
-                    slide_bg_map: dict | None = None) -> list[str]:
+                    slide_bg_map: dict | None = None,
+                    bg_display_mode: str = "zone",
+                    slide_layout: str = "full",
+                    disable_motion: bool = False) -> list[str]:
     """슬라이드별 세그먼트 영상 생성.
 
     배경 유형에 따라:
@@ -535,12 +620,18 @@ def render_segments(slide_durations: dict, image_dir: str,
     hints = motion_hints or {}
     bg_map = slide_bg_map or {}
 
+    # zone 모드 + zoned 레이아웃 → overlay 분리 합성 대신 composite slide PNG 직접 사용
+    _is_zoned = (bg_display_mode == "zone" and slide_layout in ("center", "top", "bottom"))
+
     for s in sorted(slide_durations.keys()):
         img_path = os.path.join(image_dir, f"slide_{s}.png")
         overlay_path = os.path.join(image_dir, f"slide_{s}_overlay.png")
         audio_path = merged_audio[s]
         dur = slide_durations[s]
         has_overlay = os.path.exists(overlay_path)
+
+        # zone 모드: overlay가 있으면 Ken Burns(bg) + overlay(텍스트) 합성
+        # overlay가 없으면 composite slide PNG를 정적으로 사용
 
         # 슬라이드에 배경이 2개 매핑된 경우 → 분할 렌더링 후 슬라이드 내 concat
         bg_indices = bg_map.get(s, [s])  # 기본: 슬라이드 번호 = bg 번호
@@ -566,6 +657,9 @@ def render_segments(slide_durations: dict, image_dir: str,
                     print(f"[video_renderer] slide {s} part {part_i}: Ken Burns (bg_{bg_idx}, {motion or 'random'}) + overlay")
                     _render_kenburns_segment(image_bg, overlay_path, part_audio,
                                              part_seg, half_dur, vcfg, motion=motion)
+                elif _is_zoned:
+                    print(f"[video_renderer] slide {s} part {part_i}: zoned static composite")
+                    _render_static_segment(img_path, part_audio, part_seg, half_dur, vcfg)
                 else:
                     print(f"[video_renderer] slide {s} part {part_i}: static")
                     _render_static_segment(img_path, part_audio, part_seg, half_dur, vcfg)
@@ -582,7 +676,11 @@ def render_segments(slide_durations: dict, image_dir: str,
             video_bg = _find_video_bg(image_dir, bg_idx)
             image_bg = _find_image_bg(image_dir, bg_idx)
 
-            if video_bg and has_overlay:
+            if disable_motion:
+                # 모션 비활성화: 모든 배경을 정적으로 렌더링
+                print(f"[video_renderer] slide {s}: static (motion disabled)")
+                _render_static_segment(img_path, audio_path, seg_path, dur, vcfg)
+            elif video_bg and has_overlay:
                 print(f"[video_renderer] slide {s}: video_bg + overlay")
                 _render_video_segment(video_bg, overlay_path, audio_path, seg_path,
                                       dur, vcfg)
@@ -590,6 +688,10 @@ def render_segments(slide_durations: dict, image_dir: str,
                 print(f"[video_renderer] slide {s}: Ken Burns ({motion or 'random'}) + overlay")
                 _render_kenburns_segment(image_bg, overlay_path, audio_path,
                                          seg_path, dur, vcfg, motion=motion)
+            elif _is_zoned:
+                # zone 모드: composite slide PNG를 정적으로 사용 (Ken Burns 적용 시 텍스트도 움직여서 부적합)
+                print(f"[video_renderer] slide {s}: zoned static composite")
+                _render_static_segment(img_path, audio_path, seg_path, dur, vcfg)
             else:
                 print(f"[video_renderer] slide {s}: static (bg={bool(image_bg)}, overlay={has_overlay})")
                 _render_static_segment(img_path, audio_path, seg_path, dur, vcfg)
@@ -672,17 +774,20 @@ def _render_static_bg_segment(bg_path: str, overlay_path: str, audio_path: str,
             audio_path, output_path, duration, vcfg)
 
 
-def _render_kenburns_segment(bg_path: str, overlay_path: str, audio_path: str,
+def _render_kenburns_segment(bg_path: str, overlay_path: str | None, audio_path: str,
                               output_path: str, duration: float, vcfg: dict,
                               motion: str = ""):
     """이미지 배경 + Ken Burns 효과 + PNG 오버레이 + 오디오 합성.
     motion="none"이면 정적 배경 (zoom/pan 없음).
+    overlay_path=None이면 오버레이 없이 이미지만 사용 (zone 모드).
     """
     preset = _select_kb_preset(motion)
     if preset is None:
-        # 정적: Ken Burns 없이 이미지 + 오버레이 합성
-        _render_static_bg_segment(bg_path, overlay_path, audio_path,
-                                   output_path, duration, vcfg)
+        if overlay_path:
+            _render_static_bg_segment(bg_path, overlay_path, audio_path,
+                                       output_path, duration, vcfg)
+        else:
+            _render_static_segment(bg_path, audio_path, output_path, duration, vcfg)
         return
     zoom_expr, x_expr, y_expr = preset
     total_frames = int(duration * 24) + 5  # 24fps
@@ -706,32 +811,52 @@ def _render_kenburns_segment(bg_path: str, overlay_path: str, audio_path: str,
         _scale_w, _scale_h = 1242, 2208
         _pad = ""
 
-    filter_complex = (
-        f"[0:v]scale={_scale_w}:{_scale_h},format=rgba{_pad},"
-        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
-        f":d={total_frames}:s=1080x1920:fps=24[bg];"
-        f"[bg][1:v]overlay=0:0:shortest=1[out]"
-    )
+    if overlay_path:
+        filter_complex = (
+            f"[0:v]scale={_scale_w}:{_scale_h},format=rgba{_pad},"
+            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
+            f":d={total_frames}:s=1080x1920:fps=24[bg];"
+            f"[bg][1:v]overlay=0:0:shortest=1[out]"
+        )
+        cmd = [
+            config.ffmpeg(), "-y",
+            "-i", bg_path,
+            "-loop", "1", "-i", overlay_path,
+            "-i", audio_path,
+            "-filter_complex", filter_complex,
+            "-map", "[out]", "-map", "2:a",
+            "-c:v", "libx264", "-preset", "fast",
+            "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
+            "-pix_fmt", "yuv420p",
+            "-t", str(duration + 0.1),
+            output_path
+        ]
+    else:
+        # overlay 없음 (zone 모드): composite slide PNG에 직접 Ken Burns
+        filter_complex = (
+            f"[0:v]scale={_scale_w}:{_scale_h},format=rgba{_pad},"
+            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
+            f":d={total_frames}:s=1080x1920:fps=24[out]"
+        )
+        cmd = [
+            config.ffmpeg(), "-y",
+            "-i", bg_path,
+            "-i", audio_path,
+            "-filter_complex", filter_complex,
+            "-map", "[out]", "-map", "1:a",
+            "-c:v", "libx264", "-preset", "fast",
+            "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
+            "-pix_fmt", "yuv420p",
+            "-t", str(duration + 0.1),
+            output_path
+        ]
 
-    result = subprocess.run([
-        config.ffmpeg(), "-y",
-        "-i", bg_path,
-        "-loop", "1", "-i", overlay_path,
-        "-i", audio_path,
-        "-filter_complex", filter_complex,
-        "-map", "[out]", "-map", "2:a",
-        "-c:v", "libx264", "-preset", "fast",
-        "-c:a", "aac", "-b:a", vcfg["audio_bitrate"],
-        "-pix_fmt", "yuv420p",
-        "-t", str(duration + 0.1),
-        output_path
-    ], capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
         print(f"[video_renderer] Ken Burns failed: {result.stderr[:300]}")
-        _render_static_segment(
-            overlay_path.replace("_overlay.png", ".png"),
-            audio_path, output_path, duration, vcfg)
+        fallback_img = overlay_path.replace("_overlay.png", ".png") if overlay_path else bg_path
+        _render_static_segment(fallback_img, audio_path, output_path, duration, vcfg)
 
 
 def _render_video_segment(bg_path: str, overlay_path: str, audio_path: str,
@@ -1156,3 +1281,249 @@ def apply_audio_mix(video_path: str, sfx_cfg: dict, slide_durations: dict,
         print(f"[video_renderer] apply_audio_mix failed: {e}")
         if os.path.exists(mixed_path):
             os.remove(mixed_path)
+
+
+# ── 자막 (SRT 생성 + 번인) ──────────────────────────────
+
+def _format_srt_time(seconds: float) -> str:
+    """초 → SRT 타임코드 (HH:MM:SS,mmm)"""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def generate_srt(sentences: list[dict], timeline: dict,
+                 output_path: str, narration_delay: float = 0) -> str:
+    """나레이션 문장 + 타임라인으로 SRT 자막 파일 생성.
+
+    Args:
+        sentences: [{"text": "문장", "slide": 1}, ...]
+        timeline: build_timeline() 결과 (durations, slide_durations 등)
+        output_path: SRT 파일 저장 경로
+        narration_delay: 인트로 등으로 인한 시작 오프셋(초)
+
+    Returns:
+        생성된 SRT 파일 경로
+    """
+    durations = timeline.get("durations", [])
+    lines = []
+    current_time = narration_delay
+
+    for i, sent in enumerate(sentences):
+        text = sent.get("text", "").strip()
+        if not text:
+            continue
+        dur = durations[i] if i < len(durations) else 2.0
+        start = current_time
+        end = current_time + dur
+        lines.append(f"{len(lines) + 1}")
+        lines.append(f"{_format_srt_time(start)} --> {_format_srt_time(end)}")
+        lines.append(text)
+        lines.append("")
+        current_time = end
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    print(f"[subtitle] SRT 생성: {len(lines) // 4}개 자막, {output_path}")
+    return output_path
+
+
+def apply_subtitles(video_path: str, srt_path: str,
+                    font_size: int = 20, margin_v: int = 120,
+                    font_name: str = "Noto Sans KR",
+                    outline: int = 3, shadow: int = 1,
+                    alignment: int = 2,
+                    font_color: str = "&H00FFFFFF",
+                    outline_color: str = "&H00000000",
+                    bold: bool = True):
+    """SRT 자막을 영상에 번인 (텍스트 테두리선, 배경 박스 없음).
+
+    Args:
+        video_path: 원본 영상 (in-place 교체)
+        srt_path: SRT 자막 파일
+        font_size: 자막 폰트 크기 (기본 20)
+        margin_v: 하단 여백 (px, 기본 120)
+        font_name: 폰트 이름 (기본 Noto Sans KR)
+        outline: 테두리 두께 (기본 3)
+        shadow: 그림자 (기본 1)
+        alignment: 위치 (2=하단중앙, 8=상단중앙, 5=중앙)
+        font_color: 텍스트 색상 (ASS 형식)
+        outline_color: 테두리 색상 (ASS 형식)
+        bold: 굵게
+    """
+    if not os.path.exists(srt_path):
+        print(f"[subtitle] SRT 파일 없음: {srt_path}")
+        return
+
+    output = video_path.replace(".mp4", "_sub.mp4")
+    style = (
+        f"FontName={font_name},"
+        f"FontSize={font_size},"
+        f"PrimaryColour={font_color},"
+        f"OutlineColour={outline_color},"
+        "BackColour=&H00000000,"
+        f"Bold={'1' if bold else '0'},"
+        f"Outline={outline},"
+        f"Shadow={shadow},"
+        f"MarginV={margin_v},"
+        f"Alignment={alignment},"
+        "BorderStyle=1"
+    )
+
+    # SRT 경로의 백슬래시를 이스케이프 (ffmpeg subtitles 필터용)
+    srt_escaped = srt_path.replace("\\", "/").replace(":", "\\:")
+
+    cmd = [
+        config.ffmpeg(), "-y",
+        "-i", video_path,
+        "-vf", f"subtitles='{srt_escaped}':force_style='{style}':original_size=1080x1920",
+        "-c:a", "copy",
+        output,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode == 0 and os.path.exists(output):
+        os.replace(output, video_path)
+        print(f"[subtitle] 자막 번인 완료: {video_path}")
+    else:
+        print(f"[subtitle] 자막 번인 실패: {result.stderr[:300]}")
+        if os.path.exists(output):
+            os.remove(output)
+
+
+def burn_subtitles_per_segment(
+    segments: list[str],
+    sentences: list[dict],
+    timeline: dict,
+    subtitle_cfg: dict,
+):
+    """각 세그먼트 영상에 해당 슬라이드 문장 자막을 번인.
+
+    세그먼트별로 SRT를 생성하여 번인하므로 패딩/크로스페이드에 의한
+    싱크 어긋남이 구조적으로 불가능하다.
+
+    Args:
+        segments: render_segments()가 반환한 세그먼트 MP4 경로 리스트
+        sentences: [{"text": "...", "slide": 1}, ...]
+        timeline: build_timeline() 결과 (durations 포함)
+        subtitle_cfg: {"font_size", "margin_v", "font_name", "outline", "alignment"}
+    """
+    durations = timeline.get("durations", [])
+
+    # 슬라이드별 문장 그룹핑: {slide_num: [(sentence_idx, text, dur), ...]}
+    slide_sentences: dict[int, list[tuple[int, str, float]]] = {}
+    for i, sent in enumerate(sentences):
+        s = sent.get("slide", 1)
+        text = sent.get("text", "").strip()
+        if not text:
+            continue
+        dur = durations[i] if i < len(durations) else 2.0
+        slide_sentences.setdefault(s, []).append((i, text, dur))
+
+    sorted_slides = sorted(timeline.get("slide_durations", {}).keys())
+
+    for seg_idx, seg_path in enumerate(segments):
+        if seg_idx >= len(sorted_slides):
+            break
+        slide_num = sorted_slides[seg_idx]
+        sents = slide_sentences.get(slide_num, [])
+        if not sents:
+            continue
+
+        # 세그먼트 내 로컬 SRT 생성
+        srt_path = seg_path.replace(".mp4", "_sub.srt")
+        lines = []
+        # 세그먼트 내 나레이션 시작 오프셋 = slide_duration - raw_sum
+        raw_sum = sum(d for _, _, d in sents)
+        slide_dur = timeline["slide_durations"].get(slide_num, raw_sum)
+        pre_pad = max(0, slide_dur - raw_sum) / 2  # 앞 패딩 추정
+
+        current = pre_pad
+        for _, text, dur in sents:
+            idx = len(lines) // 4 + 1
+            lines.append(str(idx))
+            lines.append(f"{_format_srt_time(current)} --> {_format_srt_time(current + dur)}")
+            lines.append(text)
+            lines.append("")
+            current += dur
+
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+        apply_subtitles(
+            seg_path, srt_path,
+            font_size=subtitle_cfg.get("font_size", 20),
+            margin_v=subtitle_cfg.get("margin_v", 120),
+            font_name=subtitle_cfg.get("font_name", "Noto Sans KR"),
+            outline=subtitle_cfg.get("outline", 3),
+            alignment=subtitle_cfg.get("alignment", 2),
+        )
+
+    print(f"[subtitle] 세그먼트별 자막 번인 완료: {len(segments)}개 세그먼트")
+
+
+# ── 배경 캡션 (선택적 텍스트 오버레이) ──────────────────────────
+
+def apply_caption_to_segment(segment_path: str, caption: str,
+                             font_size: int = 32, margin: int = 30,
+                             position: str = "bottom_left",
+                             font_name: str = "Malgun Gothic"):
+    """개별 세그먼트 영상에 캡션 텍스트 오버레이.
+
+    Args:
+        segment_path: 세그먼트 MP4 (in-place 교체)
+        caption: 캡션 텍스트 (빈 문자열이면 스킵)
+        font_size: 캡션 폰트 크기
+        margin: 모서리 여백 (px)
+        position: 캡션 위치 (bottom_left, bottom_right, top_left, top_right)
+        font_name: 폰트 이름
+    """
+    if not caption or not caption.strip():
+        return
+    if not os.path.exists(segment_path):
+        return
+
+    caption_text = caption.strip()
+
+    # 위치 계산
+    pos_map = {
+        "bottom_left":  (f"x={margin}", f"y=h-th-{margin}"),
+        "bottom_right": (f"x=w-tw-{margin}", f"y=h-th-{margin}"),
+        "top_left":     (f"x={margin}", f"y={margin}"),
+        "top_right":    (f"x=w-tw-{margin}", f"y={margin}"),
+    }
+    x_expr, y_expr = pos_map.get(position, pos_map["bottom_left"])
+
+    # 텍스트에 특수문자 이스케이프 (ffmpeg drawtext용)
+    safe_text = caption_text.replace("'", "\\'").replace(":", "\\:").replace("%", "%%")
+
+    output = segment_path.replace(".mp4", "_cap.mp4")
+    drawtext = (
+        f"drawtext=text='{safe_text}':"
+        f"fontfile='C\\:/Windows/Fonts/malgunbd.ttf':"
+        f"fontsize={font_size}:"
+        f"fontcolor=white:"
+        f"borderw=2:bordercolor=black@0.6:"
+        f"box=1:boxcolor=black@0.4:boxborderw=8:"
+        f"{x_expr}:{y_expr}"
+    )
+
+    cmd = [
+        config.ffmpeg(), "-y",
+        "-i", segment_path,
+        "-vf", drawtext,
+        "-c:a", "copy",
+        output,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode == 0 and os.path.exists(output):
+        os.replace(output, segment_path)
+        print(f"[caption] 캡션 적용: '{caption_text}' → {os.path.basename(segment_path)}")
+    else:
+        print(f"[caption] 캡션 실패: {result.stderr[:200]}")
+        if os.path.exists(output):
+            os.remove(output)

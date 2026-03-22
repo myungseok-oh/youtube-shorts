@@ -312,7 +312,10 @@
   align-items: center;
   justify-content: center;
 }
-.comp-track-label.tl-slides { flex: 3; }
+.comp-track-label.tl-slides { flex: 5; }
+.comp-track-label.tl-transition { flex: 1; border-top: 1px solid #22242e; font-size: 9px; }
+.comp-track-label.tl-subtitle { flex: 1; border-top: 1px solid #22242e; font-size: 9px; }
+.comp-track-label.tl-narration { flex: 1; border-top: 1px solid #22242e; font-size: 9px; }
 .comp-track-label.tl-sfx { flex: 1; border-top: 1px solid #22242e; }
 .comp-track-label.tl-bgm { flex: 1; border-top: 1px solid #22242e; }
 
@@ -387,11 +390,14 @@
 .comp-track-row {
   position: relative;
   display: flex;
-  gap: 1px;
+  gap: 0;
   align-items: stretch;
   padding: 2px;
 }
-.comp-track-row.tl-slides { flex: 3; }
+.comp-track-row.tl-slides { flex: 5; align-items: center; padding: 4px 2px; }
+.comp-track-row.tl-transition { flex: 1; border-top: 1px solid #22242e; display: flex; align-items: center; gap: 0; }
+.comp-track-row.tl-subtitle { flex: 1; border-top: 1px solid #22242e; position: relative; }
+.comp-track-row.tl-narration { flex: 1; border-top: 1px solid #22242e; position: relative; }
 .comp-track-row.tl-sfx { flex: 1; border-top: 1px solid #22242e; }
 .comp-track-row.tl-bgm { flex: 1; border-top: 1px solid #22242e; }
 
@@ -402,22 +408,187 @@
   background: rgba(99,102,241,0.08) !important;
 }
 
+/* ─── Transition block (separate track) ─── */
+.comp-tr-block {
+  width: 24px;
+  height: 80%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 3px;
+  background: #1e1e2e;
+  border: 1px solid #2a2d38;
+  transition: all 0.15s;
+}
+.comp-tr-block:hover {
+  background: rgba(99,102,241,0.2);
+  border-color: #6366f1;
+}
+.comp-tr-block.has-tr {
+  background: #1e2245;
+  border-color: #4338ca;
+}
+
+/* ─── Transition Popup ─── */
+.tr-popup {
+  position: absolute;
+  z-index: 50;
+  background: #1e2028;
+  border: 1px solid #3a3d48;
+  border-radius: 8px;
+  padding: 8px;
+  width: 200px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.tr-popup-title {
+  font-size: 9px;
+  font-weight: 700;
+  color: #9ca3af;
+  margin-bottom: 6px;
+}
+.tr-popup-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+.tr-popup-btn {
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  color: #9ca3af;
+  background: #2a2d38;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.tr-popup-btn:hover { background: #32354a; color: #d1d5db; }
+.tr-popup-btn.active { background: #4338ca; color: white; border-color: #6366f1; }
+.tr-popup-dur {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  color: #9ca3af;
+}
+.tr-popup-dur input[type="range"] {
+  flex: 1;
+  accent-color: #6366f1;
+  height: 14px;
+}
+
+/* ─── Transition pair list (tab) ─── */
+.tr-pair-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  max-height: 100px;
+  overflow-y: auto;
+}
+.tr-pair-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 9px;
+  color: #9ca3af;
+  background: #22242e;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.tr-pair-btn:hover { background: #2a2d38; color: #d1d5db; }
+.tr-pair-btn.active { background: #312e81; color: #a5b4fc; border-color: #6366f1; }
+
+/* ─── Motion Dropdown ─── */
+.motion-dropdown {
+  position: absolute;
+  z-index: 50;
+  background: #1e2028;
+  border: 1px solid #3a3d48;
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 80px;
+}
+.motion-dd-btn {
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 9px;
+  color: #9ca3af;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.12s;
+}
+.motion-dd-btn:hover { background: #2a2d38; color: #d1d5db; }
+.motion-dd-btn.active { background: #4338ca; color: white; }
+
 /* Slide blocks in timeline (frame strip) */
 .slide-block {
   position: relative;
-  cursor: pointer;
-  border-radius: 4px;
-  border: 1px solid #2a2d38;
+  cursor: grab;
+  border-radius: 6px;
+  border: 2px solid #2a2d38;
   background: #22242e;
   overflow: hidden;
   transition: border-color 0.15s;
   flex-shrink: 0;
-  min-width: 60px;
+  min-width: 50px;
+  height: 100%;
 }
-.slide-block:hover { border-color: #4b5563; }
-.slide-block.active { border-color: #6366f1; box-shadow: 0 0 0 1px #6366f1; }
+.slide-block:hover { border-color: #4b5563; z-index: 10 !important; }
+.slide-block.resize-hover::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; right: 0;
+  width: 4px;
+  background: #6366f1;
+  border-radius: 0 4px 4px 0;
+  pointer-events: none;
+}
+.slide-block.active { border-color: #6366f1; box-shadow: 0 0 0 1px #6366f1; z-index: 10 !important; }
 .slide-block.dragging { opacity: 0.5; }
 .slide-block.drag-over { border-color: #818cf8; border-style: dashed; }
+
+/* bg_type 컬러 바 (상단) */
+.slide-type-bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  z-index: 3;
+}
+
+/* 상단 좌측: 번호 + 타입 */
+.slide-block-top {
+  position: absolute;
+  top: 4px; left: 5px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  z-index: 3;
+}
+.slide-block-num {
+  font-size: 9px;
+  font-weight: 800;
+  color: white;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+.slide-block-type {
+  font-size: 7px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
 
 /* 프레임 스트립 */
 .slide-frames {
@@ -435,17 +606,39 @@
   opacity: 0.4;
 }
 
+/* 하단: 모션 뱃지 + duration */
 .slide-block-label {
   position: absolute;
   bottom: 0; left: 0; right: 0;
   display: flex;
   justify-content: space-between;
+  align-items: center;
   padding: 2px 5px;
-  background: linear-gradient(transparent, rgba(0,0,0,0.8));
+  background: linear-gradient(transparent, rgba(0,0,0,0.85));
   font-size: 8px;
   font-weight: 600;
   color: #e5e7eb;
   z-index: 2;
+}
+.slide-block-dur {
+  font-size: 8px;
+  color: #9ca3af;
+  font-family: monospace;
+}
+.slide-motion-badge {
+  font-size: 7px;
+  font-weight: 700;
+  color: #34d399;
+  background: rgba(16,185,129,0.15);
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.slide-motion-badge:hover {
+  background: rgba(16,185,129,0.3);
+  color: #6ee7b7;
 }
 
 /* ─── SFX/BGM markers (timeline) ─── */

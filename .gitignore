@@ -10,3 +10,4 @@ data/shorts.db
 data/shorts.db-shm
 data/shorts.db-wal
 data/google-tts.json
+.playwright-mcp/

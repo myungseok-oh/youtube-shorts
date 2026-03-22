@@ -476,6 +476,13 @@ async def api_prompt_defaults():
     }
 
 
+# ─── Config Groups API ───
+
+@app.get("/api/config/groups")
+async def api_config_groups():
+    from pipeline.config_groups import get_config_groups_payload
+    return get_config_groups_payload()
+
 # ─── Channel API ───
 
 @app.get("/api/channels")
@@ -496,6 +503,9 @@ async def api_create_channel(request: Request):
         instructions=body.get("instructions", ""),
         cfg=body.get("config"),
     )
+    # 채널별 에이전트 파일 자동 생성
+    from pipeline.agents import create_channel_agent_file
+    create_channel_agent_file(ch["id"])
     return ch
 
 
@@ -520,6 +530,9 @@ async def api_clone_channel(channel_id: str):
     # cloned_from 기록
     db_ch.execute("UPDATE channels SET cloned_from = ? WHERE id = ?", [channel_id, clone["id"]])
     clone["cloned_from"] = channel_id
+    # 채널별 에이전트 파일 자동 생성
+    from pipeline.agents import create_channel_agent_file
+    create_channel_agent_file(clone["id"])
     return clone
 
 
@@ -962,10 +975,7 @@ async def api_get_job_script(job_id: str):
         "genspark_prompts": meta.get("genspark_prompts", []),
         "auto_bg_source": ch_cfg.get("auto_bg_source", "sd_image"),
         "slide_layout": ch_cfg.get("slide_layout", "full"),
-        "channel_config": {
-            "crossfade_transition": ch_cfg.get("crossfade_transition", "fade"),
-            "crossfade_duration": ch_cfg.get("crossfade_duration", 0.5),
-        },
+        "channel_config": ch_cfg,
     }
 
 
@@ -2148,11 +2158,11 @@ async def api_resume_job(job_id: str, request: Request):
     # TTS 설정 (팝업에서 선택 — 엔진/음성/속도/GPT-SoVITS)
     tts_voice = ""
     tts_rate = None
-    tts_engine = "edge-tts"
+    tts_engine = ""
     sovits_override = None
     try:
         body = await request.json()
-        tts_engine = body.get("tts_engine", "edge-tts")
+        tts_engine = body.get("tts_engine", "")
         tts_voice = body.get("tts_voice", "")
         if body.get("tts_rate") is not None:
             tts_rate = int(body["tts_rate"])
@@ -2417,6 +2427,48 @@ async def api_auto_effects(job_id: str):
     cd["slide_transitions"] = auto_tr
     save_compose_data(job_id, cd)
     return {"ok": True, "motions": len(auto_mo), "transitions": len(auto_tr)}
+
+
+@app.get("/api/rvc-models")
+async def api_list_rvc_models():
+    """data/rvc_models/ 폴더의 RVC 모델 목록"""
+    from pipeline.tts_generator import list_rvc_models
+    return list_rvc_models()
+
+
+@app.post("/api/rvc-preview")
+async def api_rvc_preview(req: dict):
+    """RVC 음성 변환 미리듣기 — TTS 생성(UI 선택 음성) → RVC 변환 → WAV 반환"""
+    model = req.get("model", "")
+    pitch = int(req.get("pitch", 0))
+    index_influence = float(req.get("index_influence", 0.5))
+    tts_voice = req.get("tts_voice", "ko-KR-SunHiNeural")
+    tts_rate = int(req.get("tts_rate", 0))
+    if not model:
+        raise HTTPException(400, "model 필수")
+
+    preview_dir = os.path.join(config.root_dir(), "data", "tts_preview")
+    os.makedirs(preview_dir, exist_ok=True)
+
+    # Edge TTS 생성 (UI에서 선택한 음성 + 속도 반영)
+    import edge_tts
+    text = "안녕하세요, 오늘의 주요 뉴스를 전해드리겠습니다."
+    tts_path = os.path.join(preview_dir, "rvc_preview_input.wav")
+    rate_str = f"+{tts_rate}%" if tts_rate >= 0 else f"{tts_rate}%"
+    comm = edge_tts.Communicate(text, tts_voice, rate=rate_str)
+    await comm.save(tts_path)
+
+    # RVC 변환
+    from pipeline.tts_generator import _apply_rvc_batch
+    rvc_cfg = {"model": model, "pitch": pitch, "index_influence": index_influence}
+    out_path = os.path.join(preview_dir, f"rvc_preview_{model}.wav")
+
+    import shutil
+    shutil.copy2(tts_path, out_path)
+    await asyncio.to_thread(_apply_rvc_batch, [out_path], rvc_cfg)
+
+    return FileResponse(out_path, media_type="audio/wav",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/ref-voices")
@@ -2785,6 +2837,8 @@ from pipeline.editor import (
 )
 from pipeline.composer import (
     get_composer_data, get_slide_audio_files, load_compose_data, save_compose_data,
+    list_narration_files, save_narration_files, delete_narration_file,
+    assign_narration_to_slide,
 )
 
 
@@ -3124,6 +3178,69 @@ async def api_serve_job_audio(job_id: str, filename: str):
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "mp3"
     media_types = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4", "ogg": "audio/ogg"}
     return FileResponse(path, media_type=media_types.get(ext, "audio/mpeg"))
+
+
+# ─── Narration File Pool ───
+
+@app.post("/api/jobs/{job_id}/composer/narration-files")
+async def api_upload_narration_files(job_id: str,
+                                      files: list[UploadFile] = File(...)):
+    """나레이션 음성 파일 일괄 업로드."""
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    items = []
+    for f in files:
+        content = await f.read()
+        items.append((f.filename or "audio.mp3", content))
+    saved = save_narration_files(job_id, items)
+    return {"ok": True, "files": saved}
+
+
+@app.get("/api/jobs/{job_id}/composer/narration-files")
+async def api_list_narration_files(job_id: str):
+    """업로드된 나레이션 파일 목록 조회."""
+    return {"files": list_narration_files(job_id)}
+
+
+@app.delete("/api/jobs/{job_id}/composer/narration-files/{filename}")
+async def api_delete_narration_file(job_id: str, filename: str):
+    """나레이션 파일 삭제."""
+    ok = delete_narration_file(job_id, filename)
+    if not ok:
+        raise HTTPException(404, "File not found")
+    return {"ok": True}
+
+
+@app.get("/api/jobs/{job_id}/narration-files/{filename}")
+async def api_serve_narration_file(job_id: str, filename: str):
+    """나레이션 파일 서빙 (미리듣기용)."""
+    path = os.path.join(config.output_dir(), job_id, "narration_files", filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "File not found")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "mp3"
+    media_types = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
+                   "ogg": "audio/ogg", "flac": "audio/flac"}
+    return FileResponse(path, media_type=media_types.get(ext, "audio/mpeg"))
+
+
+@app.post("/api/jobs/{job_id}/composer/assign-narration/{slide_num}")
+async def api_assign_narration(job_id: str, slide_num: int,
+                                request: Request):
+    """나레이션 파일 풀에서 슬라이드에 배치."""
+    job = get_job(db, job_id)
+    if not job or not job.get("script_json"):
+        raise HTTPException(404, "Job not found")
+    body = await request.json()
+    source_file = body.get("source_file", "")
+    if not source_file:
+        raise HTTPException(400, "source_file required")
+    script = json.loads(job["script_json"])
+    try:
+        result = assign_narration_to_slide(job_id, slide_num, source_file, script)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return result
 
 
 if __name__ == "__main__":

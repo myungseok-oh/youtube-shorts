@@ -44,7 +44,9 @@ def generate_slides(slides_data: list[dict], output_dir: str,
                     main_text_size: int = 0,
                     badge_size: int = 0,
                     show_badge: bool = True,
-                    channel_format: str = "single") -> list[str]:
+                    channel_format: str = "single",
+                    main_zone: str = "top",
+                    sub_zone: str = "bottom") -> list[str]:
     """슬라이드 데이터를 받아 PNG 이미지 생성.
 
     Args:
@@ -86,6 +88,8 @@ def generate_slides(slides_data: list[dict], output_dir: str,
         "showBadge": show_badge if show_badge is not True else (channel_format == "roundup"),
         "showSlideNum": channel_format == "roundup",
         "slideOverrides": slide_overrides or {},
+        "mainZone": main_zone,
+        "subZone": sub_zone,
     }
 
     # 임시 JSON 파일에 입력 데이터 저장

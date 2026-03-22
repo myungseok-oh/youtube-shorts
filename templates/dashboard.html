@@ -6,7 +6,7 @@
   <title>YouTube Shorts Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/style.css?v=20260319a">
+  <link rel="stylesheet" href="/static/style.css?v=20260322d">
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen">
 
@@ -93,29 +93,14 @@
   <!-- 채널 설정 모달 -->
   <div id="channel-settings-modal" class="modal-overlay hidden">
     <div class="modal-content" style="max-width:820px; height:80vh; display:flex; flex-direction:column; overflow:hidden;">
-      <div class="flex items-center justify-between mb-4 flex-shrink-0">
+      <div class="flex items-center justify-between mb-3 flex-shrink-0">
         <h3 class="text-lg font-bold">채널 설정</h3>
         <button onclick="closeModal('channel-settings-modal')" class="text-gray-500 hover:text-white text-lg transition">&times;</button>
       </div>
-      <!-- 탭 바 -->
-      <div class="flex border-b border-gray-700 mb-4 gap-1 flex-shrink-0 flex-wrap">
-        <button onclick="switchSettingsTab('basic')" data-cs-tab="basic"
-                class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">기본</button>
-        <button onclick="switchSettingsTab('content')" data-cs-tab="content"
-                class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">콘텐츠</button>
-        <button onclick="switchSettingsTab('slide')" data-cs-tab="slide"
-                class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">슬라이드</button>
-        <button onclick="switchSettingsTab('image')" data-cs-tab="image"
-                class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">이미지</button>
-        <button onclick="switchSettingsTab('audio')" data-cs-tab="audio"
-                class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">오디오</button>
-        <button onclick="switchSettingsTab('prompt')" data-cs-tab="prompt"
-                class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">프롬프트</button>
-        <button onclick="switchSettingsTab('keys')" data-cs-tab="keys"
-                class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">키</button>
-        <button onclick="switchSettingsTab('schedule')" data-cs-tab="schedule"
-                class="cs-tab-btn px-3 py-1.5 text-sm rounded-t-lg transition">스케줄</button>
-      </div>
+      <!-- 옵션 그룹 토글 칩 -->
+      <div id="cs-group-chips" class="flex flex-wrap gap-1.5 mb-3 flex-shrink-0"></div>
+      <!-- 탭 바 (활성 그룹만 표시) -->
+      <div id="cs-tab-bar" class="flex border-b border-gray-700 mb-4 gap-1 flex-shrink-0 flex-wrap"></div>
 
       <!-- 스크롤 영역 -->
       <div class="flex-1 overflow-y-auto min-h-0 pr-3">
@@ -126,7 +111,7 @@
       <input id="cs-youtube-api-key" type="hidden" value="">
 
       <!-- 탭: 기본 -->
-      <div id="cs-tab-basic" class="cs-tab-content space-y-4">
+      <div id="cs-tab-basic" class="cs-tab-content hidden space-y-4">
         <div class="grid grid-cols-2 gap-4">
           <div>
             <label class="block text-sm text-gray-400 mb-1">채널 이름</label>
@@ -198,32 +183,6 @@
         </div>
         <div class="border-t border-gray-700"></div>
         <div>
-          <label class="block text-sm text-gray-400 mb-2">시장 데이터 소스</label>
-          <p class="text-xs text-gray-500 mb-2">체크한 데이터를 크롤링하여 대본 생성 시 AI에게 전달합니다</p>
-          <div class="space-y-2">
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="global_stocks">
-              <span class="text-sm text-gray-300">해외 지수 (다우/S&P/나스닥)</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="kr_stocks">
-              <span class="text-sm text-gray-300">국내 지수 (코스피/코스닥)</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="investor_trends">
-              <span class="text-sm text-gray-300">투자자별 매매동향</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="crypto">
-              <span class="text-sm text-gray-300">암호화폐 (BTC)</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="fear_greed">
-              <span class="text-sm text-gray-300">공포탐욕지수</span>
-            </label>
-          </div>
-        </div>
-        <div>
           <label class="block text-sm text-gray-400 mb-1">주제 중복 검사 기간</label>
           <select id="cs-dedup-hours"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
@@ -245,121 +204,214 @@
           </label>
         </div>
         <div class="border-t border-gray-700"></div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">영상 제작 방식</label>
-          <select id="cs-production-mode" onchange="toggleAutoBgSource()"
-                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-            <option value="manual">수동 — 대본 생성 후 이미지/음성 준비 → 영상 제작</option>
-            <option value="auto">자동 — 대본 생성부터 영상 완성까지 원스탑 실행</option>
-          </select>
-          <p class="text-xs text-gray-500 mt-1">자동 모드는 이미지/나레이션 직접 준비가 불필요합니다</p>
-        </div>
-        <div id="auto-bg-source-section" class="hidden">
+        <div id="auto-bg-source-section">
           <label class="block text-sm text-gray-400 mb-1">배경 이미지 소스</label>
           <select id="cs-auto-bg-source"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
             <option value="gemini">Gemini (Google AI, 무료)</option>
-            <option value="sd_image">SD 이미지 (SDXL)</option>
-            <option value="sd_video">SD 영상 (AnimateDiff)</option>
+            <option value="sd_image">SD 이미지 (SDXL, GPU)</option>
             <option value="openverse">Openverse CC (무료 사진)</option>
+            <option value="manual">수동 (직접 업로드)</option>
           </select>
           <p class="text-xs text-gray-500 mt-1">Gemini: 빠름(3초), 무료 500장/일 | SD: GPU 필요 | Openverse: 무료 CC 사진</p>
         </div>
-      </div>
-
-      <!-- 탭: 슬라이드 -->
-      <div id="cs-tab-slide" class="cs-tab-content hidden space-y-4">
         <div>
-          <label class="block text-sm text-gray-400 mb-1">슬라이드 레이아웃</label>
-          <select id="cs-slide-layout" onchange="toggleBgDisplayMode()"
+          <label class="block text-sm text-gray-400 mb-1">배경 영상 소스</label>
+          <select id="cs-auto-video-source"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-            <option value="full">전체 배경 — 이미지가 화면 전체를 덮음</option>
-            <option value="center">가운데 — 이미지 중앙, 텍스트 상/하단</option>
-            <option value="top">상단 — 이미지 상단, 텍스트 하단</option>
-            <option value="bottom">하단 — 이미지 하단, 텍스트 상단</option>
+            <option value="none">사용 안 함</option>
+            <option value="gemini">Gemini Veo (Google AI, 6초)</option>
+            <option value="sd_video">SD 영상 (AnimateDiff, GPU)</option>
           </select>
-          <p class="text-xs text-gray-500 mt-1">전체 배경은 큰 이미지 필요, 나머지는 작은 이미지로 빠르게 생성</p>
+          <p class="text-xs text-gray-500 mt-1">AI가 추천한 video 씬만 자동 영상 생성. "사용 안 함"이면 이미지만 사용</p>
         </div>
-        <div id="bg-display-mode-section">
-          <label class="block text-sm text-gray-400 mb-1">배경 표시 모드</label>
-          <select id="cs-bg-display-mode"
+        <div>
+          <label class="block text-sm text-gray-400 mb-1">이미지 스타일</label>
+          <select id="cs-image-style"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-            <option value="zone">영역 — 이미지를 지정 영역에만 표시</option>
-            <option value="fullscreen">전체 화면 — 이미지를 배경 전체에 표시</option>
+            <option value="photo">포토 — 실사 사진 스타일 (건물, 장소, 사물)</option>
+            <option value="infographic">인포그래픽 — 일러스트/차트/다이어그램 스타일</option>
+            <option value="anime">애니메 — 애니메이션/디지털 일러스트 스타일</option>
+            <option value="mixed">혼합 — bg_type에 따라 자동 (photo→실사, graph→인포그래픽)</option>
           </select>
-          <p class="text-xs text-gray-500 mt-1">전체 화면은 9:16 이미지 생성, 텍스트 영역에 반투명 오버레이 적용</p>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">영역 비율 (상:중:하)</label>
-          <input id="cs-zone-ratio" type="text" placeholder="예: 1.5:7:1.5 (기본 3:4:3)"
-                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-          <p class="text-xs text-gray-500 mt-1">center/top/bottom 레이아웃의 텍스트:이미지:텍스트 비율. 비우면 기본값</p>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">텍스트 배경 불투명도 <span id="cs-text-bg-label" class="text-orange-400">4</span>/10</label>
-          <input id="cs-text-bg" type="range" min="0" max="10" step="1" value="4"
-                 oninput="document.getElementById('cs-text-bg-label').textContent=this.value"
-                 class="w-full accent-orange-500">
-          <p class="text-xs text-gray-500 mt-1">0=투명, 10=완전 검정</p>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">서브 텍스트 크기 <span id="cs-sub-text-size-label" class="text-orange-400">0</span>px</label>
-          <input id="cs-sub-text-size" type="range" min="0" max="100" step="2" value="0"
-                 oninput="document.getElementById('cs-sub-text-size-label').textContent=this.value"
-                 class="w-full accent-orange-500">
-          <p class="text-xs text-gray-500 mt-1">0=기본값(56px). 슬라이드 하단 보조 텍스트 크기 조절</p>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">메인 텍스트 크기 <span id="cs-slide-main-text-size-label" class="text-orange-400">0</span>px</label>
-          <input id="cs-slide-main-text-size" type="range" min="0" max="200" step="2" value="0"
-                 oninput="document.getElementById('cs-slide-main-text-size-label').textContent=this.value"
-                 class="w-full accent-orange-500">
-          <p class="text-xs text-gray-500 mt-1">0=기본값(content 100px, opening 110px). 슬라이드 메인 텍스트 크기</p>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">배지 크기 <span id="cs-slide-badge-size-label" class="text-orange-400">0</span>px</label>
-          <input id="cs-slide-badge-size" type="range" min="0" max="60" step="2" value="0"
-                 oninput="document.getElementById('cs-slide-badge-size-label').textContent=this.value"
-                 class="w-full accent-orange-500">
-          <p class="text-xs text-gray-500 mt-1">0=기본값(34px). 카테고리 배지 폰트 크기</p>
-        </div>
-        <div class="border-t border-gray-700"></div>
-        <h4 class="text-sm text-gray-300 font-medium">슬라이드 색상</h4>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">강조 색상 (배지/테두리/진행바)</label>
-          <div class="flex gap-2 items-center">
-            <input id="cs-slide-accent-color" type="color" value="#ff6b35"
-                   class="w-10 h-8 rounded border border-gray-700 bg-gray-800 cursor-pointer"
-                   oninput="document.getElementById('cs-slide-accent-color-text').value=this.value">
-            <input id="cs-slide-accent-color-text" type="text" value="#ff6b35" placeholder="#ff6b35"
-                   class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono"
-                   oninput="try{document.getElementById('cs-slide-accent-color').value=this.value}catch(e){}">
-          </div>
-          <p class="text-xs text-gray-500 mt-1">비우면 기본값 #ff6b35</p>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">하이라이트 텍스트 색상</label>
-          <div class="flex gap-2 items-center">
-            <input id="cs-slide-hl-color" type="color" value="#ffd700"
-                   class="w-10 h-8 rounded border border-gray-700 bg-gray-800 cursor-pointer"
-                   oninput="document.getElementById('cs-slide-hl-color-text').value=this.value">
-            <input id="cs-slide-hl-color-text" type="text" value="#ffd700" placeholder="#ffd700"
-                   class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm font-mono"
-                   oninput="try{document.getElementById('cs-slide-hl-color').value=this.value}catch(e){}">
-          </div>
-          <p class="text-xs text-gray-500 mt-1">비우면 기본값 #ffd700</p>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">배경 그라디언트 3색</label>
-          <input id="cs-slide-bg-gradient" type="text" placeholder="#0b0e1a,#141b2d,#1a2238"
-                 class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono">
-          <p class="text-xs text-gray-500 mt-1">콤마로 구분된 3색. 비우면 기본값 사용</p>
+          <p class="text-xs text-gray-500 mt-1">포토: 뉴스 현장감, 인포그래픽: 데이터/비교 중심, 혼합: 슬라이드별 자동 판단</p>
         </div>
       </div>
 
-      <!-- 탭: 이미지 -->
-      <div id="cs-tab-image" class="cs-tab-content hidden space-y-4">
-        <!-- 채널 고정 배경 이미지 (인트로/아웃트로) -->
+      <!-- 탭: 슬라이드 스타일 -->
+      <div id="cs-tab-slide_style" class="cs-tab-content hidden" style="display:none;flex-direction:column;">
+        <!-- ═══ 좌(설정) + 우(미리보기) ═══ -->
+        <div class="flex gap-4" style="align-items:flex-start;">
+          <!-- ── 좌: 설정 ── -->
+          <div class="flex-1 min-w-0 space-y-2.5">
+            <!-- 레이아웃 -->
+            <div class="grid grid-cols-3 gap-2">
+              <div>
+                <label class="block text-xs text-gray-500 mb-0.5">레이아웃</label>
+                <select id="cs-slide-layout" onchange="toggleBgDisplayMode();updateSlidePreview()"
+                        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+                  <option value="full">전체 배경</option>
+                  <option value="center">가운데</option>
+                  <option value="top">상단</option>
+                  <option value="bottom">하단</option>
+                </select>
+              </div>
+              <div id="bg-display-mode-section">
+                <label class="block text-xs text-gray-500 mb-0.5">배경 표시</label>
+                <select id="cs-bg-display-mode"
+                        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs">
+                  <option value="zone">영역만</option>
+                  <option value="fullscreen">전체 화면</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-0.5">영역 비율</label>
+                <input id="cs-zone-ratio" type="text" placeholder="3:4:3"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs"
+                       oninput="updateSlidePreview()">
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-xs text-gray-500 mb-0.5">메인 위치</label>
+                <select id="cs-main-zone" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs" onchange="updateSlidePreview()">
+                  <option value="top">상단</option>
+                  <option value="bottom">하단</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-0.5">서브 위치</label>
+                <select id="cs-sub-zone" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs" onchange="updateSlidePreview()">
+                  <option value="top">상단</option>
+                  <option value="bottom">하단</option>
+                </select>
+              </div>
+            </div>
+            <!-- 슬라이더 -->
+            <div class="border-t border-gray-700 pt-2 space-y-2">
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 w-20 shrink-0">배경 불투명도</span>
+                <input id="cs-text-bg" type="range" min="0" max="10" step="1" value="4"
+                       oninput="document.getElementById('cs-text-bg-label').textContent=this.value;updateSlidePreview()"
+                       class="flex-1 h-1 accent-orange-500">
+                <span id="cs-text-bg-label" class="text-xs text-gray-400 w-5 text-right">4</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 w-20 shrink-0">메인 텍스트</span>
+                <input id="cs-slide-main-text-size" type="range" min="0" max="200" step="2" value="0"
+                       oninput="document.getElementById('cs-slide-main-text-size-label').textContent=this.value;updateSlidePreview()"
+                       class="flex-1 h-1 accent-orange-500">
+                <span id="cs-slide-main-text-size-label" class="text-xs text-gray-400 w-5 text-right">0</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 w-20 shrink-0">서브 텍스트</span>
+                <input id="cs-sub-text-size" type="range" min="0" max="100" step="2" value="0"
+                       oninput="document.getElementById('cs-sub-text-size-label').textContent=this.value;updateSlidePreview()"
+                       class="flex-1 h-1 accent-orange-500">
+                <span id="cs-sub-text-size-label" class="text-xs text-gray-400 w-5 text-right">0</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 w-20 shrink-0">배지 크기</span>
+                <input id="cs-slide-badge-size" type="range" min="0" max="60" step="2" value="0"
+                       oninput="document.getElementById('cs-slide-badge-size-label').textContent=this.value"
+                       class="flex-1 h-1 accent-orange-500">
+                <span id="cs-slide-badge-size-label" class="text-xs text-gray-400 w-5 text-right">0</span>
+              </div>
+            </div>
+            <!-- 색상 -->
+            <div class="border-t border-gray-700 pt-2 space-y-1.5">
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 w-20 shrink-0">강조 색상</span>
+                <input id="cs-slide-accent-color" type="color" value="#ff6b35"
+                       class="w-6 h-6 rounded border border-gray-700 bg-gray-800 cursor-pointer shrink-0"
+                       oninput="document.getElementById('cs-slide-accent-color-text').value=this.value">
+                <input id="cs-slide-accent-color-text" type="text" value="#ff6b35"
+                       class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono min-w-0"
+                       oninput="try{document.getElementById('cs-slide-accent-color').value=this.value}catch(e){}">
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 w-20 shrink-0">하이라이트</span>
+                <input id="cs-slide-hl-color" type="color" value="#ffd700"
+                       class="w-6 h-6 rounded border border-gray-700 bg-gray-800 cursor-pointer shrink-0"
+                       oninput="document.getElementById('cs-slide-hl-color-text').value=this.value">
+                <input id="cs-slide-hl-color-text" type="text" value="#ffd700"
+                       class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono min-w-0"
+                       oninput="try{document.getElementById('cs-slide-hl-color').value=this.value}catch(e){}">
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 w-20 shrink-0">그라디언트</span>
+                <input id="cs-slide-bg-gradient" type="text" placeholder="#0b0e1a,#141b2d,#1a2238"
+                       class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs font-mono min-w-0"
+                       oninput="updateSlidePreview()">
+              </div>
+            </div>
+            <!-- 자막 -->
+            <div class="border-t border-gray-700 pt-2">
+              <div class="flex items-center justify-between mb-1.5">
+                <span class="text-xs text-gray-400 font-medium">자막</span>
+                <label class="relative inline-flex items-center cursor-pointer">
+                  <input id="cs-subtitle-enabled" type="checkbox" class="sr-only peer" onchange="toggleSubtitleSection()">
+                  <div class="w-7 h-3.5 bg-gray-700 peer-checked:bg-orange-500 rounded-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-2.5 after:w-2.5 after:transition-all peer-checked:after:translate-x-3.5"></div>
+                </label>
+              </div>
+              <div id="cs-subtitle-section" class="hidden space-y-1.5">
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500 w-20 shrink-0">폰트</span>
+                  <select id="cs-subtitle-font" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs" onchange="updateSlidePreview()">
+                    <option value="Noto Sans KR">Noto Sans KR</option>
+                    <option value="Malgun Gothic">맑은 고딕</option>
+                    <option value="Gothic A1">Gothic A1</option>
+                    <option value="Black Han Sans">Black Han Sans</option>
+                    <option value="Do Hyeon">Do Hyeon</option>
+                    <option value="Jua">Jua</option>
+                  </select>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500 w-20 shrink-0">위치</span>
+                  <select id="cs-subtitle-alignment" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs" onchange="updateSlidePreview()">
+                    <option value="2">하단</option>
+                    <option value="8">상단</option>
+                    <option value="5">중앙</option>
+                  </select>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500 w-20 shrink-0">크기</span>
+                  <input type="range" id="cs-subtitle-size" min="12" max="40" value="20" step="1"
+                         class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-subtitle-size-label').textContent=this.value+'px';updateSlidePreview()">
+                  <span id="cs-subtitle-size-label" class="text-xs text-gray-400 w-8 text-right">20px</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500 w-20 shrink-0">테두리</span>
+                  <input type="range" id="cs-subtitle-outline" min="0" max="6" value="3" step="1"
+                         class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-subtitle-outline-label').textContent=this.value;updateSlidePreview()">
+                  <span id="cs-subtitle-outline-label" class="text-xs text-gray-400 w-5 text-right">3</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500 w-20 shrink-0">여백</span>
+                  <input type="range" id="cs-subtitle-margin" min="20" max="300" value="120" step="10"
+                         class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-subtitle-margin-label').textContent=this.value+'px';updateSlidePreview()">
+                  <span id="cs-subtitle-margin-label" class="text-xs text-gray-400 w-8 text-right">120px</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── 우: 미리보기 ── -->
+          <div class="shrink-0" id="cs-slide-preview-wrap">
+            <div id="cs-slide-preview" style="aspect-ratio:9/16;height:calc(80vh - 310px);position:relative;overflow:hidden;border-radius:8px;background:#0b0e1a;font-family:'Noto Sans KR',sans-serif;color:#fff;">
+              <div id="cs-pv-top" style="position:absolute;top:0;left:0;right:0;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:8px 12px;overflow:hidden;"></div>
+              <div id="cs-pv-mid" style="position:absolute;left:0;right:0;overflow:hidden;background:linear-gradient(135deg,#1a3a5c 0%,#2a5a3c 50%,#3a2a5c 100%);display:flex;align-items:center;justify-content:center;">
+                <span style="font-size:11px;color:rgba(255,255,255,0.3);">IMAGE ZONE</span>
+              </div>
+              <div id="cs-pv-bot" style="position:absolute;bottom:0;left:0;right:0;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:8px 12px;overflow:hidden;"></div>
+              <div id="cs-pv-subtitle" style="position:absolute;left:0;right:0;text-align:center;pointer-events:none;z-index:10;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 탭: 인트로/아웃트로 -->
+      <div id="cs-tab-intro_outro" class="cs-tab-content hidden space-y-4">
         <div class="border border-gray-700 rounded-lg p-3 space-y-3">
           <h4 class="text-sm text-gray-300 font-medium">채널 고정 배경 이미지</h4>
           <p class="text-xs text-gray-500">인트로/아웃트로 고정 이미지를 설정하면 매 영상 앞뒤에 별도 세그먼트로 추가됩니다. <span class="text-gray-400">권장: 1080×1920px (9:16)</span></p>
@@ -407,6 +459,17 @@
           </div>
         </div>
         <div>
+          <label class="block text-xs text-gray-500 mb-1">나레이션 시작 딜레이 <span id="cs-narration-delay-label">2</span>초</label>
+          <input id="cs-narration-delay" type="range" min="0" max="5" value="2" step="0.5"
+                 oninput="document.getElementById('cs-narration-delay-label').textContent=this.value"
+                 class="w-full accent-orange-500">
+          <p class="text-[10px] text-gray-600 mt-0.5">영상 시작 후 나레이션이 시작되기까지 무음 구간 (인트로 효과음용)</p>
+        </div>
+      </div>
+
+      <!-- 탭: 이미지 -->
+      <div id="cs-tab-image" class="cs-tab-content hidden space-y-4">
+        <div>
           <label class="block text-sm text-gray-400 mb-1">배경 미디어 타입</label>
           <select id="cs-bg-media-type"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
@@ -421,17 +484,6 @@
             <span class="text-sm text-gray-400">첫 슬라이드 배경 1장 고정</span>
           </label>
           <p class="text-xs text-gray-500 mt-1">인트로/오프닝 슬라이드는 배경 미디어 타입과 무관하게 항상 1장</p>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">이미지 스타일</label>
-          <select id="cs-image-style"
-                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-            <option value="photo">포토 — 실사 사진 스타일 (건물, 장소, 사물)</option>
-            <option value="infographic">인포그래픽 — 일러스트/차트/다이어그램 스타일</option>
-            <option value="anime">애니메 — 애니메이션/디지털 일러스트 스타일</option>
-            <option value="mixed">혼합 — bg_type에 따라 자동 (photo→실사, graph→인포그래픽)</option>
-          </select>
-          <p class="text-xs text-gray-500 mt-1">포토: 뉴스 현장감, 인포그래픽: 데이터/비교 중심, 혼합: 슬라이드별 자동 판단</p>
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">이미지/영상 프롬프트 지침</label>
@@ -465,10 +517,22 @@
         </div>
       </div>
 
-      <!-- 탭: 오디오 -->
-      <div id="cs-tab-audio" class="cs-tab-content hidden space-y-4">
+      <!-- 탭: TTS -->
+      <div id="cs-tab-tts" class="cs-tab-content hidden space-y-4">
+        <!-- TTS 사용 여부 -->
+        <div class="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
+          <div>
+            <h4 class="text-sm text-gray-300 font-medium">TTS 나레이션</h4>
+            <p class="text-xs text-gray-500">비활성화 시 나레이션 없이 영상 제작</p>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="cs-tts-enabled" class="sr-only peer" checked
+                   onchange="document.getElementById('cs-tts-settings').classList.toggle('hidden', !this.checked)">
+            <div class="w-9 h-5 bg-gray-600 peer-checked:bg-orange-500 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+          </label>
+        </div>
         <!-- TTS 음성 설정 -->
-        <div class="space-y-3">
+        <div id="cs-tts-settings" class="space-y-3">
           <h4 class="text-sm text-gray-300 font-medium">TTS 음성 설정</h4>
           <p class="text-xs text-gray-500">영상 제작 시 사용할 TTS 엔진과 음성을 선택합니다</p>
           <div>
@@ -564,21 +628,48 @@
             </div>
             <audio id="cs-sovits-preview" class="w-full mt-2 hidden h-8" controls></audio>
           </div>
+          <!-- RVC 음성 변환 -->
+          <div class="border-t border-gray-700 pt-3 mt-3">
+            <div class="flex items-center justify-between mb-2">
+              <h4 class="text-sm text-gray-300 font-medium">RVC 음성 변환</h4>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input id="cs-rvc-enabled" type="checkbox" class="sr-only peer" onchange="toggleRvcSection()">
+                <div class="w-9 h-5 bg-gray-700 peer-checked:bg-orange-500 rounded-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+              </label>
+            </div>
+            <p class="text-xs text-gray-500 mb-2">Edge TTS 음성을 RVC 모델로 음색 변환합니다</p>
+            <div id="cs-rvc-section" class="hidden space-y-2">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">RVC 모델</label>
+                <select id="cs-rvc-model" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
+                  <option value="">-- 선택하세요 --</option>
+                </select>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 w-16">피치</span>
+                <input type="range" id="cs-rvc-pitch" min="-12" max="12" value="0" step="1"
+                       class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-rvc-pitch-label').textContent = this.value">
+                <span id="cs-rvc-pitch-label" class="text-xs text-gray-400 w-8 text-right">0</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-500 w-16">음색 유사도</span>
+                <input type="range" id="cs-rvc-index" min="0" max="1" value="0.5" step="0.05"
+                       class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-rvc-index-label').textContent = this.value">
+                <span id="cs-rvc-index-label" class="text-xs text-gray-400 w-8 text-right">0.5</span>
+              </div>
+              <button onclick="previewRvcVoice()" id="btn-cs-preview-rvc"
+                      class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-medium transition">RVC 미리듣기</button>
+              <audio id="cs-rvc-preview" class="w-full mt-1 hidden h-8" controls></audio>
+            </div>
+          </div>
         </div>
+      </div>
 
-        <!-- 구분선 -->
-        <div class="border-t border-gray-700"></div>
-
+      <!-- 탭: BGM/SFX -->
+      <div id="cs-tab-audio_fx" class="cs-tab-content hidden space-y-4">
         <!-- 배경 음악 (BGM) -->
         <div class="space-y-3">
           <h4 class="text-sm text-gray-300 font-medium">배경 음악 (BGM)</h4>
-          <div>
-            <label class="block text-xs text-gray-500 mb-1">나레이션 시작 딜레이 <span id="cs-narration-delay-label">2</span>초</label>
-            <input id="cs-narration-delay" type="range" min="0" max="5" value="2" step="0.5"
-                   oninput="document.getElementById('cs-narration-delay-label').textContent=this.value"
-                   class="w-full accent-orange-500">
-            <p class="text-[10px] text-gray-600 mt-0.5">영상 시작 후 나레이션이 시작되기까지 무음 구간 (인트로 효과음용)</p>
-          </div>
           <div class="flex items-center justify-between">
             <label class="text-xs text-gray-400">BGM 사용</label>
             <label class="relative inline-flex items-center cursor-pointer">
@@ -689,8 +780,8 @@
 
       </div>
 
-      <!-- 탭: 키 -->
-      <div id="cs-tab-keys" class="cs-tab-content hidden space-y-4">
+      <!-- 탭: YouTube -->
+      <div id="cs-tab-youtube" class="cs-tab-content hidden space-y-4">
         <!-- Gemini API Key -->
         <div class="space-y-3">
           <h4 class="text-sm text-gray-300 font-medium">Gemini API Key</h4>
@@ -752,6 +843,36 @@
         </div>
       </div>
 
+      <!-- 탭: 시장 데이터 -->
+      <div id="cs-tab-market_data" class="cs-tab-content hidden space-y-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-2">시장 데이터 소스</label>
+          <p class="text-xs text-gray-500 mb-2">체크한 데이터를 크롤링하여 대본 생성 시 AI에게 전달합니다</p>
+          <div class="space-y-2">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="global_stocks">
+              <span class="text-sm text-gray-300">해외 지수 (다우/S&P/나스닥)</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="kr_stocks">
+              <span class="text-sm text-gray-300">국내 지수 (코스피/코스닥)</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="investor_trends">
+              <span class="text-sm text-gray-300">투자자별 매매동향</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="crypto">
+              <span class="text-sm text-gray-300">암호화폐 (BTC)</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" class="cs-market-source rounded bg-gray-800 border-gray-600" value="fear_greed">
+              <span class="text-sm text-gray-300">공포탐욕지수</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
       <!-- 탭: 스케줄 -->
       <div id="cs-tab-schedule" class="cs-tab-content hidden space-y-4">
         <div class="space-y-3">
@@ -803,7 +924,7 @@
         </div>
         <div class="flex gap-3">
           <button onclick="closeModal('channel-settings-modal')" class="px-4 py-2 text-sm text-gray-400 hover:text-white transition">취소</button>
-          <button onclick="saveChannelSettings()" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">저장</button>
+          <button id="btn-save-channel" onclick="saveChannelSettings()" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 rounded-lg text-sm font-medium transition">저장</button>
         </div>
       </div>
     </div>
@@ -848,6 +969,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260319a"></script>
+  <script src="/static/app.js?v=20260322f"></script>
 </body>
 </html>

@@ -238,7 +238,8 @@ def _format_rate(rate_value) -> str:
 
 def generate_audio(sentences: list[dict], audio_dir: str,
                    voice: str = "", rate=None,
-                   sovits_cfg: dict = None) -> list[str]:
+                   sovits_cfg: dict = None,
+                   rvc_cfg: dict = None) -> list[str]:
     """문장 리스트로부터 오디오 파일 생성.
 
     Args:
@@ -247,6 +248,8 @@ def generate_audio(sentences: list[dict], audio_dir: str,
         voice: TTS 음성 이름 (Edge TTS / Google Cloud TTS voice name)
         rate: 속도 조절 (-50 ~ 200, 정수). None이면 기본 속도.
         sovits_cfg: GPT-SoVITS 설정 dict (있으면 GPT-SoVITS 사용)
+        rvc_cfg: RVC 음성 변환 설정 dict (있으면 TTS 후 RVC 적용)
+            {"model": "chisaka_airi", "pitch": 0, "index_influence": 0.5}
 
     Returns:
         생성된 오디오 파일 경로 리스트
@@ -261,19 +264,169 @@ def generate_audio(sentences: list[dict], audio_dir: str,
     if sovits_cfg and sovits_cfg.get("ref_audio"):
         if not check_sovits_available(sovits_cfg.get("host", SOVITS_DEFAULT_HOST),
                                        sovits_cfg.get("port", SOVITS_DEFAULT_PORT)):
-            print("[tts] ⚠️ GPT-SoVITS 서버 미응답 — Edge-TTS로 폴백합니다")
+            print("[tts] GPT-SoVITS 서버 미응답 — Edge-TTS로 폴백합니다")
         else:
             return _generate_sovits(sentences, audio_dir, sovits_cfg)
 
     rate_str = _format_rate(rate) if rate is not None else "+0%"
 
     if voice and voice in GOOGLE_CLOUD_VOICES:
-        return _generate_google_cloud(sentences, audio_dir, voice, rate=rate_str)
+        paths = _generate_google_cloud(sentences, audio_dir, voice, rate=rate_str)
     elif voice and voice in EDGE_VOICES:
-        return _generate_edge(sentences, audio_dir, voice, rate=rate_str)
+        paths = _generate_edge(sentences, audio_dir, voice, rate=rate_str)
     else:
-        # 기본값: Edge TTS
-        return _generate_edge(sentences, audio_dir, DEFAULT_VOICE, rate=rate_str)
+        paths = _generate_edge(sentences, audio_dir, DEFAULT_VOICE, rate=rate_str)
+
+    # RVC 음성 변환 후처리
+    if rvc_cfg and rvc_cfg.get("model"):
+        paths = _apply_rvc_batch(paths, rvc_cfg)
+
+    return paths
+
+
+# ─── RVC 음성 변환 ───
+
+_rvc_instance = None
+
+def _get_rvc_loader():
+    """RVC BaseLoader 싱글턴 (fairseq 몽키패치 포함)."""
+    global _rvc_instance
+    if _rvc_instance is not None:
+        return _rvc_instance
+
+    import sys
+    import types
+    os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
+
+    import torch
+    from transformers import HubertModel
+
+    class _HubertWrapper(torch.nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+            self.final_proj = torch.nn.Linear(768, 256)
+        def extract_features(self, source=None, padding_mask=None, output_layer=None, **kwargs):
+            if source.dim() == 1:
+                source = source.unsqueeze(0)
+            outputs = self.model(source, output_hidden_states=True)
+            feats = outputs.hidden_states[output_layer] if output_layer and outputs.hidden_states else outputs.last_hidden_state
+            return (feats,)
+
+    hubert_cache = os.path.join(config.root_dir(), "data", "rvc_models", "hubert")
+
+    class _FakeCU:
+        @staticmethod
+        def load_model_ensemble_and_task(paths, **kwargs):
+            m = HubertModel.from_pretrained('lengyue233/content-vec-best', cache_dir=hubert_cache)
+            m.eval()
+            return [_HubertWrapper(m)], None, None
+
+    # fairseq 몽키패치
+    if 'fairseq' not in sys.modules:
+        fm = types.ModuleType('fairseq')
+        fm.checkpoint_utils = _FakeCU()
+        sys.modules['fairseq'] = fm
+        sys.modules['fairseq.checkpoint_utils'] = _FakeCU()
+
+    from infer_rvc_python import BaseLoader
+
+    rvc_base = os.path.join(config.root_dir(), "data", "rvc_models")
+    hubert_path = os.path.join(rvc_base, "hubert", "hubert_base.pt")
+    rmvpe_path = os.path.join(rvc_base, "rmvpe.pt")
+
+    _rvc_instance = BaseLoader(only_cpu=False, hubert_path=hubert_path, rmvpe_path=rmvpe_path)
+    print("[rvc] RVC 엔진 초기화 완료")
+    return _rvc_instance
+
+
+def _resolve_rvc_model(model_name: str) -> tuple[str, str]:
+    """모델 이름 → (pth_path, index_path) 반환."""
+    rvc_base = os.path.join(config.root_dir(), "data", "rvc_models")
+    model_dir = os.path.join(rvc_base, model_name)
+    if not os.path.isdir(model_dir):
+        raise FileNotFoundError(f"RVC 모델 폴더 없음: {model_dir}")
+
+    pth_path, index_path = "", ""
+    for root, _, files in os.walk(model_dir):
+        for f in files:
+            if f.endswith(".pth") and not pth_path:
+                pth_path = os.path.join(root, f)
+            if f.endswith(".index") and not index_path:
+                index_path = os.path.join(root, f)
+    if not pth_path:
+        raise FileNotFoundError(f"RVC .pth 파일 없음: {model_dir}")
+    return pth_path, index_path
+
+
+def _apply_rvc_batch(audio_paths: list[str], rvc_cfg: dict) -> list[str]:
+    """TTS 생성 파일들에 RVC 음성 변환 일괄 적용."""
+    import soundfile as sf
+
+    model_name = rvc_cfg["model"]
+    pitch = int(rvc_cfg.get("pitch", 0))
+    index_influence = float(rvc_cfg.get("index_influence", 0.5))
+
+    try:
+        pth_path, index_path = _resolve_rvc_model(model_name)
+    except FileNotFoundError as e:
+        print(f"[rvc] {e} — RVC 스킵")
+        return audio_paths
+
+    rvc = _get_rvc_loader()
+    tag = f"rvc_{model_name}"
+    rvc.apply_conf(
+        tag=tag,
+        file_model=pth_path,
+        pitch_algo="rmvpe",
+        pitch_lvl=pitch,
+        file_index=index_path,
+        index_influence=index_influence,
+        respiration_median_filtering=int(rvc_cfg.get("respiration_filter", 3)),
+        envelope_ratio=float(rvc_cfg.get("envelope_ratio", 0.25)),
+        consonant_breath_protection=float(rvc_cfg.get("consonant_protection", 0.33)),
+    )
+
+    converted = []
+    for i, path in enumerate(audio_paths):
+        try:
+            result = rvc.generate_from_cache(audio_data=path, tag=tag)
+            # RVC 출력은 40000Hz — MP3는 이 샘플레이트 미지원
+            # WAV로 임시 저장 → ffmpeg로 원본 포맷+44100Hz 변환
+            tmp_wav = path + ".rvc_tmp.wav"
+            sf.write(tmp_wav, result[0], result[1])
+            ext = os.path.splitext(path)[1].lower()
+            codec = "libmp3lame" if ext == ".mp3" else "pcm_s16le"
+            subprocess.run([
+                config.ffmpeg(), "-y", "-i", tmp_wav,
+                "-ar", "44100", "-ac", "1",
+                "-c:a", codec, "-q:a", "2",
+                path
+            ], capture_output=True)
+            os.remove(tmp_wav)
+            converted.append(path)
+        except Exception as e:
+            print(f"[rvc] 변환 실패 ({os.path.basename(path)}): {e}")
+            converted.append(path)  # 원본 유지
+
+    print(f"[rvc] {len(converted)}개 파일 변환 완료 (model={model_name}, pitch={pitch})")
+    return converted
+
+
+def list_rvc_models() -> list[dict]:
+    """사용 가능한 RVC 모델 목록 반환."""
+    rvc_base = os.path.join(config.root_dir(), "data", "rvc_models")
+    if not os.path.isdir(rvc_base):
+        return []
+    models = []
+    for name in sorted(os.listdir(rvc_base)):
+        model_dir = os.path.join(rvc_base, name)
+        if not os.path.isdir(model_dir) or name in ("hubert",):
+            continue
+        has_pth = any(f.endswith(".pth") for _, _, files in os.walk(model_dir) for f in files)
+        if has_pth:
+            models.append({"id": name, "label": name})
+    return models
 
 
 def get_audio_duration(filepath: str) -> float:

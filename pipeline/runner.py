@@ -33,6 +33,8 @@ from pipeline.sync_engine import build_timeline, merge_slide_audio
 from pipeline.video_renderer import (
     render_segments, concat_segments, render_static_silent,
     render_static_with_audio, apply_audio_mix,
+    generate_srt, apply_subtitles, burn_subtitles_per_segment,
+    apply_caption_to_segment,
 )
 from pipeline.metadata import generate_metadata
 from pipeline.youtube_uploader import upload_video
@@ -41,6 +43,47 @@ from pipeline.sd_generator import agent_generate_image, generate_video as sd_gen
 from pipeline.gemini_generator import generate_image as gemini_generate_image
 from pipeline.gemini_generator import image_to_video as gemini_image_to_video
 # from pipeline.qa_agent import run_qa  # QA 비활성화
+
+
+_ASS_PLAY_RES_Y = 288  # ffmpeg SRT→ASS 변환 시 기본 PlayResY
+
+
+def _build_subtitle_cfg(ch_cfg: dict, compose_data: dict | None = None) -> dict:
+    """채널 config + compose_data subtitle_overrides 병합. compose_data 우선.
+    zone 레이아웃일 때 margin_v를 zone 경계 기준으로 보정.
+    모든 margin 계산은 ASS PlayRes 좌표계(288) 기준."""
+    ovr = (compose_data or {}).get("subtitle_overrides", {})
+    alignment = ovr.get("subtitle_alignment", ch_cfg.get("subtitle_alignment", 2))
+    user_margin = ovr.get("subtitle_margin_v", ch_cfg.get("subtitle_margin_v", 120))
+    layout = ch_cfg.get("slide_layout", "full")
+    zone_str = ch_cfg.get("slide_zone_ratio", "3:4:3")
+    final_margin = user_margin
+
+    # center/top 레이아웃에서 하단 자막: 이미지 zone 바로 아래에서 시작
+    # ASS PlayRes 좌표계(288)로 계산해야 화면 밖으로 밀리지 않음
+    if layout in ("center", "top") and alignment == 2:
+        parts = [float(x) for x in zone_str.split(":") if x]
+        if len(parts) == 3:
+            total = sum(parts) or 1
+            bot_zone_pr = int(_ASS_PLAY_RES_Y * parts[2] / total)
+            if bot_zone_pr > 0:
+                final_margin = max(0, bot_zone_pr - user_margin)
+
+    return {
+        "font_size": ovr.get("subtitle_font_size", ch_cfg.get("subtitle_font_size", 20)),
+        "margin_v": final_margin,
+        "font_name": ovr.get("subtitle_font", ch_cfg.get("subtitle_font", "Noto Sans KR")),
+        "outline": ovr.get("subtitle_outline", ch_cfg.get("subtitle_outline", 3)),
+        "alignment": alignment,
+    }
+
+
+def _is_subtitle_enabled(ch_cfg: dict, compose_data: dict | None = None) -> bool:
+    """compose_data 오버라이드 우선, 없으면 채널 config."""
+    ovr = (compose_data or {}).get("subtitle_overrides", {})
+    if "subtitle_enabled" in ovr:
+        return bool(ovr["subtitle_enabled"])
+    return bool(ch_cfg.get("subtitle_enabled"))
 
 
 def _gc_voices():
@@ -239,8 +282,39 @@ def _get_job_dirs(job_id: str) -> dict:
     return dirs
 
 
-def _find_existing_audio(audio_dir: str, expected_count: int):
-    """이미 생성된 오디오 파일이 모두 있으면 경로 리스트 반환, 없으면 None"""
+def _sentences_hash(sentences: list[dict]) -> str:
+    """문장 텍스트 리스트의 해시값 (대본 변경 감지용)."""
+    import hashlib
+    text = "|".join(s.get("text", "") for s in sentences)
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def _find_existing_audio(audio_dir: str, expected_count: int,
+                         sentences: list[dict] | None = None):
+    """이미 생성된 오디오 파일이 모두 있으면 경로 리스트 반환, 없으면 None.
+
+    sentences가 주어지면 대본 텍스트 해시를 비교하여
+    대본이 변경되었을 때 캐시를 무효화한다.
+
+    Composer 나레이션 파일 배치 모드:
+    슬라이드당 1개 파일만 존재 (첫 문장 인덱스).
+    이 경우 슬라이드별 첫 문장에 오디오가 있으면 유효.
+    """
+    # 대본 변경 감지
+    if sentences is not None:
+        hash_file = os.path.join(audio_dir, ".script_hash")
+        current_hash = _sentences_hash(sentences)
+        if os.path.exists(hash_file):
+            try:
+                with open(hash_file, "r", encoding="utf-8") as f:
+                    saved_hash = f.read().strip()
+                if saved_hash != current_hash:
+                    print(f"[runner] 대본 변경 감지 (hash mismatch) - 오디오 캐시 무효화")
+                    return None
+            except Exception:
+                return None
+
+    # 모든 문장에 대해 audio 파일 확인
     paths = []
     for i in range(1, expected_count + 1):
         mp3 = os.path.join(audio_dir, f"audio_{i}.mp3")
@@ -250,8 +324,33 @@ def _find_existing_audio(audio_dir: str, expected_count: int):
         elif os.path.exists(wav):
             paths.append(wav)
         else:
-            return None
-    return paths
+            paths.append(None)
+
+    # 방법1: 모든 파일 존재 (TTS 생성 방식)
+    if all(p is not None for p in paths):
+        return paths
+
+    # 방법2: 슬라이드별 첫 문장에만 존재 (나레이션 파일 배치 방식)
+    if sentences:
+        slide_first_idx: dict[int, int] = {}
+        for i, s in enumerate(sentences):
+            sn = s.get("slide", 1)
+            if sn not in slide_first_idx:
+                slide_first_idx[sn] = i
+        needed = set(slide_first_idx.values())
+        if all(paths[i] is not None for i in needed if i < len(paths)):
+            result = [p for p in paths if p is not None]
+            if result:
+                return result
+
+    return None
+
+
+def _save_script_hash(audio_dir: str, sentences: list[dict]):
+    """TTS 생성 후 대본 해시를 저장."""
+    hash_file = os.path.join(audio_dir, ".script_hash")
+    with open(hash_file, "w", encoding="utf-8") as f:
+        f.write(_sentences_hash(sentences))
 
 
 def _build_sovits_cfg(ch_config: dict, channel_id: str) -> dict:
@@ -369,6 +468,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                     roundup_rules=roundup_rules,
                     skip_web_search=_skip_web,
                     gemini_api_key=_gemini_key,
+                    zone_ratio=ch_config.get("slide_zone_ratio", "3:4:3"),
                 )
             except Exception as e:
                 print(f"{_pa_tag} [2/4] 대본 생성 실패 ({time.time()-_t_script:.1f}초): {e}")
@@ -822,10 +922,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 try:
                                     if idx > 0:
                                         time.sleep(5)
-                                    if bg_type == "overview" or bg_display_mode == "fullscreen":
-                                        _ar = "9:16"
-                                    else:
-                                        _ar = "1:1" if slide_layout_b in ("center", "top", "bottom") else "9:16"
+                                    _zone_ratio_b = ch_config_b.get("slide_zone_ratio", "3:4:3")
+                                    _ar = _calc_image_aspect_ratio(slide_layout_b, bg_display_mode, _zone_ratio_b)
                                     _char_ref_path = _find_channel_image(channel_id, "character_ref")
                                     gemini_generate_image(en_prompt, out, gemini_key,
                                                           aspect_ratio=_ar,
@@ -834,8 +932,13 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 except Exception as e:
                                     print(f"[runner] bg_{idx+1} Gemini 이미지 생성 실패: {e}")
 
-                            # ── Step 2: video 추천 이미지 → Veo 3.1 Fast 영상화 ──
+                            # ── Step 2: video 추천 이미지 → 영상화 ──
+                            _auto_video_src = ch_config_b.get("auto_video_source", "gemini")
+                            if _auto_video_src == "none":
+                                print("[runner] 영상 소스: 사용 안 함 — video 씬 스킵")
                             for idx, prompt in enumerate(image_prompts):
+                                if _auto_video_src == "none":
+                                    break
                                 media_rec = prompt.get("media", "image") if isinstance(prompt, dict) else "image"
                                 if media_rec != "video":
                                     continue
@@ -913,6 +1016,35 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
             except Exception:
                 pass
 
+            # Composer 스타일 오버라이드 → 채널 config에 병합
+            _style_ovr = _cd.get("style_overrides", {})
+            if _style_ovr:
+                for _sk, _sv in _style_ovr.items():
+                    ch_config_pb[_sk] = _sv
+
+            # Composer BGM 오버라이드
+            _cd_bgm = _cd.get("bgm")
+            if _cd_bgm and _cd_bgm.get("path"):
+                ch_config_pb["bgm_enabled"] = True
+                ch_config_pb["bgm_file"] = _cd_bgm["path"]
+                if _cd_bgm.get("volume") is not None:
+                    ch_config_pb["bgm_volume"] = _cd_bgm["volume"]
+                if _cd_bgm.get("start_time") is not None:
+                    ch_config_pb["bgm_start"] = _cd_bgm["start_time"]
+                if _cd_bgm.get("end_time") is not None:
+                    ch_config_pb["bgm_end"] = _cd_bgm["end_time"]
+                if _cd_bgm.get("fade_in") is not None:
+                    ch_config_pb["bgm_fade_in"] = _cd_bgm["fade_in"]
+                if _cd_bgm.get("fade_out") is not None:
+                    ch_config_pb["bgm_fade_out"] = _cd_bgm["fade_out"]
+
+            # Composer SFX 오버라이드
+            _cd_sfx = _cd.get("sfx_markers")
+            if _cd_sfx and len(_cd_sfx) > 0:
+                ch_config_pb["sfx_enabled"] = True
+
+            _no_effects = _cd.get("no_effects", False)
+
             _ch_format_b = ch_config_pb.get("format", "single")
             _show_badge_b = ch_config_pb.get("show_badge", True)
             if isinstance(_show_badge_b, str):
@@ -932,7 +1064,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                           main_text_size=ch_config_pb.get("slide_main_text_size", 0),
                                           badge_size=ch_config_pb.get("slide_badge_size", 0),
                                           show_badge=_show_badge_b,
-                                          channel_format=_ch_format_b)
+                                          channel_format=_ch_format_b,
+                                          main_zone=ch_config_pb.get("slide_main_zone", "top"),
+                                          sub_zone=ch_config_pb.get("slide_sub_zone", "bottom"))
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,
@@ -1003,7 +1137,23 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 segments = render_segments(slide_durations, dirs["image"],
                                            merged_audio, dirs["segment"],
                                            motion_hints=_motion_hints,
-                                           slide_bg_map=_slide_bg_map)
+                                           slide_bg_map=_slide_bg_map,
+                                           bg_display_mode=bg_display_mode,
+                                           slide_layout=slide_layout,
+                                           disable_motion=_no_effects)
+
+                # 배경 캡션 적용 (visual_plan에 caption 필드가 있는 세그먼트만)
+                _vp_data = script_json.get("visual_plan") or job_row.get("visual_plan")
+                if _vp_data:
+                    if isinstance(_vp_data, str):
+                        try: _vp_data = json.loads(_vp_data)
+                        except: _vp_data = []
+                    for seg_i, seg_path in enumerate(segments):
+                        if seg_i < len(_vp_data):
+                            _cap = _vp_data[seg_i].get("caption", "")
+                            if _cap:
+                                apply_caption_to_segment(seg_path, _cap)
+
                 final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
 
                 # 효과음 설정
@@ -1024,14 +1174,32 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                     if _tr.get("duration") is not None:
                         _ch_cfg_render["crossfade_duration"] = _tr["duration"]
 
+                # 자막 번인 — 세그먼트별 (concat 전, 나레이션 업로드 모드)
+                if _is_subtitle_enabled(_ch_cfg_render, _cd):
+                    _narr_durations = []
+                    _slide_sent_counts: dict[int, int] = {}
+                    for _s in sentences:
+                        _sn = _s.get("slide", 1)
+                        _slide_sent_counts[_sn] = _slide_sent_counts.get(_sn, 0) + 1
+                    for _s in sentences:
+                        _sn = _s.get("slide", 1)
+                        _cnt = _slide_sent_counts.get(_sn, 1)
+                        _narr_durations.append(slide_durations.get(_sn, 3.0) / _cnt)
+                    _tl_narr = {"durations": _narr_durations, "slide_durations": slide_durations}
+                    burn_subtitles_per_segment(
+                        segments, sentences, _tl_narr,
+                        subtitle_cfg=_build_subtitle_cfg(_ch_cfg_render, _cd))
+
                 # SFX/BGM 없이 concat
                 concat_cfg = dict(_ch_cfg_render)
                 concat_cfg["sfx_enabled"] = False
                 concat_cfg["bgm_enabled"] = False
+                if _no_effects or _ch_cfg_render.get("crossfade_enabled") is False:
+                    concat_cfg["crossfade_duration"] = 0
                 concat_segments(segments, final_path,
                                 sfx_cfg=concat_cfg,
                                 slide_durations=slide_durations,
-                                per_slide_transitions=_per_slide_tr)
+                                per_slide_transitions=None if _no_effects else _per_slide_tr)
 
                 # 인트로/아웃트로
                 intro_offset, wrap_dur = _wrap_with_intro_outro(
@@ -1039,7 +1207,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 total_duration += wrap_dur
 
                 # SFX/BGM 믹싱
-                if sfx_cfg:
+                if sfx_cfg and not _no_effects:
                     actual_xfade = _ch_cfg_render.get("crossfade_duration", 0.5) or 0.5
                     apply_audio_mix(final_path, sfx_cfg, slide_durations,
                                     xfade_dur=actual_xfade, audio_offset=intro_offset)
@@ -1068,84 +1236,174 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 raise
         else:
             # --- TTS 모드 ---
-            # 이미 오디오 파일이 모두 있으면 스킵 (단, 엔진/음성 변경 시 재생성)
-            force_tts = bool(tts_engine_override or tts_voice_override or sovits_cfg_override)
-            existing_audio = _find_existing_audio(dirs["audio"], len(sentences))
-            if existing_audio and not force_tts:
-                _update_step(db, job_id, "tts", "completed",
-                             output_data={"files": existing_audio,
-                                          "count": len(existing_audio),
-                                          "engine": "cached"})
+            # TTS 사용 여부 확인 (채널 config)
+            _tts_enabled = ch_config_pb.get("tts_enabled", True)
+            _narr_slide_audio = None  # Composer 나레이션 파일 {slide_num: audio_path}
+            if _tts_enabled is False:
+                _update_step(db, job_id, "tts", "skipped",
+                             output_data={"message": "TTS 비활성화 (무음 영상)"})
             else:
-                # 엔진/음성 변경 시 기존 오디오 삭제
-                if force_tts:
+                # Composer 나레이션 파일 배치 확인
+                _has_narr_files = os.path.isdir(os.path.join(dirs["job"], "narration_files")) and \
+                    len(os.listdir(os.path.join(dirs["job"], "narration_files"))) > 0
+
+                if _has_narr_files and not bool(tts_engine_override or tts_voice_override or sovits_cfg_override):
+                    # Composer에서 나레이션 파일 배치 → 슬라이드별 첫 문장 오디오 확인
+                    _nsa = {}
+                    for _si, _sen in enumerate(sentences):
+                        _sn = _sen.get("slide", 1)
+                        if _sn not in _nsa:
+                            for _ext in ("mp3", "wav", "m4a"):
+                                _p = os.path.join(dirs["audio"], f"audio_{_si+1}.{_ext}")
+                                if os.path.exists(_p):
+                                    _nsa[_sn] = _p
+                                    break
+                    _needed = set(_sen.get("slide", 1) for _sen in sentences)
+                    if _nsa and len(_nsa) >= len(_needed):
+                        _narr_slide_audio = _nsa
+                        print(f"[runner] Composer 나레이션 파일 사용: {len(_nsa)}개 슬라이드")
+                        _update_step(db, job_id, "tts", "completed",
+                                     output_data={"count": len(_nsa),
+                                                  "engine": "narration"})
+
+                if _narr_slide_audio is None:
+                    # 이미 오디오 파일이 모두 있으면 스킵 (단, 엔진/음성 변경 시 재생성)
+                    force_tts = bool(tts_engine_override or tts_voice_override or sovits_cfg_override) \
+                        if not _has_narr_files else False
+                    existing_audio = _find_existing_audio(dirs["audio"], len(sentences),
+                                                            sentences=sentences)
+                if _narr_slide_audio is not None:
+                    pass  # TTS 스킵 — 나레이션 파일 사용
+                elif existing_audio and not force_tts:
+                    _update_step(db, job_id, "tts", "completed",
+                                 output_data={"files": existing_audio,
+                                              "count": len(existing_audio),
+                                              "engine": "cached"})
+                else:
+                    # 엔진/음성 변경 또는 대본 변경 시 기존 오디오 삭제
                     import glob as glob_mod
                     for f in glob_mod.glob(os.path.join(dirs["audio"], "audio_*")):
                         os.remove(f)
-                _update_step(db, job_id, "tts", "running")
-                try:
-                    ch_config = json.loads(channel.get("config", "{}")) if channel else {}
+                    _update_step(db, job_id, "tts", "running")
+                    try:
+                        ch_config = json.loads(channel.get("config", "{}")) if channel else {}
 
-                    # UI에서 선택한 엔진이 우선, 없으면 채널 설정
-                    tts_engine = tts_engine_override or ch_config.get("tts_engine", "edge-tts")
-                    if sovits_cfg_override:
-                        sovits_cfg = sovits_cfg_override
-                    elif tts_engine == "gpt-sovits":
-                        sovits_cfg = _build_sovits_cfg(ch_config, channel_id)
-                    else:
-                        sovits_cfg = None
+                        # UI에서 선택한 엔진이 우선, 없으면 채널 설정
+                        tts_engine = tts_engine_override or ch_config.get("tts_engine", "edge-tts")
+                        if sovits_cfg_override:
+                            sovits_cfg = sovits_cfg_override
+                        elif tts_engine == "gpt-sovits":
+                            sovits_cfg = _build_sovits_cfg(ch_config, channel_id)
+                        else:
+                            sovits_cfg = None
 
-                    if tts_engine == "google-cloud":
-                        tts_voice = tts_voice_override or ch_config.get("google_voice", "ko-KR-Wavenet-A")
-                        tts_rate = tts_rate_override if tts_rate_override is not None else ch_config.get("google_rate", None)
-                    else:
-                        tts_voice = tts_voice_override or ch_config.get("tts_voice", "")
-                        tts_rate = tts_rate_override if tts_rate_override is not None else ch_config.get("tts_rate", None)
-                    audio_paths = generate_audio(sentences, dirs["audio"],
-                                                 voice=tts_voice, rate=tts_rate,
-                                                 sovits_cfg=sovits_cfg)
-                    engine_label = "GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS")
-                    _update_step(db, job_id, "tts", "completed",
-                                 output_data={"files": audio_paths,
-                                              "count": len(audio_paths),
-                                              "engine": engine_label})
-                except Exception as e:
-                    _update_step(db, job_id, "tts", "failed", error_msg=str(e))
-                    # TTS 실패 시 waiting_slides로 되돌림 (재시도 가능)
-                    db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
-                               ["waiting_slides", _now(), job_id])
-                    return  # Phase B 중단, 화면은 이미지 대기 상태로 유지
+                        if tts_engine == "google-cloud":
+                            tts_voice = tts_voice_override or ch_config.get("google_voice", "ko-KR-Wavenet-A")
+                            tts_rate = tts_rate_override if tts_rate_override is not None else ch_config.get("google_rate", None)
+                        else:
+                            tts_voice = tts_voice_override or ch_config.get("tts_voice", "")
+                            tts_rate = tts_rate_override if tts_rate_override is not None else ch_config.get("tts_rate", None)
+                        # RVC 음성 변환 설정
+                        rvc_cfg = None
+                        if ch_config.get("rvc_enabled") and ch_config.get("rvc_model"):
+                            rvc_cfg = {
+                                "model": ch_config["rvc_model"],
+                                "pitch": ch_config.get("rvc_pitch", 0),
+                                "index_influence": ch_config.get("rvc_index_influence", 0.5),
+                            }
+
+                        audio_paths = generate_audio(sentences, dirs["audio"],
+                                                     voice=tts_voice, rate=tts_rate,
+                                                     sovits_cfg=sovits_cfg,
+                                                     rvc_cfg=rvc_cfg)
+                        engine_label = "GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS")
+                        if rvc_cfg:
+                            engine_label += f" + RVC({rvc_cfg['model']})"
+                        _save_script_hash(dirs["audio"], sentences)
+                        _update_step(db, job_id, "tts", "completed",
+                                     output_data={"files": audio_paths,
+                                                  "count": len(audio_paths),
+                                                  "engine": engine_label})
+                    except Exception as e:
+                        _update_step(db, job_id, "tts", "failed", error_msg=str(e))
+                        # TTS 실패 시 waiting_slides로 되돌림 (재시도 가능)
+                        db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
+                                   ["waiting_slides", _now(), job_id])
+                        return  # Phase B 중단, 화면은 이미지 대기 상태로 유지
 
             _update_step(db, job_id, "render", "running")
             try:
                 _ch_cfg_render = json.loads(channel.get("config", "{}")) if channel else {}
-                narration_delay = _ch_cfg_render.get("narration_delay") or 2
 
-                # 인트로가 있으면 첫 슬라이드 딜레이 축소 (인트로가 리드인 역할)
-                has_intro = bool(_find_channel_image(channel_id, "intro_bg"))
-                if has_intro:
-                    narration_delay = min(narration_delay, 1.0)
+                if _tts_enabled is False:
+                    # --- TTS 비활성화: 슬라이드별 고정 duration 무음 렌더 ---
+                    content_slides = [s for s in slides_data if s.get("bg_type") != "closing"]
+                    _default_dur = ch_config_pb.get("slide_duration", 5.0)
+                    slide_durations = {i + 1: _default_dur for i in range(len(content_slides))}
+                    if len(slides_data) > len(content_slides):
+                        slide_durations[len(content_slides) + 1] = 4.0
+                    total_duration = sum(slide_durations.values())
+                    timeline = {"slide_durations": slide_durations,
+                                "total_duration": total_duration,
+                                "durations": []}
+                    # 슬라이드별 무음 오디오 생성
+                    merged_audio = {}
+                    os.makedirs(dirs["segment"], exist_ok=True)
+                    for _s, _dur in slide_durations.items():
+                        _silent = os.path.join(dirs["segment"], f"silent_{_s}.wav")
+                        subprocess.run([
+                            config.ffmpeg(), "-y",
+                            "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono:d={_dur}",
+                            _silent
+                        ], capture_output=True)
+                        merged_audio[_s] = _silent
+                elif _narr_slide_audio:
+                    # --- Composer 나레이션 파일 모드: 슬라이드별 오디오 직접 사용 ---
+                    from pipeline.tts_generator import get_audio_duration
+                    merged_audio = {}
+                    slide_durations = {}
+                    for _sn, _apath in _narr_slide_audio.items():
+                        _dur = get_audio_duration(_apath)
+                        slide_durations[_sn] = _dur
+                        merged_audio[_sn] = _apath
+                    total_duration = sum(slide_durations.values())
+                    timeline = {"slide_durations": slide_durations,
+                                "total_duration": total_duration,
+                                "durations": []}
+                    print(f"[runner] Composer 나레이션 타임라인: {slide_durations}")
 
-                timeline = build_timeline(sentences, dirs["audio"])
+                    # 슬라이드간 나래이션 갭
+                    _xfade_dur = ch_config_pb.get("crossfade_duration", 0.5) or 0.5
+                    _pad_gap = max(0.3, _xfade_dur + 0.1)
+                    _pad_slide_audio(merged_audio, timeline, gap=_pad_gap)
+                else:
+                    narration_delay = _ch_cfg_render.get("narration_delay") or 2
 
-                # 아웃트로 있으면 마지막 슬라이드 클로징 나래이션 제거
-                has_outro = bool(_find_channel_image(channel_id, "outro_bg"))
-                if has_outro:
-                    _strip_closing_audio(sentences, timeline)
+                    # 인트로가 있으면 첫 슬라이드 딜레이 축소 (인트로가 리드인 역할)
+                    has_intro = bool(_find_channel_image(channel_id, "intro_bg"))
+                    if has_intro:
+                        narration_delay = min(narration_delay, 1.0)
 
-                merged_audio = merge_slide_audio(timeline["slide_audio_map"],
-                                                 dirs["segment"],
-                                                 narration_delay=narration_delay)
-                # 딜레이가 있으면 첫 슬라이드 duration에 반영
-                if narration_delay > 0:
-                    first_s = min(timeline["slide_durations"].keys())
-                    timeline["slide_durations"][first_s] += narration_delay
-                    timeline["total_duration"] += narration_delay
+                    timeline = build_timeline(sentences, dirs["audio"])
 
-                # 슬라이드간 나래이션 갭 (crossfade 겹침 방지용, 최소 crossfade 이상)
-                _xfade_dur = ch_config_pb.get("crossfade_duration", 0.5) or 0.5
-                _pad_gap = max(0.3, _xfade_dur + 0.1)
-                _pad_slide_audio(merged_audio, timeline, gap=_pad_gap)
+                    # 아웃트로 있으면 마지막 슬라이드 클로징 나래이션 제거
+                    has_outro = bool(_find_channel_image(channel_id, "outro_bg"))
+                    if has_outro:
+                        _strip_closing_audio(sentences, timeline)
+
+                    merged_audio = merge_slide_audio(timeline["slide_audio_map"],
+                                                     dirs["segment"],
+                                                     narration_delay=narration_delay)
+                    # 딜레이가 있으면 첫 슬라이드 duration에 반영
+                    if narration_delay > 0:
+                        first_s = min(timeline["slide_durations"].keys())
+                        timeline["slide_durations"][first_s] += narration_delay
+                        timeline["total_duration"] += narration_delay
+
+                    # 슬라이드간 나래이션 갭 (crossfade 겹침 방지용, 최소 crossfade 이상)
+                    _xfade_dur = ch_config_pb.get("crossfade_duration", 0.5) or 0.5
+                    _pad_gap = max(0.3, _xfade_dur + 0.1)
+                    _pad_slide_audio(merged_audio, timeline, gap=_pad_gap)
 
                 # motion 힌트 + 슬라이드→bg 매핑 추출 (meta_json → image_prompts)
                 _motion_hints = {}
@@ -1176,7 +1434,11 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 segments = render_segments(timeline["slide_durations"], dirs["image"],
                                            merged_audio, dirs["segment"],
                                            motion_hints=_motion_hints,
-                                           slide_bg_map=_slide_bg_map)
+                                           slide_bg_map=_slide_bg_map,
+                                           bg_display_mode=bg_display_mode,
+                                           slide_layout=slide_layout,
+                                           disable_motion=_no_effects)
+
                 final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
 
                 # 효과음 설정 로드
@@ -1197,14 +1459,22 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                     if _tr.get("duration") is not None:
                         _ch_cfg_render["crossfade_duration"] = _tr["duration"]
 
+                # 자막 번인 — 세그먼트별 (concat 전, 싱크 보장)
+                if _is_subtitle_enabled(_ch_cfg_render, _cd):
+                    burn_subtitles_per_segment(
+                        segments, sentences, timeline,
+                        subtitle_cfg=_build_subtitle_cfg(_ch_cfg_render, _cd))
+
                 # SFX/BGM은 인트로 wrap 후 별도 적용 (타이밍 오프셋 보정)
                 concat_cfg = dict(_ch_cfg_render)
                 concat_cfg["sfx_enabled"] = False
                 concat_cfg["bgm_enabled"] = False
+                if _no_effects or _ch_cfg_render.get("crossfade_enabled") is False:
+                    concat_cfg["crossfade_duration"] = 0
                 concat_segments(segments, final_path,
                                 sfx_cfg=concat_cfg,
                                 slide_durations=timeline["slide_durations"],
-                                per_slide_transitions=_per_slide_tr)
+                                per_slide_transitions=None if _no_effects else _per_slide_tr)
 
                 # 인트로/아웃트로 세그먼트 이어붙이기
                 intro_offset, wrap_dur = _wrap_with_intro_outro(
@@ -1212,7 +1482,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 timeline["total_duration"] += wrap_dur
 
                 # SFX/BGM 믹싱 (인트로 길이만큼 오프셋)
-                if sfx_cfg:
+                if sfx_cfg and not _no_effects:
                     actual_xfade = _ch_cfg_render.get("crossfade_duration", 0.5) or 0.5
                     apply_audio_mix(final_path, sfx_cfg, timeline["slide_durations"],
                                     xfade_dur=actual_xfade, audio_offset=intro_offset)
@@ -1711,9 +1981,20 @@ def _pad_slide_audio(merged_audio: dict, timeline: dict, gap: float = 0.3):
                 timeline["total_duration"] += gap
 
 
+def _calc_image_aspect_ratio(layout: str, display_mode: str,
+                             zone_ratio: str = "3:4:3") -> str:
+    """레이아웃과 표시 모드에 따라 이미지 생성 비율 결정.
+    agent_common._calc_zone_image_size()와 동일 로직."""
+    if display_mode != "zone" or layout == "full":
+        return "9:16"
+    from pipeline.agent_common import _calc_zone_image_size
+    _, _, ar = _calc_zone_image_size(layout, zone_ratio)
+    return ar
+
+
 def _find_channel_image(channel_id: str, prefix: str) -> str | None:
     """채널 디렉토리에서 이미지 파일 탐색 (intro_bg, outro_bg 등)."""
-    ch_dir = os.path.join("data", "channels", channel_id)
+    ch_dir = os.path.join(config.root_dir(), "data", "channels", channel_id)
     for ext in ("jpg", "jpeg", "png", "webp"):
         path = os.path.join(ch_dir, f"{prefix}.{ext}")
         if os.path.exists(path):
@@ -2051,10 +2332,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                         try:
                             if idx > 0:
                                 time.sleep(5)
-                            if bg_display_mode == "fullscreen":
-                                _ar = "9:16"
-                            else:
-                                _ar = "1:1" if slide_layout_s3 in ("center", "top", "bottom") else "9:16"
+                            _zone_ratio_s3 = ch_config_s3.get("slide_zone_ratio", "3:4:3")
+                            _ar = _calc_image_aspect_ratio(slide_layout_s3, bg_display_mode, _zone_ratio_s3)
                             _char_ref_path_s3 = _find_channel_image(channel_id, "character_ref")
                             gemini_generate_image(en_prompt, output_path, gemini_key,
                                                   aspect_ratio=_ar,
@@ -2236,16 +2515,31 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
 
             segments = render_segments(timeline["slide_durations"], dirs["image"],
                                        merged_audio, dirs["segment"],
-                                       motion_hints=_motion_hints_r)
+                                       motion_hints=_motion_hints_r,
+                                       bg_display_mode=bg_display_mode,
+                                       slide_layout=slide_layout)
             final_path = os.path.join(dirs["video"], f"{job_id}.mp4")
 
             # 효과음 설정
             sfx_cfg_r = _ch_cfg_r if (_ch_cfg_r.get("sfx_enabled") or _ch_cfg_r.get("bgm_enabled") or _ch_cfg_r.get("crossfade_duration")) else None
 
+            # 자막 번인 — 세그먼트별 (concat 전, 싱크 보장)
+            try:
+                from pipeline.composer import load_compose_data as _lcd
+                _cd_r = _lcd(job_id)
+            except Exception:
+                _cd_r = {}
+            if _is_subtitle_enabled(_ch_cfg_r, _cd_r):
+                burn_subtitles_per_segment(
+                    segments, sentences, timeline,
+                    subtitle_cfg=_build_subtitle_cfg(_ch_cfg_r, _cd_r))
+
             # SFX/BGM은 인트로 wrap 후 별도 적용 (타이밍 오프셋 보정)
             concat_cfg_r = dict(_ch_cfg_r)
             concat_cfg_r["sfx_enabled"] = False
             concat_cfg_r["bgm_enabled"] = False
+            if _ch_cfg_r.get("crossfade_enabled") is False:
+                concat_cfg_r["crossfade_duration"] = 0
             concat_segments(segments, final_path,
                             sfx_cfg=concat_cfg_r,
                             slide_durations=timeline["slide_durations"])

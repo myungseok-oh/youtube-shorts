@@ -88,7 +88,11 @@ def generate_image(prompt: str, output_path: str, api_key: str,
         ref_part = types.Part.from_bytes(data=ref_bytes, mime_type=mime)
         contents = [
             ref_part,
-            f"위 캐릭터를 포함하여 다음 장면을 생성해줘. 캐릭터의 외형(얼굴, 체형, 의상, 색상)을 정확히 유지할 것.\n\n{prompt}",
+            (f"Generate the following scene as the main background. "
+             f"Place the character from the reference image in a small size in the bottom-right corner, "
+             f"as if the character is a narrator explaining the scene. "
+             f"Keep the character's exact appearance (face, body, outfit, colors). "
+             f"The character should NOT be the main subject — the scene is the focus.\n\n{prompt}"),
         ]
         print(f"[gemini] ref image attached: {ref_path} ({mime})")
     if contents is None:

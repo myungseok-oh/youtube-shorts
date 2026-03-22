@@ -144,3 +144,108 @@ def save_compose_data(job_id: str, data: dict):
 
 def _compose_data_path(job_id: str) -> str:
     return os.path.join(config.output_dir(), job_id, "compose_data.json")
+
+
+# ─── Narration File Pool ───
+
+def _narr_files_dir(job_id: str) -> str:
+    return os.path.join(config.output_dir(), job_id, "narration_files")
+
+
+def list_narration_files(job_id: str) -> list[dict]:
+    """narration_files/ 폴더의 파일 목록 + duration 반환."""
+    d = _narr_files_dir(job_id)
+    if not os.path.isdir(d):
+        return []
+    result = []
+    for f in sorted(os.listdir(d)):
+        ext = f.rsplit(".", 1)[-1].lower() if "." in f else ""
+        if ext not in ("mp3", "wav", "m4a", "ogg", "flac"):
+            continue
+        path = os.path.join(d, f)
+        dur = _get_duration(path)
+        result.append({
+            "filename": f,
+            "duration": dur,
+            "url": f"/api/jobs/{job_id}/narration-files/{f}",
+        })
+    return result
+
+
+def save_narration_files(job_id: str, files: list[tuple[str, bytes]]) -> list[dict]:
+    """여러 음성 파일을 narration_files/ 폴더에 저장. 파일명 중복 시 접미사 부여."""
+    d = _narr_files_dir(job_id)
+    os.makedirs(d, exist_ok=True)
+    saved = []
+    for orig_name, content in files:
+        name = _unique_filename(d, orig_name)
+        path = os.path.join(d, name)
+        with open(path, "wb") as fp:
+            fp.write(content)
+        dur = _get_duration(path)
+        saved.append({
+            "filename": name,
+            "duration": dur,
+            "url": f"/api/jobs/{job_id}/narration-files/{name}",
+        })
+    return saved
+
+
+def delete_narration_file(job_id: str, filename: str) -> bool:
+    """narration_files/ 에서 파일 삭제."""
+    path = os.path.join(_narr_files_dir(job_id), filename)
+    if os.path.exists(path):
+        os.remove(path)
+        return True
+    return False
+
+
+def assign_narration_to_slide(job_id: str, slide_num: int,
+                               source_file: str, script: dict) -> dict:
+    """narration_files/ 의 파일을 해당 슬라이드 오디오로 복사."""
+    import shutil
+    src = os.path.join(_narr_files_dir(job_id), source_file)
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"파일 없음: {source_file}")
+
+    sentences = script.get("sentences", [])
+    audio_dir = os.path.join(config.output_dir(), job_id, "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+
+    # 해당 슬라이드 첫 번째 문장 인덱스
+    first_idx = None
+    for i, sen in enumerate(sentences):
+        if sen.get("slide") == slide_num:
+            if first_idx is None:
+                first_idx = i
+
+    if first_idx is None:
+        raise ValueError(f"슬라이드 {slide_num}에 해당하는 문장 없음")
+
+    # 기존 오디오 삭제
+    for i, sen in enumerate(sentences):
+        if sen.get("slide") == slide_num:
+            for e in ("mp3", "wav", "m4a"):
+                old = os.path.join(audio_dir, f"audio_{i+1}.{e}")
+                if os.path.exists(old):
+                    os.remove(old)
+
+    ext = source_file.rsplit(".", 1)[-1] if "." in source_file else "mp3"
+    out_path = os.path.join(audio_dir, f"audio_{first_idx + 1}.{ext}")
+    shutil.copy2(src, out_path)
+
+    dur = _get_duration(out_path)
+    return {"ok": True, "file": f"audio_{first_idx + 1}.{ext}", "duration": dur}
+
+
+def _unique_filename(directory: str, name: str) -> str:
+    """디렉토리 내 중복 방지 파일명 생성."""
+    if not os.path.exists(os.path.join(directory, name)):
+        return name
+    base, ext = (name.rsplit(".", 1) + [""])[:2]
+    counter = 1
+    while True:
+        candidate = f"{base}_{counter}.{ext}" if ext else f"{base}_{counter}"
+        if not os.path.exists(os.path.join(directory, candidate)):
+            return candidate
+        counter += 1
