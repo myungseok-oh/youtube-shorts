@@ -896,16 +896,14 @@ function renderPreview() {
   let subtitleHtml = "";
   const subEnabled = chCfg.subtitle_enabled;
   if (subEnabled) {
-    // ASS FontSize → 미리보기: ASS에서 FontSize는 PlayResY(기본 288) 기준
-    // 1920px 영상에서 FontSize=20 → 실제 약 20*(1920/288)=133px → 미리보기 133*SCALE=27.7px
-    const _subRaw = chCfg.subtitle_font_size || 20;
-    const subFontSize = Math.max(8, Math.round(_subRaw * (CANVAS_H / 288)));
+    // 자막 설정은 픽셀(px) 단위 — 미리보기 캔버스 비율로 축소
+    const _subRaw = chCfg.subtitle_font_size || 48;
+    const subFontSize = Math.max(8, Math.round(_subRaw * SCALE));
     const subFont = chCfg.subtitle_font || "Noto Sans KR";
     const subOutline = chCfg.subtitle_outline || 3;
     const subAlign = chCfg.subtitle_alignment || 2;
-    // ASS MarginV → 미리보기: 동일 비율 스케일링
-    const _subMarginRaw = chCfg.subtitle_margin_v || 120;
-    const subMarginV = Math.max(4, Math.round(_subMarginRaw * (CANVAS_H / 288)));
+    const _subMarginRaw = chCfg.subtitle_margin_v || 100;
+    const subMarginV = Math.max(4, Math.round(_subMarginRaw * SCALE));
     // alignment: 2=하단중앙, 8=상단중앙, 5=중앙
     let subPos = `bottom:${subMarginV}px;`;
     if (subAlign === 8) subPos = `top:${subMarginV}px;`;
@@ -2371,9 +2369,9 @@ function renderTabLayout() {
 
   // ── 자막 ──
   const subOn = _get('subtitle_enabled', false);
-  const subSize = _get('subtitle_font_size', 20);
+  const subSize = _get('subtitle_font_size', 48);
   const subOutline = _get('subtitle_outline', 3);
-  const subMargin = _get('subtitle_margin_v', 120);
+  const subMargin = _get('subtitle_margin_v', 100);
   const subFont = _get('subtitle_font', 'Noto Sans KR');
   const subAlign = _get('subtitle_alignment', 2);
 
@@ -2400,9 +2398,9 @@ function renderTabLayout() {
         </select>
       </div>
       <div class="ctrl-row"><span class="ctrl-label">크기</span>
-        <input type="range" min="10" max="40" value="${subSize}" style="flex:1;accent-color:#6366f1;"
+        <input type="range" min="24" max="120" value="${subSize}" step="2" style="flex:1;accent-color:#6366f1;"
           oninput="_updateSubtitleCfg('subtitle_font_size', +this.value); this.nextElementSibling.textContent=this.value+'px';">
-        <span style="font-size:9px;color:#9ca3af;width:30px;text-align:right;">${subSize}px</span>
+        <span style="font-size:9px;color:#9ca3af;width:35px;text-align:right;">${subSize}px</span>
       </div>
       <div class="ctrl-row"><span class="ctrl-label">테두리</span>
         <input type="range" min="0" max="6" value="${subOutline}" style="flex:1;accent-color:#6366f1;"
@@ -2410,7 +2408,7 @@ function renderTabLayout() {
         <span style="font-size:9px;color:#9ca3af;width:20px;text-align:right;">${subOutline}</span>
       </div>
       <div class="ctrl-row"><span class="ctrl-label">여백</span>
-        <input type="range" min="20" max="300" value="${subMargin}" style="flex:1;accent-color:#6366f1;"
+        <input type="range" min="20" max="500" value="${subMargin}" step="10" style="flex:1;accent-color:#6366f1;"
           oninput="_updateSubtitleCfg('subtitle_margin_v', +this.value); this.nextElementSibling.textContent=this.value+'px';">
         <span style="font-size:9px;color:#9ca3af;width:35px;text-align:right;">${subMargin}px</span>
       </div>

@@ -3005,16 +3005,16 @@ function updateSlidePreview() {
   const subtitleEnabled = document.getElementById("cs-subtitle-enabled").checked;
   if (subtitleEnabled) {
     const subFont = document.getElementById("cs-subtitle-font").value;
-    const subSize = parseInt(document.getElementById("cs-subtitle-size").value) || 20;
+    const subSize = parseInt(document.getElementById("cs-subtitle-size").value) || 48;
     const subOutline = parseInt(document.getElementById("cs-subtitle-outline").value) || 3;
     const subAlign = document.getElementById("cs-subtitle-alignment").value;
-    const subMargin = parseInt(document.getElementById("cs-subtitle-margin").value) || 120;
+    const subMargin = parseInt(document.getElementById("cs-subtitle-margin").value) || 100;
 
-    // ASS subtitle uses PlayResY=288 (ffmpeg SRT default)
-    const assScale = pvHeight / 288;
-    const scaledSize = (subSize * assScale).toFixed(0);
-    const scaledOutline = Math.max(1, Math.round(subOutline * assScale));
-    const scaledMargin = Math.round(subMargin * assScale);
+    // 자막 설정은 픽셀(px) 단위 — 미리보기 캔버스에 축소
+    const pxScale = pvHeight / 1920;
+    const scaledSize = Math.max(8, (subSize * pxScale).toFixed(0));
+    const scaledOutline = Math.max(1, Math.round(subOutline * pxScale));
+    const scaledMargin = Math.round(subMargin * pxScale);
 
     pvSub.style.display = "block";
     pvSub.style.fontFamily = `'${subFont}', sans-serif`;
@@ -3024,31 +3024,19 @@ function updateSlidePreview() {
     pvSub.style.textShadow = `0 0 ${scaledOutline}px #000, 0 0 ${scaledOutline}px #000, 0 0 ${scaledOutline * 2}px #000`;
     pvSub.innerHTML = "반도체 수출이 크게 늘고 있는데<br>시장 기대가 커졌습니다";
 
-    // Position based on alignment
+    // Position based on alignment — ASS 렌더링과 동일하게 MarginV 기준 배치
     pvSub.style.top = "auto";
     pvSub.style.bottom = "auto";
     pvSub.style.transform = "none";
-    const _isZonedLayout = (layout === "center" || layout === "top" || layout === "bottom");
+    pvSub.style.paddingTop = "0";
     if (subAlign === "8") {
-      if (_isZonedLayout) {
-        // 상단: 상단 텍스트 영역 바로 아래 (이미지 존 위쪽)
-        pvSub.style.top = "4px";
-      } else {
-        pvSub.style.top = scaledMargin + "px";
-      }
+      pvSub.style.top = scaledMargin + "px";
     } else if (subAlign === "5") {
       pvSub.style.top = "50%";
       pvSub.style.transform = "translateY(-50%)";
     } else {
-      // default: bottom (2)
-      if (_isZonedLayout) {
-        // 하단: 이미지 존 바로 아래 (하단 영역 위쪽에 배치)
-        const botZoneTop = parseFloat(topPct) + parseFloat(midPct);
-        pvSub.style.top = (botZoneTop + 1) + "%";
-        pvSub.style.paddingTop = "4px";
-      } else {
-        pvSub.style.bottom = scaledMargin + "px";
-      }
+      // default: bottom (2) — 바닥에서 MarginV만큼 떨어짐
+      pvSub.style.bottom = scaledMargin + "px";
     }
   } else {
     pvSub.style.display = "none";
@@ -4654,13 +4642,13 @@ async function openChannelSettings(channelId) {
   loadBgmFiles(cfg);
   document.getElementById("cs-subtitle-enabled").checked = !!cfg.subtitle_enabled;
   document.getElementById("cs-subtitle-font").value = cfg.subtitle_font || "Noto Sans KR";
-  document.getElementById("cs-subtitle-size").value = cfg.subtitle_font_size || 20;
-  document.getElementById("cs-subtitle-size-label").textContent = (cfg.subtitle_font_size || 20) + "px";
+  document.getElementById("cs-subtitle-size").value = cfg.subtitle_font_size || 48;
+  document.getElementById("cs-subtitle-size-label").textContent = (cfg.subtitle_font_size || 48) + "px";
   document.getElementById("cs-subtitle-outline").value = cfg.subtitle_outline || 3;
   document.getElementById("cs-subtitle-outline-label").textContent = cfg.subtitle_outline || 3;
   document.getElementById("cs-subtitle-alignment").value = cfg.subtitle_alignment || 2;
-  document.getElementById("cs-subtitle-margin").value = cfg.subtitle_margin_v || 120;
-  document.getElementById("cs-subtitle-margin-label").textContent = (cfg.subtitle_margin_v || 120) + "px";
+  document.getElementById("cs-subtitle-margin").value = cfg.subtitle_margin_v || 100;
+  document.getElementById("cs-subtitle-margin-label").textContent = (cfg.subtitle_margin_v || 100) + "px";
   toggleSubtitleSection();
   document.getElementById("cs-sfx-enabled").checked = !!cfg.sfx_enabled;
   document.getElementById("cs-sfx-volume").value = cfg.sfx_volume || 15;
@@ -4799,10 +4787,10 @@ async function saveChannelSettings() {
   // 자막 설정 저장
   cfg.subtitle_enabled = document.getElementById("cs-subtitle-enabled").checked;
   cfg.subtitle_font = document.getElementById("cs-subtitle-font").value;
-  cfg.subtitle_font_size = parseInt(document.getElementById("cs-subtitle-size").value) || 20;
+  cfg.subtitle_font_size = parseInt(document.getElementById("cs-subtitle-size").value) || 48;
   cfg.subtitle_outline = parseInt(document.getElementById("cs-subtitle-outline").value) || 3;
   cfg.subtitle_alignment = parseInt(document.getElementById("cs-subtitle-alignment").value) || 2;
-  cfg.subtitle_margin_v = parseInt(document.getElementById("cs-subtitle-margin").value) || 120;
+  cfg.subtitle_margin_v = parseInt(document.getElementById("cs-subtitle-margin").value) || 100;
 
   // 효과음 설정 저장
   cfg.sfx_enabled = document.getElementById("cs-sfx-enabled").checked;

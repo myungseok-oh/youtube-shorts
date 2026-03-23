@@ -376,9 +376,9 @@
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-xs text-gray-500 w-20 shrink-0">크기</span>
-                  <input type="range" id="cs-subtitle-size" min="12" max="40" value="20" step="1"
+                  <input type="range" id="cs-subtitle-size" min="24" max="120" value="48" step="2"
                          class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-subtitle-size-label').textContent=this.value+'px';updateSlidePreview()">
-                  <span id="cs-subtitle-size-label" class="text-xs text-gray-400 w-8 text-right">20px</span>
+                  <span id="cs-subtitle-size-label" class="text-xs text-gray-400 w-8 text-right">48px</span>
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-xs text-gray-500 w-20 shrink-0">테두리</span>
@@ -388,9 +388,9 @@
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-xs text-gray-500 w-20 shrink-0">여백</span>
-                  <input type="range" id="cs-subtitle-margin" min="20" max="300" value="120" step="10"
+                  <input type="range" id="cs-subtitle-margin" min="20" max="500" value="100" step="10"
                          class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('cs-subtitle-margin-label').textContent=this.value+'px';updateSlidePreview()">
-                  <span id="cs-subtitle-margin-label" class="text-xs text-gray-400 w-8 text-right">120px</span>
+                  <span id="cs-subtitle-margin-label" class="text-xs text-gray-400 w-8 text-right">100px</span>
                 </div>
               </div>
             </div>
@@ -969,6 +969,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260322f"></script>
+  <script src="/static/app.js?v=20260323c"></script>
 </body>
 </html>

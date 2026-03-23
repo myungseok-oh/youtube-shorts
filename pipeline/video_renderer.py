@@ -4,6 +4,7 @@ import glob
 import json
 import os
 import random
+import re
 import subprocess
 from pipeline import config
 
@@ -1331,67 +1332,294 @@ def generate_srt(sentences: list[dict], timeline: dict,
     return output_path
 
 
+# ── 자막 필터 가용성 검사 + Pillow 폴백 ──────────────────────────
+
+_subtitle_filter_ok: bool | None = None  # None=미확인, True/False=캐시
+
+
+def _check_subtitle_filter() -> bool:
+    """ffmpeg에 subtitles 필터(libass)가 있는지 확인 (결과 캐시)."""
+    global _subtitle_filter_ok
+    if _subtitle_filter_ok is not None:
+        return _subtitle_filter_ok
+    try:
+        r = subprocess.run([config.ffmpeg(), "-filters"],
+                           capture_output=True, text=True, timeout=10)
+        _subtitle_filter_ok = any(
+            "subtitles" in ln and "V->V" in ln
+            for ln in r.stdout.split("\n")
+        )
+    except Exception:
+        _subtitle_filter_ok = False
+    if not _subtitle_filter_ok:
+        print("[subtitle] ffmpeg에 subtitles 필터 없음 (libass 미설치). Pillow 폴백 사용.")
+    return _subtitle_filter_ok
+
+
+def _find_subtitle_font() -> str | None:
+    """자막 렌더링용 폰트 파일 경로 탐색."""
+    proj = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                        "data", "fonts", "NotoSansCJKkr-Bold.otf")
+    if os.path.exists(proj):
+        return proj
+    for c in ["/System/Library/Fonts/AppleSDGothicNeo.ttc",
+              "C:/Windows/Fonts/malgunbd.ttf",
+              "C:/Windows/Fonts/NotoSansCJKkr-Bold.otf",
+              "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"]:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def _parse_srt_entries(srt_path: str) -> list[tuple[float, float, str]]:
+    """SRT → [(start_sec, end_sec, text), ...]"""
+    with open(srt_path, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    entries: list[tuple[float, float, str]] = []
+    for block in re.split(r"\n\s*\n", content):
+        lines = block.strip().split("\n")
+        tc_idx = next((i for i, ln in enumerate(lines) if "-->" in ln), None)
+        if tc_idx is None:
+            continue
+        m = re.match(r"(\d+:\d+:\d+[,.]\d+)\s*-->\s*(\d+:\d+:\d+[,.]\d+)",
+                     lines[tc_idx])
+        if not m:
+            continue
+        def _sec(s: str) -> float:
+            s = s.replace(",", ".")
+            p = s.split(":")
+            return float(p[0]) * 3600 + float(p[1]) * 60 + float(p[2])
+        text = "\n".join(lines[tc_idx + 1:]).strip()
+        if text:
+            entries.append((_sec(m.group(1)), _sec(m.group(2)), text))
+    return entries
+
+
+def _render_sub_png(text: str, out_path: str,
+                    width: int = 1080, height: int = 1920,
+                    font_size: int = 48, margin_v: int = 100,
+                    outline: int = 3, alignment: int = 2,
+                    bold: bool = True) -> bool:
+    """자막 텍스트 → 투명 배경 PNG (Pillow). font_size/margin_v는 픽셀(px) 단위."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        return False
+
+    px_fs = max(24, font_size)
+    px_mv = margin_v
+    px_ol = max(1, round(outline * 0.8))
+
+    font_path = _find_subtitle_font()
+    if not font_path:
+        return False
+    try:
+        font = ImageFont.truetype(font_path, px_fs)
+    except Exception:
+        return False
+
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # 각 줄을 독립적으로 줄바꿈 처리
+    max_tw = width - 120
+    wrapped_lines = []
+    for line in text.split("\n"):
+        lb = draw.textbbox((0, 0), line, font=font)
+        lw = lb[2] - lb[0]
+        if lw > max_tw and len(line) > 5:
+            cpl = max(4, int(len(line) * max_tw / lw))
+            wrapped_lines.extend(line[i:i + cpl] for i in range(0, len(line), cpl))
+        else:
+            wrapped_lines.append(line)
+    text = "\n".join(wrapped_lines)
+
+    bbox = draw.textbbox((0, 0), text, font=font, align="center")
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    x = (width - tw) // 2
+    if alignment == 2:
+        y = height - px_mv - th
+    elif alignment == 8:
+        y = px_mv
+    else:
+        y = (height - th) // 2
+    y = max(0, min(y, height - th - 10))
+
+    draw.text((x, y), text, font=font, fill=(255, 255, 255, 255),
+              stroke_width=px_ol, stroke_fill=(0, 0, 0, 255),
+              align="center")
+    img.save(out_path, "PNG")
+    return True
+
+
+def _apply_subtitles_pillow(video_path: str, srt_path: str,
+                             font_size: int = 48, margin_v: int = 100,
+                             outline: int = 3, alignment: int = 2,
+                             bold: bool = True):
+    """subtitles 필터 없을 때 Pillow + ffmpeg overlay 폴백. font_size/margin_v는 픽셀(px) 단위."""
+    entries = _parse_srt_entries(srt_path)
+    if not entries:
+        return
+    tmp_dir = os.path.dirname(srt_path) or "."
+    pngs: list[str] = []
+    valid: list[tuple[float, float]] = []
+    for i, (start, end, text) in enumerate(entries):
+        p = os.path.join(tmp_dir, f"_sub_ovl_{i}.png")
+        if _render_sub_png(text, p, font_size=font_size, margin_v=margin_v,
+                           outline=outline, alignment=alignment, bold=bold):
+            pngs.append(p)
+            valid.append((start, end))
+    if not pngs:
+        return
+
+    # 영상 길이 가져오기 (PNG 입력 스트림 제한용)
+    dur_str = "10"
+    try:
+        probe = subprocess.run(
+            [config.ffprobe(), "-v", "error", "-show_entries",
+             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+             video_path],
+            capture_output=True, text=True, timeout=5)
+        if probe.returncode == 0 and probe.stdout.strip():
+            dur_str = probe.stdout.strip()
+    except Exception:
+        pass
+
+    output = video_path.replace(".mp4", "_sub.mp4")
+    cmd = [config.ffmpeg(), "-y", "-i", video_path]
+    for p in pngs:
+        cmd.extend(["-loop", "1", "-t", dur_str, "-i", p])
+
+    # filter_complex: 각 자막 PNG를 해당 시간에만 overlay
+    fc_parts: list[str] = []
+    for i in range(len(pngs)):
+        fc_parts.append(f"[{i + 1}:v]format=rgba[s{i}]")
+    prev = "[0:v]"
+    for i, (start, end) in enumerate(valid):
+        is_last = (i == len(valid) - 1)
+        out_lbl = "[out]" if is_last else f"[v{i}]"
+        shortest = ":shortest=1" if is_last else ""
+        fc_parts.append(
+            f"{prev}[s{i}]overlay=0:0{shortest}:enable='between(t,{start:.3f},{end:.3f})'{out_lbl}"
+        )
+        prev = f"[v{i}]"
+
+    cmd.extend([
+        "-filter_complex", ";".join(fc_parts),
+        "-map", "[out]", "-map", "0:a",
+        "-c:v", "libx264", "-preset", "fast",
+        "-c:a", "copy", "-pix_fmt", "yuv420p",
+        output,
+    ])
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    for p in pngs:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    if result.returncode == 0 and os.path.exists(output):
+        os.replace(output, video_path)
+        print(f"[subtitle-pillow] 자막 번인 완료: {video_path}")
+    else:
+        print(f"[subtitle-pillow] 자막 번인 실패: {result.stderr[:300]}")
+        if os.path.exists(output):
+            os.remove(output)
+
+
 def apply_subtitles(video_path: str, srt_path: str,
-                    font_size: int = 20, margin_v: int = 120,
+                    font_size: int = 48, margin_v: int = 100,
                     font_name: str = "Noto Sans KR",
                     outline: int = 3, shadow: int = 1,
                     alignment: int = 2,
                     font_color: str = "&H00FFFFFF",
                     outline_color: str = "&H00000000",
                     bold: bool = True):
-    """SRT 자막을 영상에 번인 (텍스트 테두리선, 배경 박스 없음).
-
-    Args:
-        video_path: 원본 영상 (in-place 교체)
-        srt_path: SRT 자막 파일
-        font_size: 자막 폰트 크기 (기본 20)
-        margin_v: 하단 여백 (px, 기본 120)
-        font_name: 폰트 이름 (기본 Noto Sans KR)
-        outline: 테두리 두께 (기본 3)
-        shadow: 그림자 (기본 1)
-        alignment: 위치 (2=하단중앙, 8=상단중앙, 5=중앙)
-        font_color: 텍스트 색상 (ASS 형식)
-        outline_color: 테두리 색상 (ASS 형식)
-        bold: 굵게
+    """SRT 자막을 영상에 번인.
+    font_size, margin_v는 픽셀(px) 단위. 내부에서 ASS PlayRes 288로 변환.
+    ffmpeg subtitles 필터 → 실패 시 Pillow+overlay 폴백.
     """
     if not os.path.exists(srt_path):
         print(f"[subtitle] SRT 파일 없음: {srt_path}")
         return
 
-    output = video_path.replace(".mp4", "_sub.mp4")
-    style = (
-        f"FontName={font_name},"
-        f"FontSize={font_size},"
-        f"PrimaryColour={font_color},"
-        f"OutlineColour={outline_color},"
-        "BackColour=&H00000000,"
-        f"Bold={'1' if bold else '0'},"
-        f"Outline={outline},"
-        f"Shadow={shadow},"
-        f"MarginV={margin_v},"
-        f"Alignment={alignment},"
-        "BorderStyle=1"
-    )
+    # subtitles 필터 없으면 바로 Pillow 폴백
+    if not _check_subtitle_filter():
+        _apply_subtitles_pillow(video_path, srt_path,
+                                font_size=font_size, margin_v=margin_v,
+                                outline=outline, alignment=alignment, bold=bold)
+        return
 
-    # SRT 경로의 백슬래시를 이스케이프 (ffmpeg subtitles 필터용)
-    srt_escaped = srt_path.replace("\\", "/").replace(":", "\\:")
+    # SRT → ASS 변환 (PlayRes 명시적 제어)
+    # SRT를 ffmpeg에 직접 넘기면 내부 변환 시 PlayRes가 예측 불가하여
+    # FontSize/MarginV가 왜곡될 수 있음. ASS를 직접 생성하여 PlayRes=1920 명시.
+    entries = _parse_srt_entries(srt_path)
+    if not entries:
+        print(f"[subtitle] SRT 비어있음: {srt_path}")
+        return
+
+    ass_path = srt_path.replace(".srt", ".ass")
+    _bold_flag = "-1" if bold else "0"
+    ass_header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,{font_name},{font_size},{font_color},&H000000FF,"
+        f"{outline_color},&H00000000,{_bold_flag},0,0,0,100,100,0,0,"
+        f"1,{outline},{shadow},{alignment},0,0,{margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    ass_lines = [ass_header]
+    for start, end, text in entries:
+        s_h, s_rem = divmod(int(start), 3600)
+        s_m, s_s = divmod(s_rem, 60)
+        s_cs = int((start - int(start)) * 100)
+        e_h, e_rem = divmod(int(end), 3600)
+        e_m, e_s = divmod(e_rem, 60)
+        e_cs = int((end - int(end)) * 100)
+        ass_text = text.replace("\n", "\\N")
+        ass_lines.append(
+            f"Dialogue: 0,{s_h}:{s_m:02d}:{s_s:02d}.{s_cs:02d},"
+            f"{e_h}:{e_m:02d}:{e_s:02d}.{e_cs:02d},Default,,0,0,0,,"
+            f"{ass_text}\n"
+        )
+
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.writelines(ass_lines)
+
+    print(f"[subtitle] ASS 생성: font_size={font_size}px, margin_v={margin_v}px, "
+          f"PlayRes=1080x1920, entries={len(entries)}")
+
+    output = video_path.replace(".mp4", "_sub.mp4")
+    ass_escaped = ass_path.replace("\\", "/").replace(":", "\\:")
 
     cmd = [
         config.ffmpeg(), "-y",
         "-i", video_path,
-        "-vf", f"subtitles='{srt_escaped}':force_style='{style}':original_size=1080x1920",
+        "-vf", f"subtitles='{ass_escaped}'",
         "-c:a", "copy",
         output,
     ]
 
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0 and os.path.exists(output):
         os.replace(output, video_path)
         print(f"[subtitle] 자막 번인 완료: {video_path}")
     else:
-        print(f"[subtitle] 자막 번인 실패: {result.stderr[:300]}")
+        print(f"[subtitle] ASS 번인 실패, Pillow 폴백: "
+              f"{result.stderr[:300] if result.stderr else ''}")
         if os.path.exists(output):
             os.remove(output)
+        _apply_subtitles_pillow(video_path, srt_path,
+                                font_size=font_size, margin_v=margin_v,
+                                outline=outline, alignment=alignment, bold=bold)
 
 
 def burn_subtitles_per_segment(
@@ -1434,21 +1662,20 @@ def burn_subtitles_per_segment(
             continue
 
         # 세그먼트 내 로컬 SRT 생성
+        # 같은 슬라이드 문장들을 합쳐서 한 엔트리로 (줄바꿈으로 2줄 표시)
         srt_path = seg_path.replace(".mp4", "_sub.srt")
-        lines = []
-        # 세그먼트 내 나레이션 시작 오프셋 = slide_duration - raw_sum
         raw_sum = sum(d for _, _, d in sents)
         slide_dur = timeline["slide_durations"].get(slide_num, raw_sum)
-        pre_pad = max(0, slide_dur - raw_sum) / 2  # 앞 패딩 추정
+        pre_pad = max(0, slide_dur - raw_sum) / 2
 
-        current = pre_pad
-        for _, text, dur in sents:
-            idx = len(lines) // 4 + 1
-            lines.append(str(idx))
-            lines.append(f"{_format_srt_time(current)} --> {_format_srt_time(current + dur)}")
-            lines.append(text)
-            lines.append("")
-            current += dur
+        combined_text = "\n".join(t for _, t, _ in sents)
+        total_dur = sum(d for _, _, d in sents)
+        lines = [
+            "1",
+            f"{_format_srt_time(pre_pad)} --> {_format_srt_time(pre_pad + total_dur)}",
+            combined_text,
+            "",
+        ]
 
         with open(srt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))

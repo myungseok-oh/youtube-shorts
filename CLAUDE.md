@@ -360,6 +360,7 @@ ffmpeg -i input.wav -af silenceremove=1:0:-50dB output.wav
 - **top/bottom 레이아웃 fullscreen 방지**: fullscreen 모드는 full/center에만 적용
 - **이미지 object-fit 레이아웃별 분리**: top/bottom=contain(잘림 없음), center=cover
 - **Windows asyncio 안정화**: SelectorEventLoopPolicy 적용 (ConnectionResetError 제거)
+- **자막 번인 Pillow 폴백**: ffmpeg에 `subtitles` 필터(libass) 없을 때 Pillow+overlay 자동 폴백. `_check_subtitle_filter()` 캐시, `_render_sub_png()` → `_apply_subtitles_pillow()` 체인. ASS PlayRes 288 좌표 → 픽셀 변환 포함
 
 ---
 
