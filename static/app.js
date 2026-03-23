@@ -5414,7 +5414,7 @@ function applyJsonPaste() {
       });
     }
 
-    // narration
+    // narration — 최상위 narration/sentences 우선, 없으면 slides 내부 narration 수집
     if (Array.isArray(data.narration) && data.narration.length > 0) {
       _manualSentences = data.narration.map(n => ({
         text: n.text || "",
@@ -5425,6 +5425,16 @@ function applyJsonPaste() {
         text: s.text || "",
         slide: s.slide || 1,
       }));
+    } else if (Array.isArray(data.slides)) {
+      // slides 내부 narration 배열에서 추출
+      const collected = [];
+      data.slides.forEach((s, i) => {
+        const narr = s.narration || s.sentences || [];
+        if (Array.isArray(narr)) {
+          narr.forEach(n => collected.push({ text: n.text || "", slide: n.slide || (i + 1) }));
+        }
+      });
+      if (collected.length > 0) _manualSentences = collected;
     }
 
     renderManualModal(_manualChannelId);
