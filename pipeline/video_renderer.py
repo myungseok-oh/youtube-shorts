@@ -1400,7 +1400,17 @@ def _render_sub_png(text: str, out_path: str,
                     font_size: int = 48, margin_v: int = 100,
                     outline: int = 3, alignment: int = 2,
                     bold: bool = True) -> bool:
-    """자막 텍스트 → 투명 배경 PNG (Pillow). font_size/margin_v는 픽셀(px) 단위."""
+    """자막 텍스트 → 투명 배경 PNG (Pillow).
+
+    ⚠️ 자막 위치 로직 수정 금지 — 반드시 사용자 확인 후 수정할 것.
+    CSS 미리보기(app.js pvSub.style.bottom)와 1:1 대응하는 핵심 로직임.
+    미리보기와 실제 렌더링 일치를 2일간 검증하여 확정한 구조.
+
+    - font_size: 픽셀(px) — CSS font-size와 동일
+    - margin_v: 바닥(상단)에서 텍스트 하단(상단)까지의 거리(px) — CSS bottom/top과 동일
+    - alignment: 2=하단, 8=상단, 5=중앙
+    - 위치 계산: CSS `bottom: Xpx` = Pillow `y = height - X - th`
+    """
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
@@ -1421,29 +1431,36 @@ def _render_sub_png(text: str, out_path: str,
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # 각 줄을 독립적으로 줄바꿈 처리
+    # 줄바꿈 처리
     max_tw = width - 120
-    wrapped_lines = []
-    for line in text.split("\n"):
-        lb = draw.textbbox((0, 0), line, font=font)
-        lw = lb[2] - lb[0]
-        if lw > max_tw and len(line) > 5:
-            cpl = max(4, int(len(line) * max_tw / lw))
-            wrapped_lines.extend(line[i:i + cpl] for i in range(0, len(line), cpl))
-        else:
-            wrapped_lines.append(line)
-    text = "\n".join(wrapped_lines)
 
+    def _wrap_text(txt, fnt):
+        lines = []
+        for line in txt.split("\n"):
+            lb = draw.textbbox((0, 0), line, font=fnt)
+            lw = lb[2] - lb[0]
+            if lw > max_tw and len(line) > 5:
+                cpl = max(4, int(len(line) * max_tw / lw))
+                lines.extend(line[i:i + cpl] for i in range(0, len(line), cpl))
+            else:
+                lines.append(line)
+        return "\n".join(lines)
+
+    text = _wrap_text(text, font)
     bbox = draw.textbbox((0, 0), text, font=font, align="center")
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     x = (width - tw) // 2
+
+    # ⚠️ 위치 로직 수정 금지 — CSS 미리보기(app.js pvSub.style.bottom/top)와 1:1 대응
+    # alignment=2: CSS `bottom: margin_v` = Pillow `y = height - margin_v - th`
+    # alignment=8: CSS `top: margin_v`    = Pillow `y = margin_v`
     if alignment == 2:
         y = height - px_mv - th
     elif alignment == 8:
         y = px_mv
     else:
         y = (height - th) // 2
-    y = max(0, min(y, height - th - 10))
+    y = max(0, min(y, height - th - 5))
 
     draw.text((x, y), text, font=font, fill=(255, 255, 255, 255),
               stroke_width=px_ol, stroke_fill=(0, 0, 0, 255),
@@ -1456,7 +1473,7 @@ def _apply_subtitles_pillow(video_path: str, srt_path: str,
                              font_size: int = 48, margin_v: int = 100,
                              outline: int = 3, alignment: int = 2,
                              bold: bool = True):
-    """subtitles 필터 없을 때 Pillow + ffmpeg overlay 폴백. font_size/margin_v는 픽셀(px) 단위."""
+    """Pillow + ffmpeg overlay. font_size/margin_v는 픽셀(px) 단위."""
     entries = _parse_srt_entries(srt_path)
     if not entries:
         return
@@ -1504,13 +1521,17 @@ def _apply_subtitles_pillow(video_path: str, srt_path: str,
         )
         prev = f"[v{i}]"
 
-    cmd.extend([
-        "-filter_complex", ";".join(fc_parts),
-        "-map", "[out]", "-map", "0:a",
-        "-c:v", "libx264", "-preset", "fast",
-        "-c:a", "copy", "-pix_fmt", "yuv420p",
-        output,
-    ])
+    # 오디오 스트림 유무 확인
+    probe = subprocess.run(
+        [config.ffprobe(), "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=index", "-of", "csv=p=0", video_path],
+        capture_output=True, text=True, timeout=5)
+    has_audio = bool(probe.stdout.strip())
+
+    cmd.extend(["-filter_complex", ";".join(fc_parts), "-map", "[out]"])
+    if has_audio:
+        cmd.extend(["-map", "0:a", "-c:a", "copy"])
+    cmd.extend(["-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", output])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     for p in pngs:
@@ -1536,90 +1557,67 @@ def apply_subtitles(video_path: str, srt_path: str,
                     outline_color: str = "&H00000000",
                     bold: bool = True):
     """SRT 자막을 영상에 번인.
-    font_size, margin_v는 픽셀(px) 단위. 내부에서 ASS PlayRes 288로 변환.
-    ffmpeg subtitles 필터 → 실패 시 Pillow+overlay 폴백.
+
+    ⚠️ 자막 시스템 수정 시 반드시 사용자 확인 후 수정할 것.
+    Pillow(px) + CSS 미리보기(px)가 1:1 대응하는 구조.
+    font_size, margin_v는 픽셀(px) 단위.
+    Pillow 렌더링 우선 → 실패 시 force_style 폴백.
     """
     if not os.path.exists(srt_path):
         print(f"[subtitle] SRT 파일 없음: {srt_path}")
         return
 
-    # subtitles 필터 없으면 바로 Pillow 폴백
-    if not _check_subtitle_filter():
+    # 1차: Pillow (px 기준 — CSS 미리보기와 동일)
+    try:
         _apply_subtitles_pillow(video_path, srt_path,
                                 font_size=font_size, margin_v=margin_v,
                                 outline=outline, alignment=alignment, bold=bold)
         return
+    except Exception as e:
+        print(f"[subtitle] Pillow 실패: {e}")
 
-    # SRT → ASS 변환 (PlayRes 명시적 제어)
-    # SRT를 ffmpeg에 직접 넘기면 내부 변환 시 PlayRes가 예측 불가하여
-    # FontSize/MarginV가 왜곡될 수 있음. ASS를 직접 생성하여 PlayRes=1920 명시.
-    entries = _parse_srt_entries(srt_path)
-    if not entries:
-        print(f"[subtitle] SRT 비어있음: {srt_path}")
+    # 2차: ffmpeg force_style 폴백 (px → PlayRes ~288 스케일 변환)
+    if not _check_subtitle_filter():
+        print("[subtitle] ffmpeg subtitles 필터도 없음 — 자막 건너뜀")
         return
 
-    ass_path = srt_path.replace(".srt", ".ass")
-    _bold_flag = "-1" if bold else "0"
-    ass_header = (
-        "[Script Info]\n"
-        "ScriptType: v4.00+\n"
-        "PlayResX: 1080\n"
-        "PlayResY: 1920\n\n"
-        "[V4+ Styles]\n"
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
-        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
-        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
-        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Default,{font_name},{font_size},{font_color},&H000000FF,"
-        f"{outline_color},&H00000000,{_bold_flag},0,0,0,100,100,0,0,"
-        f"1,{outline},{shadow},{alignment},0,0,{margin_v},1\n\n"
-        "[Events]\n"
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-    )
-    ass_lines = [ass_header]
-    for start, end, text in entries:
-        s_h, s_rem = divmod(int(start), 3600)
-        s_m, s_s = divmod(s_rem, 60)
-        s_cs = int((start - int(start)) * 100)
-        e_h, e_rem = divmod(int(end), 3600)
-        e_m, e_s = divmod(e_rem, 60)
-        e_cs = int((end - int(end)) * 100)
-        ass_text = text.replace("\n", "\\N")
-        ass_lines.append(
-            f"Dialogue: 0,{s_h}:{s_m:02d}:{s_s:02d}.{s_cs:02d},"
-            f"{e_h}:{e_m:02d}:{e_s:02d}.{e_cs:02d},Default,,0,0,0,,"
-            f"{ass_text}\n"
-        )
-
-    with open(ass_path, "w", encoding="utf-8") as f:
-        f.writelines(ass_lines)
-
-    print(f"[subtitle] ASS 생성: font_size={font_size}px, margin_v={margin_v}px, "
-          f"PlayRes=1080x1920, entries={len(entries)}")
+    _SCALE = 288 / 1920
+    fs_scaled = max(1, round(font_size * _SCALE, 1))
+    mv_scaled = max(0, round(margin_v * _SCALE))
 
     output = video_path.replace(".mp4", "_sub.mp4")
-    ass_escaped = ass_path.replace("\\", "/").replace(":", "\\:")
+    style = (
+        f"FontName={font_name},"
+        f"FontSize={fs_scaled},"
+        f"PrimaryColour={font_color},"
+        f"OutlineColour={outline_color},"
+        "BackColour=&H00000000,"
+        f"Bold={'1' if bold else '0'},"
+        f"Outline={outline},"
+        f"Shadow={shadow},"
+        f"MarginV={mv_scaled},"
+        f"Alignment={alignment},"
+        "BorderStyle=1"
+    )
 
+    srt_escaped = srt_path.replace("\\", "/").replace(":", "\\:")
     cmd = [
         config.ffmpeg(), "-y",
         "-i", video_path,
-        "-vf", f"subtitles='{ass_escaped}'",
+        "-vf", f"subtitles='{srt_escaped}':force_style='{style}'",
         "-c:a", "copy",
         output,
     ]
 
+    print(f"[subtitle] force_style 폴백: {font_size}px → fs={fs_scaled}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0 and os.path.exists(output):
         os.replace(output, video_path)
         print(f"[subtitle] 자막 번인 완료: {video_path}")
     else:
-        print(f"[subtitle] ASS 번인 실패, Pillow 폴백: "
-              f"{result.stderr[:300] if result.stderr else ''}")
+        print(f"[subtitle] 자막 번인 실패: {result.stderr[:300] if result.stderr else ''}")
         if os.path.exists(output):
             os.remove(output)
-        _apply_subtitles_pillow(video_path, srt_path,
-                                font_size=font_size, margin_v=margin_v,
-                                outline=outline, alignment=alignment, bold=bold)
 
 
 def burn_subtitles_per_segment(
@@ -1661,29 +1659,30 @@ def burn_subtitles_per_segment(
         if not sents:
             continue
 
-        # 세그먼트 내 로컬 SRT 생성
-        # 같은 슬라이드 문장들을 합쳐서 한 엔트리로 (줄바꿈으로 2줄 표시)
+        # 세그먼트 내 로컬 SRT 생성 — 문장별 개별 엔트리
         srt_path = seg_path.replace(".mp4", "_sub.srt")
         raw_sum = sum(d for _, _, d in sents)
         slide_dur = timeline["slide_durations"].get(slide_num, raw_sum)
         pre_pad = max(0, slide_dur - raw_sum) / 2
 
-        combined_text = "\n".join(t for _, t, _ in sents)
-        total_dur = sum(d for _, _, d in sents)
-        lines = [
-            "1",
-            f"{_format_srt_time(pre_pad)} --> {_format_srt_time(pre_pad + total_dur)}",
-            combined_text,
-            "",
-        ]
+        lines = []
+        current = pre_pad
+        for idx, (_, text, dur) in enumerate(sents, 1):
+            start_t = current
+            end_t = current + dur
+            lines.append(str(idx))
+            lines.append(f"{_format_srt_time(start_t)} --> {_format_srt_time(end_t)}")
+            lines.append(text)
+            lines.append("")
+            current = end_t
 
         with open(srt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
         apply_subtitles(
             seg_path, srt_path,
-            font_size=subtitle_cfg.get("font_size", 20),
-            margin_v=subtitle_cfg.get("margin_v", 120),
+            font_size=subtitle_cfg.get("font_size", 48),
+            margin_v=subtitle_cfg.get("margin_v", 100),
             font_name=subtitle_cfg.get("font_name", "Noto Sans KR"),
             outline=subtitle_cfg.get("outline", 3),
             alignment=subtitle_cfg.get("alignment", 2),

@@ -2741,6 +2741,10 @@ function switchSettingsTab(tabName) {
     btn.classList.add("text-orange-400", "border-b-2", "border-orange-400");
     btn.classList.remove("text-gray-500", "hover:text-gray-300");
   }
+  // 슬라이드 탭 전환 시 미리보기 재렌더 (clientHeight 정확한 시점)
+  if (tabName === "slide_style") {
+    requestAnimationFrame(() => updateSlidePreview());
+  }
 }
 
 // ─── Channel Fixed Background Images ───
@@ -3010,7 +3014,7 @@ function updateSlidePreview() {
     const subAlign = document.getElementById("cs-subtitle-alignment").value;
     const subMargin = parseInt(document.getElementById("cs-subtitle-margin").value) || 100;
 
-    // 자막 설정은 픽셀(px) 단위 — 미리보기 캔버스에 축소
+    // 픽셀(px) 단위 — Pillow 렌더링과 동일 기준, 미리보기에 비례 축소
     const pxScale = pvHeight / 1920;
     const scaledSize = Math.max(8, (subSize * pxScale).toFixed(0));
     const scaledOutline = Math.max(1, Math.round(subOutline * pxScale));
@@ -3024,18 +3028,21 @@ function updateSlidePreview() {
     pvSub.style.textShadow = `0 0 ${scaledOutline}px #000, 0 0 ${scaledOutline}px #000, 0 0 ${scaledOutline * 2}px #000`;
     pvSub.innerHTML = "반도체 수출이 크게 늘고 있는데<br>시장 기대가 커졌습니다";
 
-    // Position based on alignment — ASS 렌더링과 동일하게 MarginV 기준 배치
+    // Position — margin_v = 바닥(상단)에서의 여백, 텍스트는 그 안쪽에 배치
     pvSub.style.top = "auto";
     pvSub.style.bottom = "auto";
     pvSub.style.transform = "none";
     pvSub.style.paddingTop = "0";
+    pvSub.style.height = "auto";
+    pvSub.style.display = "block";
+    pvSub.style.textAlign = "center";
     if (subAlign === "8") {
       pvSub.style.top = scaledMargin + "px";
     } else if (subAlign === "5") {
       pvSub.style.top = "50%";
       pvSub.style.transform = "translateY(-50%)";
     } else {
-      // default: bottom (2) — 바닥에서 MarginV만큼 떨어짐
+      // 하단: 바닥에서 margin_v 여백
       pvSub.style.bottom = scaledMargin + "px";
     }
   } else {

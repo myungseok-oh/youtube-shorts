@@ -51,29 +51,16 @@ _VIDEO_HEIGHT = 1920   # 세로 영상 해상도
 
 def _build_subtitle_cfg(ch_cfg: dict, compose_data: dict | None = None) -> dict:
     """채널 config + compose_data subtitle_overrides 병합. compose_data 우선.
-    zone 레이아웃일 때 margin_v를 zone 경계 기준으로 보정.
-    모든 값은 픽셀(px) 단위로 반환. 내부 변환은 apply_subtitles에서 처리."""
+    zone 레이아웃일 때 자막 영역(zone_height)을 자동 계산.
+    모든 값은 픽셀(px) 단위 — Pillow 렌더링과 CSS 미리보기에서 동일 기준."""
     ovr = (compose_data or {}).get("subtitle_overrides", {})
     alignment = ovr.get("subtitle_alignment", ch_cfg.get("subtitle_alignment", 2))
-    user_margin = ovr.get("subtitle_margin_v", ch_cfg.get("subtitle_margin_v", 100))
+    user_margin = ovr.get("subtitle_margin_v", ch_cfg.get("subtitle_margin_v", 40))
     layout = ch_cfg.get("slide_layout", "full")
     zone_str = ch_cfg.get("slide_zone_ratio", "3:4:3")
-    final_margin = user_margin
-
-    # top 레이아웃에서 하단 자막: 이미지 zone 바로 아래에서 시작
-    # center 레이아웃: mainZone/subZone이 모두 top이므로 하단 zone이 비어있어 보정 불필요
-    # 픽셀 좌표계로 계산
-    if layout == "top" and alignment == 2:
-        parts = [float(x) for x in zone_str.split(":") if x]
-        if len(parts) == 3:
-            total = sum(parts) or 1
-            bot_zone_px = int(_VIDEO_HEIGHT * parts[2] / total)
-            if bot_zone_px > 0:
-                final_margin = max(0, bot_zone_px - user_margin)
-
     return {
         "font_size": ovr.get("subtitle_font_size", ch_cfg.get("subtitle_font_size", 48)),
-        "margin_v": final_margin,
+        "margin_v": user_margin,
         "font_name": ovr.get("subtitle_font", ch_cfg.get("subtitle_font", "Noto Sans KR")),
         "outline": ovr.get("subtitle_outline", ch_cfg.get("subtitle_outline", 3)),
         "alignment": alignment,
