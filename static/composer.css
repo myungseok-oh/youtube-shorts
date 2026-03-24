@@ -872,5 +872,89 @@
 }
 .narr-play:hover { color: #6ee7b7; }
 
+/* ─── Voice Clip markers (timeline) ─── */
+.voice-clip {
+  position: absolute;
+  top: 2px; bottom: 2px;
+  min-width: 16px;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  font-size: 10px;
+  z-index: 15;
+  background: rgba(20,184,166,0.25);
+  border: 1px solid rgba(20,184,166,0.6);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.voice-clip:hover { background: rgba(20,184,166,0.4); }
+.voice-clip-icon { flex-shrink: 0; font-size: 9px; }
+.voice-clip-label {
+  font-size: 8px; font-weight: 600;
+  color: #5eead4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── Subtitle entry blocks (timeline) ─── */
+.subtitle-entry {
+  position: absolute;
+  top: 2px; bottom: 2px;
+  min-width: 16px;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  font-size: 10px;
+  z-index: 15;
+  background: rgba(96,165,250,0.2);
+  border: 1px solid rgba(96,165,250,0.5);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.subtitle-entry:hover { background: rgba(96,165,250,0.35); }
+.subtitle-entry-label {
+  font-size: 8px; font-weight: 600;
+  color: #93c5fd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sub-handle {
+  position: absolute; top: 0; bottom: 0; width: 5px;
+  cursor: ew-resize;
+  background: rgba(96,165,250,0.6);
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 5;
+}
+.subtitle-entry:hover .sub-handle { opacity: 1; }
+.sub-handle-l { left: -1px; }
+.sub-handle-r { right: -1px; }
+
+/* voice clip drop hover */
+.comp-track-drop.voice-drag-hover {
+  background: rgba(20,184,166,0.08) !important;
+}
+
+/* Narration file pool draggable items */
+.narr-pool-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  margin-bottom: 2px;
+  font-size: 10px;
+  cursor: grab;
+  transition: background 0.12s;
+}
+.narr-pool-item:hover { background: #2a2d38; }
+.narr-pool-item.in-use { background: #1a2e1a; }
+
 /* ─── Utility ─── */
 .bgm-active { background: #064e3b !important; border-left: 3px solid #34d399; }

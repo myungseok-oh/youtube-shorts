@@ -1051,6 +1051,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                           hl_color=ch_config_pb.get("slide_hl_color", ""),
                                           bg_gradient=ch_config_pb.get("slide_bg_gradient", ""),
                                           main_text_size=ch_config_pb.get("slide_main_text_size", 0),
+                                          main_text_enabled=ch_config_pb.get("main_text_enabled", True),
+                                          sub_text_enabled=ch_config_pb.get("sub_text_enabled", True),
                                           badge_size=ch_config_pb.get("slide_badge_size", 0),
                                           show_badge=_show_badge_b,
                                           channel_format=_ch_format_b,
@@ -1449,7 +1451,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         _ch_cfg_render["crossfade_duration"] = _tr["duration"]
 
                 # 자막 번인 — 세그먼트별 (concat 전, 싱크 보장)
-                if _is_subtitle_enabled(_ch_cfg_render, _cd):
+                # voice_clips 모드일 때는 subtitle_entries로 별도 처리 (concat 후)
+                _has_voice_clips = bool(_cd.get("voice_clips"))
+                if _is_subtitle_enabled(_ch_cfg_render, _cd) and not _has_voice_clips:
                     burn_subtitles_per_segment(
                         segments, sentences, timeline,
                         subtitle_cfg=_build_subtitle_cfg(_ch_cfg_render, _cd))
@@ -1469,6 +1473,67 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 intro_offset, wrap_dur = _wrap_with_intro_outro(
                     channel_id, final_path, dirs["segment"], _ch_cfg_render)
                 timeline["total_duration"] += wrap_dur
+
+                # voice_clips 믹싱 (Composer 음성/자막 분리 모드)
+                _voice_clips = _cd.get("voice_clips", [])
+                _subtitle_entries = _cd.get("subtitle_entries", [])
+                if _voice_clips:
+                    from pipeline.video_renderer import mix_voice_clips, generate_srt_from_entries
+                    # voice_clips 파일 경로 해석 (상대 URL → 절대 경로)
+                    for vc in _voice_clips:
+                        if vc.get("path", "").startswith("/api/"):
+                            fname = vc["path"].rsplit("/", 1)[-1]
+                            local = os.path.join(dirs["job"], "audio", fname)
+                            if os.path.isfile(local):
+                                vc["path"] = local
+                            else:
+                                local2 = os.path.join(dirs["job"], "narration_files", fname)
+                                if os.path.isfile(local2):
+                                    vc["path"] = local2
+                        elif not os.path.isabs(vc.get("path", "")):
+                            vc["path"] = os.path.join(dirs["job"], "audio", vc.get("file", ""))
+
+                    narr_track_path = os.path.join(dirs["segment"], "voice_clips_mixed.mp3")
+                    # timeline["total_duration"]에는 이미 wrap_dur 포함됨
+                    _total_dur = timeline.get("total_duration", sum(timeline["slide_durations"].values()))
+                    # intro_offset 보정: 클립 시간에 인트로 오프셋 추가
+                    if intro_offset > 0:
+                        for vc in _voice_clips:
+                            vc["start_time"] = vc.get("start_time", 0) + intro_offset
+                    mix_voice_clips(_voice_clips, narr_track_path, _total_dur)
+
+                    if os.path.isfile(narr_track_path):
+                        _mixed = final_path.replace(".mp4", "_vc.mp4")
+                        _narr_vol = (_cd.get("narr_volume", 100) or 100) / 100
+                        cmd = [config.ffmpeg(), "-y",
+                               "-i", final_path, "-i", narr_track_path,
+                               "-filter_complex",
+                               f"[1:a]volume={_narr_vol:.2f}[narr];[0:a][narr]amix=inputs=2:duration=first[aout]",
+                               "-map", "0:v", "-map", "[aout]",
+                               "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                               _mixed]
+                        subprocess.run(cmd, capture_output=True, timeout=180)
+                        if os.path.isfile(_mixed):
+                            os.replace(_mixed, final_path)
+                        print(f"[runner] voice_clips 믹싱 완료: {len(_voice_clips)}개 클립")
+
+                    # subtitle_entries → SRT 번인
+                    if _subtitle_entries and _is_subtitle_enabled(_ch_cfg_render, _cd):
+                        import copy as _copy
+                        _se_shifted = _copy.deepcopy(_subtitle_entries)
+                        if intro_offset > 0:
+                            for se in _se_shifted:
+                                se["start_time"] = se.get("start_time", 0) + intro_offset
+                                se["end_time"] = se.get("end_time", 0) + intro_offset
+                        srt_path = os.path.join(dirs["segment"], "voice_subs.srt")
+                        generate_srt_from_entries(_se_shifted, srt_path)
+                        _sub_cfg = _build_subtitle_cfg(_ch_cfg_render, _cd)
+                        apply_subtitles(final_path, srt_path,
+                                        font_size=_sub_cfg.get("font_size", 48),
+                                        margin_v=_sub_cfg.get("margin_v", 100),
+                                        font_name=_sub_cfg.get("font_name", "Noto Sans KR"),
+                                        outline=_sub_cfg.get("outline", 3),
+                                        alignment=_sub_cfg.get("alignment", 2))
 
                 # SFX/BGM 믹싱 (인트로 길이만큼 오프셋)
                 if sfx_cfg and not _no_effects:
@@ -2419,6 +2484,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                           hl_color=ch_config_fp.get("slide_hl_color", ""),
                                           bg_gradient=ch_config_fp.get("slide_bg_gradient", ""),
                                           main_text_size=ch_config_fp.get("slide_main_text_size", 0),
+                                          main_text_enabled=ch_config_fp.get("main_text_enabled", True),
+                                          sub_text_enabled=ch_config_fp.get("sub_text_enabled", True),
                                           badge_size=ch_config_fp.get("slide_badge_size", 0),
                                           show_badge=_show_badge_fp,
                                           channel_format=_ch_format_fp)

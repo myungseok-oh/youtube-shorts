@@ -469,10 +469,11 @@ async def api_claude_active():
 
 @app.get("/api/prompt-defaults")
 async def api_prompt_defaults():
-    from pipeline.agent import DEFAULT_SCRIPT_RULES, DEFAULT_ROUNDUP_RULES
+    from pipeline.agent import DEFAULT_SCRIPT_RULES, DEFAULT_ROUNDUP_RULES, DEFAULT_IMAGE_PROMPT_STYLE
     return {
         "script_rules": DEFAULT_SCRIPT_RULES,
         "roundup_rules": DEFAULT_ROUNDUP_RULES,
+        "image_prompt_style": DEFAULT_IMAGE_PROMPT_STYLE,
     }
 
 

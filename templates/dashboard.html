@@ -146,9 +146,9 @@
           </label>
         </div>
         <div>
-          <label class="block text-sm text-gray-400 mb-1">에이전트 지침</label>
-          <p class="text-xs text-gray-500 mb-2">이 채널의 영상을 만들 때 AI 에이전트가 따를 지침 (마크다운)</p>
-          <textarea id="cs-instructions" rows="14"
+          <label class="block text-sm text-gray-400 mb-1">통합 지침</label>
+          <p class="text-xs text-gray-500 mb-2">에이전트 지침 + 대본 규칙 + 이미지 프롬프트 지침을 하나의 텍스트로 관리합니다. 섹션 구분: <code class="text-orange-400"># 채널 지침</code> / <code class="text-orange-400"># 대본 규칙</code> / <code class="text-orange-400"># 이미지 프롬프트 지침</code></p>
+          <textarea id="cs-instructions" rows="24"
                     class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed"></textarea>
         </div>
         <div class="flex items-center justify-between">
@@ -298,6 +298,10 @@
               </div>
               <div class="flex items-center gap-2">
                 <span class="text-xs text-gray-500 w-20 shrink-0">메인 텍스트</span>
+                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input id="cs-main-text-enabled" type="checkbox" checked class="sr-only peer" onchange="updateSlidePreview()">
+                  <div class="w-7 h-3.5 bg-gray-700 peer-checked:bg-orange-500 rounded-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-2.5 after:w-2.5 after:transition-all peer-checked:after:translate-x-3.5"></div>
+                </label>
                 <input id="cs-slide-main-text-size" type="range" min="0" max="200" step="2" value="0"
                        oninput="document.getElementById('cs-slide-main-text-size-label').textContent=this.value;updateSlidePreview()"
                        class="flex-1 h-1 accent-orange-500">
@@ -305,6 +309,10 @@
               </div>
               <div class="flex items-center gap-2">
                 <span class="text-xs text-gray-500 w-20 shrink-0">서브 텍스트</span>
+                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input id="cs-sub-text-enabled" type="checkbox" checked class="sr-only peer" onchange="updateSlidePreview()">
+                  <div class="w-7 h-3.5 bg-gray-700 peer-checked:bg-orange-500 rounded-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-2.5 after:w-2.5 after:transition-all peer-checked:after:translate-x-3.5"></div>
+                </label>
                 <input id="cs-sub-text-size" type="range" min="0" max="100" step="2" value="0"
                        oninput="document.getElementById('cs-sub-text-size-label').textContent=this.value;updateSlidePreview()"
                        class="flex-1 h-1 accent-orange-500">
@@ -485,20 +493,7 @@
           </label>
           <p class="text-xs text-gray-500 mt-1">인트로/오프닝 슬라이드는 배경 미디어 타입과 무관하게 항상 1장</p>
         </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">이미지/영상 프롬프트 지침</label>
-          <p class="text-xs text-gray-500 mb-2">배경 이미지/영상 생성 시 AI가 따를 프롬프트 스타일 규칙. 비워두면 기본 뉴스 B-roll 스타일 사용</p>
-          <textarea id="cs-image-prompt-style" rows="8"
-                    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed"
-                    placeholder="비워두면 기본 뉴스 B-roll 스타일 적용"></textarea>
-        </div>
-        <div>
-          <label class="block text-sm text-gray-400 mb-1">주제별 현장 레퍼런스</label>
-          <p class="text-xs text-gray-500 mb-2">이 채널의 주제에 맞는 현장/장소 매핑 테이블. 추상적 표현 대신 구체적 촬영 장소를 지정</p>
-          <textarea id="cs-image-scene-references" rows="8"
-                    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed"
-                    placeholder="| 메시지 | ✗ 피하기 | ✓ 이렇게 |&#10;|-------|---------|---------|&#10;| 주가 상승 | 차트 화면 | 여의도 증권가 빌딩 아침 햇살 |"></textarea>
-        </div>
+        <!-- 주제별 현장 레퍼런스 제거됨: 고정 매핑이 이미지 다양성을 저해 -->
         <div>
           <label class="block text-sm text-gray-400 mb-1">캐릭터 참조 이미지</label>
           <p class="text-xs text-gray-500 mb-2">캐릭터 일관성을 위한 참조 이미지. Gemini 이미지 생성 시 자동 포함됩니다.</p>
@@ -748,37 +743,7 @@
         </div>
       </div>
 
-      <!-- 탭: 프롬프트 -->
-      <div id="cs-tab-prompt" class="cs-tab-content hidden" style="display:none; flex-direction:column; gap:12px; height:100%; min-height:0;">
-        <p class="text-xs text-gray-500 flex-shrink-0">대본 생성 시 AI에게 전달되는 지침입니다. 비워두면 기본값 사용. 수정하면 이 채널에만 적용됩니다.</p>
-
-        <!-- 대본 규칙 (단일) -->
-        <div class="flex flex-col flex-1 min-h-0 gap-1">
-          <div class="flex items-center justify-between flex-shrink-0">
-            <h4 class="text-sm text-gray-300 font-medium">대본 지침 (단일)</h4>
-            <button onclick="fillPromptDefault('cs-script-rules','script_rules')"
-                    class="text-xs text-orange-400 hover:text-orange-300 transition">기본값 채우기</button>
-          </div>
-          <textarea id="cs-script-rules"
-                    class="w-full flex-1 min-h-0 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed resize-none"
-                    placeholder="비워두면 기본값 적용"></textarea>
-        </div>
-
-        <div class="border-t border-gray-700 flex-shrink-0"></div>
-
-        <!-- 대본 규칙 (라운드업) -->
-        <div class="flex flex-col flex-1 min-h-0 gap-1">
-          <div class="flex items-center justify-between flex-shrink-0">
-            <h4 class="text-sm text-gray-300 font-medium">대본 지침 (라운드업)</h4>
-            <button onclick="fillPromptDefault('cs-roundup-rules','roundup_rules')"
-                    class="text-xs text-orange-400 hover:text-orange-300 transition">기본값 채우기</button>
-          </div>
-          <textarea id="cs-roundup-rules"
-                    class="w-full flex-1 min-h-0 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono leading-relaxed resize-none"
-                    placeholder="비워두면 기본값 적용"></textarea>
-        </div>
-
-      </div>
+      <!-- 프롬프트 탭 제거됨: script_rules / roundup_rules / image_prompt_style → 기본 탭 통합 지침으로 이동 -->
 
       <!-- 탭: YouTube -->
       <div id="cs-tab-youtube" class="cs-tab-content hidden space-y-4">
@@ -969,6 +934,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260324b"></script>
+  <script src="/static/app.js?v=20260324e"></script>
 </body>
 </html>

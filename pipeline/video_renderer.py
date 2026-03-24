@@ -1284,6 +1284,96 @@ def apply_audio_mix(video_path: str, sfx_cfg: dict, slide_durations: dict,
             os.remove(mixed_path)
 
 
+# ── Voice Clips 믹싱 (Composer 음성/자막 분리 모드) ──────────────────────────────
+
+def mix_voice_clips(clips: list[dict], output_path: str, total_duration: float):
+    """voice_clips 배열 → 단일 나레이션 트랙 생성 (ffmpeg adelay + amix).
+
+    Args:
+        clips: [{"file": "path", "start_time": 0.0, "duration": 5.2, "volume": 100}, ...]
+        output_path: 출력 오디오 파일 경로
+        total_duration: 전체 영상 길이 (초)
+    """
+    if not clips:
+        # 빈 무음 파일 생성
+        cmd = [config.ffmpeg(), "-y", "-f", "lavfi", "-i",
+               f"anullsrc=r=44100:cl=stereo:d={total_duration}",
+               "-c:a", "libmp3lame", "-q:a", "4", output_path]
+        subprocess.run(cmd, capture_output=True, timeout=30)
+        return
+
+    # 각 클립을 adelay로 시간 배치 후 amix
+    inputs = []
+    filter_parts = []
+    idx = 0  # ffmpeg 입력 스트림 인덱스 (스킵된 클립 제외)
+    for clip in clips:
+        path = clip.get("path") or clip.get("file", "")
+        if not os.path.isfile(path):
+            continue
+        inputs.extend(["-i", path])
+        delay_ms = int(clip["start_time"] * 1000)
+        vol = (clip.get("volume", 100)) / 100
+        filter_parts.append(
+            f"[{idx}]adelay={delay_ms}|{delay_ms},volume={vol:.2f}[a{idx}]"
+        )
+        idx += 1
+
+    if not filter_parts:
+        # 클립 파일 없음 → 무음
+        cmd = [config.ffmpeg(), "-y", "-f", "lavfi", "-i",
+               f"anullsrc=r=44100:cl=stereo:d={total_duration}",
+               "-c:a", "libmp3lame", "-q:a", "4", output_path]
+        subprocess.run(cmd, capture_output=True, timeout=30)
+        return
+
+    n = len(filter_parts)
+    mix_inputs = "".join(f"[a{idx}]" for idx in range(n))
+    filter_parts.append(f"{mix_inputs}amix=inputs={n}:duration=longest[out]")
+    filter_str = ";".join(filter_parts)
+
+    cmd = [config.ffmpeg(), "-y"] + inputs + [
+        "-filter_complex", filter_str,
+        "-map", "[out]",
+        "-c:a", "libmp3lame", "-q:a", "4",
+        "-t", str(total_duration),
+        output_path
+    ]
+    print(f"[video_renderer] mix_voice_clips: {n} clips → {output_path}")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        print(f"[video_renderer] mix_voice_clips error: {result.stderr[:500]}")
+
+
+def generate_srt_from_entries(entries: list[dict], output_path: str) -> str:
+    """subtitle_entries → SRT 자막 파일 생성.
+
+    Args:
+        entries: [{"text": "문장", "start_time": 0.0, "end_time": 2.5}, ...]
+        output_path: SRT 파일 저장 경로
+
+    Returns:
+        생성된 SRT 파일 경로
+    """
+    lines = []
+    for i, entry in enumerate(sorted(entries, key=lambda e: e.get("start_time", 0))):
+        text = entry.get("text", "").strip()
+        if not text:
+            continue
+        start = entry.get("start_time", 0)
+        end = entry.get("end_time", start + 2)
+        lines.append(f"{len(lines) // 4 + 1}")
+        lines.append(f"{_format_srt_time(start)} --> {_format_srt_time(end)}")
+        lines.append(text)
+        lines.append("")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    count = len(lines) // 4
+    print(f"[subtitle] SRT 생성 (entries): {count}개 자막, {output_path}")
+    return output_path
+
+
 # ── 자막 (SRT 생성 + 번인) ──────────────────────────────
 
 def _format_srt_time(seconds: float) -> str:

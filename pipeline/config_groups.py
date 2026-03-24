@@ -36,7 +36,7 @@ DEFAULTS = {
     "first_slide_single_bg":     False,
     "image_style":               "mixed",
     "image_prompt_style":        "",
-    "image_scene_references":    "",
+    # image_scene_references 제거됨 (고정 매핑 → 이미지 다양성 저해)
 
     # 인트로/아웃트로 (intro_outro)
     "intro_duration":    3,
@@ -141,7 +141,6 @@ OPTION_GROUPS = [
         "always_on": False,
         "fields": [
             "bg_media_type", "first_slide_single_bg",
-            "image_prompt_style", "image_scene_references",
         ],
     },
     {
@@ -174,13 +173,7 @@ OPTION_GROUPS = [
         "always_on": False,
         "fields": ["market_data_sources"],
     },
-    {
-        "id": "prompt",
-        "label": "프롬프트",
-        "icon": "P",
-        "always_on": False,
-        "fields": ["script_rules", "roundup_rules"],
-    },
+    # prompt 그룹 제거됨: script_rules / roundup_rules / image_prompt_style → 기본 탭 통합 지침으로 이동
     {
         "id": "youtube",
         "label": "YouTube",

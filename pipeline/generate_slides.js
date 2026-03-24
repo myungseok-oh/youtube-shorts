@@ -69,6 +69,8 @@ const bgGrad0 = _bgGrad[0] || '#0b0e1a';
 const bgGrad1 = _bgGrad[1] || '#141b2d';
 const bgGrad2 = _bgGrad[2] || '#1a2238';
 const _mainTextSize = data.mainTextSize || 0;
+const _mainTextEnabled = data.mainTextEnabled !== false;  // 기본 true
+const _subTextEnabled = data.subTextEnabled !== false;    // 기본 true
 const _badgeSize = data.badgeSize || 0;
 const _showBadge = data.showBadge !== false;      // 기본 true, false면 뱃지 숨김
 const _showSlideNum = data.showSlideNum || false;  // 기본 false, 라운드업만 true
@@ -1187,6 +1189,14 @@ async function main() {
   const browser = await puppeteer.launch({ headless: 'new' });
   const page = await browser.newPage();
   await page.setViewport({ width: 1080, height: 1920 });
+
+  // 메인/서브 텍스트 온오프 전처리
+  if (!_mainTextEnabled || !_subTextEnabled) {
+    slides.forEach(sl => {
+      if (!_mainTextEnabled) sl.main = '';
+      if (!_subTextEnabled) sl.sub = '';
+    });
+  }
 
   const result = [];
   for (let i = 0; i < slides.length; i++) {

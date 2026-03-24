@@ -56,6 +56,61 @@ function btnRestore(btn) {
   delete btn._origDisabled;
 }
 
+// ── 통합 지침 merge/split ──
+function mergeInstructions(instructions, scriptRules, roundupRules, imagePromptStyle) {
+  let parts = [];
+  const inst = (instructions || "").trim();
+  const sr = (scriptRules || "").trim();
+  const rr = (roundupRules || "").trim();
+  const ips = (imagePromptStyle || "").trim();
+
+  if (inst) parts.push("# 채널 지침\n\n" + inst);
+  if (sr) parts.push("# 대본 규칙\n\n" + sr);
+  if (rr) parts.push("# 라운드업 규칙\n\n" + rr);
+  if (ips) parts.push("# 이미지 프롬프트 지침\n\n" + ips);
+
+  // 아무 내용도 없으면 빈 문자열
+  if (parts.length === 0) return "";
+  // instructions만 있으면 헤더 없이 반환 (하위호환)
+  if (parts.length === 1 && inst && !sr && !rr && !ips) return inst;
+  return parts.join("\n\n");
+}
+
+function splitInstructions(unified) {
+  const text = (unified || "").trim();
+  if (!text) return { instructions: "", script_rules: "", roundup_rules: "", image_prompt_style: "" };
+
+  // 섹션 헤더로 분리: # 채널 지침 / # 대본 규칙 / # 라운드업 규칙 / # 이미지 프롬프트 지침
+  const sectionRe = /^# (채널 지침|대본 규칙|라운드업 규칙|이미지 프롬프트 지침)\s*$/m;
+  const result = { instructions: "", script_rules: "", roundup_rules: "", image_prompt_style: "" };
+
+  const lines = text.split("\n");
+  let currentKey = null;
+  let buf = [];
+
+  for (const line of lines) {
+    const m = line.match(/^# (채널 지침|대본 규칙|라운드업 규칙|이미지 프롬프트 지침)\s*$/);
+    if (m) {
+      // flush
+      if (currentKey !== null) result[currentKey] = buf.join("\n").trim();
+      else if (buf.join("\n").trim()) result.instructions = buf.join("\n").trim();
+      buf = [];
+      const label = m[1];
+      if (label === "채널 지침") currentKey = "instructions";
+      else if (label === "대본 규칙") currentKey = "script_rules";
+      else if (label === "라운드업 규칙") currentKey = "roundup_rules";
+      else if (label === "이미지 프롬프트 지침") currentKey = "image_prompt_style";
+      continue;
+    }
+    buf.push(line);
+  }
+  // flush last
+  if (currentKey !== null) result[currentKey] = buf.join("\n").trim();
+  else result.instructions = buf.join("\n").trim();
+
+  return result;
+}
+
 const POLL_INTERVAL = 4000;
 let pollTimer = null;
 let channelsCache = [];
@@ -2893,6 +2948,8 @@ function updateSlidePreview() {
   const mainZone = document.getElementById("cs-main-zone").value;
   const subZone = document.getElementById("cs-sub-zone").value;
   const textBgVal = parseInt(document.getElementById("cs-text-bg").value) || 4;
+  const mainTextEnabled = document.getElementById("cs-main-text-enabled").checked;
+  const subTextEnabled = document.getElementById("cs-sub-text-enabled").checked;
   const mainTextSize = parseInt(document.getElementById("cs-slide-main-text-size").value) || 0;
   const subTextSize = parseInt(document.getElementById("cs-sub-text-size").value) || 0;
 
@@ -2922,9 +2979,9 @@ function updateSlidePreview() {
   const mainFontPx = ((mainTextSize || 100) * scale).toFixed(0);
   const subFontPx = ((subTextSize || 56) * scale).toFixed(0);
 
-  // Sample texts
-  const mainText = `<div style="font-weight:900;font-size:${mainFontPx}px;line-height:1.25;text-align:center;word-break:keep-all;">반도체 수출 급증</div>`;
-  const subText = `<div style="font-weight:400;font-size:${subFontPx}px;line-height:1.3;text-align:center;color:rgba(255,255,255,0.7);word-break:keep-all;margin-top:4px;">환율 상승 / 금리 동결 등 주요 이슈</div>`;
+  // Sample texts (enabled 플래그로 온오프)
+  const mainText = mainTextEnabled ? `<div style="font-weight:900;font-size:${mainFontPx}px;line-height:1.25;text-align:center;word-break:keep-all;">반도체 수출 급증</div>` : "";
+  const subText = subTextEnabled ? `<div style="font-weight:400;font-size:${subFontPx}px;line-height:1.3;text-align:center;color:rgba(255,255,255,0.7);word-break:keep-all;margin-top:4px;">환율 상승 / 금리 동결 등 주요 이슈</div>` : "";
 
   // Reset all zones (레이아웃 전환 시 이전 스타일 잔류 방지)
   pvTop.innerHTML = "";
@@ -4545,10 +4602,13 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-handle").value = ch.handle || "";
   document.getElementById("cs-desc").value = ch.description || "";
   document.getElementById("cs-topics").value = ch.default_topics || "";
-  document.getElementById("cs-instructions").value = ch.instructions || "";
-
   let cfg = {};
   try { cfg = JSON.parse(ch.config || "{}"); } catch {}
+
+  // 통합 지침: 3개 필드를 merge해서 표시
+  document.getElementById("cs-instructions").value = mergeInstructions(
+    ch.instructions || "", cfg.script_rules || "", cfg.roundup_rules || "", cfg.image_prompt_style || ""
+  );
 
   // 활성 그룹 감지 및 UI 렌더
   _enabledGroups = _detectEnabledGroups(cfg);
@@ -4578,6 +4638,8 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-sub-zone").value = cfg.slide_sub_zone || "bottom";
   document.getElementById("cs-text-bg").value = cfg.slide_text_bg != null ? cfg.slide_text_bg : 4;
   document.getElementById("cs-text-bg-label").textContent = cfg.slide_text_bg != null ? cfg.slide_text_bg : 4;
+  document.getElementById("cs-main-text-enabled").checked = cfg.main_text_enabled !== false;
+  document.getElementById("cs-sub-text-enabled").checked = cfg.sub_text_enabled !== false;
   document.getElementById("cs-sub-text-size").value = cfg.sub_text_size || 0;
   document.getElementById("cs-sub-text-size-label").textContent = cfg.sub_text_size || 0;
   document.getElementById("cs-slide-main-text-size").value = cfg.slide_main_text_size || 0;
@@ -4594,8 +4656,6 @@ async function openChannelSettings(channelId) {
   // ── 이미지 (image) ──
   document.getElementById("cs-bg-media-type").value = cfg.bg_media_type || "auto";
   document.getElementById("cs-first-slide-single-bg").checked = !!cfg.first_slide_single_bg;
-  document.getElementById("cs-image-prompt-style").value = cfg.image_prompt_style || "";
-  document.getElementById("cs-image-scene-references").value = cfg.image_scene_references || "";
   loadCharacterRefPreview();
 
   // ── 인트로/아웃트로 (intro_outro) ──
@@ -4670,9 +4730,7 @@ async function openChannelSettings(channelId) {
   const mds = cfg.market_data_sources || [];
   document.querySelectorAll(".cs-market-source").forEach(cb => cb.checked = mds.includes(cb.value));
 
-  // ── 프롬프트 (prompt) ──
-  document.getElementById("cs-script-rules").value = cfg.script_rules || "";
-  document.getElementById("cs-roundup-rules").value = cfg.roundup_rules || "";
+  // ── 프롬프트 (prompt) — 통합 지침으로 이동됨 ──
 
   // ── YouTube (youtube) ──
   document.getElementById("cs-gemini-api-key").value = cfg.gemini_api_key || "";
@@ -4723,14 +4781,12 @@ async function saveChannelSettings() {
   // 헬퍼: UI 값이 있으면 덮어쓰기, 비어있으면 기존 값 유지
   const _setIfPresent = (key, val) => { if (val) cfg[key] = val; };
 
-  // 영상 제작 방식 저장
-  _setIfPresent("image_prompt_style", document.getElementById("cs-image-prompt-style").value.trim());
-
-  // 프롬프트 지침 저장 (비어있으면 키 삭제 → 기본값 사용)
+  // 통합 지침 split → 개별 필드
+  const _split = splitInstructions(document.getElementById("cs-instructions").value);
   const _setOrDelete = (key, val) => { if (val) cfg[key] = val; else delete cfg[key]; };
-  _setOrDelete("image_scene_references", document.getElementById("cs-image-scene-references").value.trim());
-  _setOrDelete("script_rules", document.getElementById("cs-script-rules").value.trim());
-  _setOrDelete("roundup_rules", document.getElementById("cs-roundup-rules").value.trim());
+  _setOrDelete("image_prompt_style", _split.image_prompt_style);
+  _setOrDelete("script_rules", _split.script_rules);
+  _setOrDelete("roundup_rules", _split.roundup_rules);
 
   cfg.image_style = document.getElementById("cs-image-style").value;
   cfg.format = document.getElementById("cs-format").value;
@@ -4744,6 +4800,8 @@ async function saveChannelSettings() {
   cfg.slide_main_zone = document.getElementById("cs-main-zone").value;
   cfg.slide_sub_zone = document.getElementById("cs-sub-zone").value;
   cfg.slide_text_bg = parseInt(document.getElementById("cs-text-bg").value) || 4;
+  cfg.main_text_enabled = document.getElementById("cs-main-text-enabled").checked;
+  cfg.sub_text_enabled = document.getElementById("cs-sub-text-enabled").checked;
   cfg.sub_text_size = parseInt(document.getElementById("cs-sub-text-size").value) || 0;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   cfg.auto_video_source = document.getElementById("cs-auto-video-source").value;
@@ -4864,7 +4922,7 @@ async function saveChannelSettings() {
       handle: document.getElementById("cs-handle").value.trim(),
       description: document.getElementById("cs-desc").value.trim(),
       default_topics: document.getElementById("cs-topics").value,
-      instructions: document.getElementById("cs-instructions").value,
+      instructions: _split.instructions,
       config: JSON.stringify(cfg),
     }),
   });
@@ -5047,13 +5105,12 @@ async function saveChannelSettingsSilent() {
   // 헬퍼: UI 값이 있으면 덮어쓰기, 비어있으면 기존 값 유지
   const _set = (key, val) => { if (val) cfg[key] = val; };
 
-  _set("image_prompt_style", document.getElementById("cs-image-prompt-style").value.trim());
-
-  // 프롬프트 지침 저장
+  // 통합 지침 split → 개별 필드
+  const _splitS = splitInstructions(document.getElementById("cs-instructions").value);
   const _setOrDel = (key, val) => { if (val) cfg[key] = val; else delete cfg[key]; };
-  _setOrDel("image_scene_references", document.getElementById("cs-image-scene-references").value.trim());
-  _setOrDel("script_rules", document.getElementById("cs-script-rules").value.trim());
-  _setOrDel("roundup_rules", document.getElementById("cs-roundup-rules").value.trim());
+  _setOrDel("image_prompt_style", _splitS.image_prompt_style);
+  _setOrDel("script_rules", _splitS.script_rules);
+  _setOrDel("roundup_rules", _splitS.roundup_rules);
 
   cfg.image_style = document.getElementById("cs-image-style").value;
   cfg.format = document.getElementById("cs-format").value;
@@ -5067,6 +5124,8 @@ async function saveChannelSettingsSilent() {
   cfg.slide_main_zone = document.getElementById("cs-main-zone").value;
   cfg.slide_sub_zone = document.getElementById("cs-sub-zone").value;
   cfg.slide_text_bg = parseInt(document.getElementById("cs-text-bg").value) || 4;
+  cfg.main_text_enabled = document.getElementById("cs-main-text-enabled").checked;
+  cfg.sub_text_enabled = document.getElementById("cs-sub-text-enabled").checked;
   cfg.sub_text_size = parseInt(document.getElementById("cs-sub-text-size").value) || 0;
   cfg.auto_bg_source = document.getElementById("cs-auto-bg-source").value;
   cfg.auto_video_source = document.getElementById("cs-auto-video-source").value;
@@ -5128,7 +5187,7 @@ async function saveChannelSettingsSilent() {
       handle: document.getElementById("cs-handle").value.trim(),
       description: document.getElementById("cs-desc").value.trim(),
       default_topics: document.getElementById("cs-topics").value,
-      instructions: document.getElementById("cs-instructions").value,
+      instructions: _splitS.instructions,
       config: JSON.stringify(cfg),
     }),
   });

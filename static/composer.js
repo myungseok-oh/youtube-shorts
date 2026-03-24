@@ -1,7 +1,7 @@
 /* ─── Composer JS — 프리프로덕션 영상 편집기 ─── */
 
 let composerData = null;
-let composeState = { slide_order: [], slide_durations: {}, sfx_markers: [], bgm: null };
+let composeState = { slide_order: [], slide_durations: {}, sfx_markers: [], bgm: null, voice_clips: [], subtitle_entries: [] };
 let selectedSlide = -1;     // 선택된 슬라이드 인덱스 (0-based in slide_order)
 let _dirty = false;
 let _playingAudio = null;
@@ -28,7 +28,11 @@ async function initComposer() {
   composeState.style_overrides = composeState.style_overrides || {};
   composeState.subtitle_overrides = composeState.subtitle_overrides || {};
   composeState.sentence_overrides = composeState.sentence_overrides || {};
+  composeState.voice_clips = composeState.voice_clips || [];
+  composeState.subtitle_entries = composeState.subtitle_entries || [];
   await loadNarrFilePool();
+  // 마이그레이션: 기존 데이터 → voice_clips + subtitle_entries
+  _migrateToVoiceClips();
   // slide_motions: 배열 → dict 변환
   if (Array.isArray(composeState.slide_motions)) {
     const dict = {};
@@ -61,6 +65,78 @@ async function initComposer() {
     selectSlide(0);
   }
   setupSfxDrop();
+  setupVoiceClipDrop();
+}
+
+// ─── Migration: narr_file_map / slide_audio → voice_clips + subtitle_entries ───
+
+function _migrateToVoiceClips() {
+  // 이미 voice_clips가 있으면 마이그레이션 불필요
+  if (composeState.voice_clips && composeState.voice_clips.length > 0) return;
+
+  const slides = getOrderedSlides();
+  let cumTime = 0;
+  const clips = [];
+  const subs = [];
+
+  slides.forEach(sl => {
+    const dur = getSlideDuration(sl.num);
+    const audioFiles = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
+    const sentences = sl.sentences || [];
+
+    if (audioFiles.length > 0) {
+      // 슬라이드의 모든 오디오 파일 → 개별 voice_clip
+      let clipTime = cumTime;
+      audioFiles.forEach((af, ai) => {
+        clips.push({
+          id: `vc_${sl.num}_${ai}_${Date.now()}`,
+          file: af.file,
+          path: af.path,
+          start_time: Math.round(clipTime * 100) / 100,
+          duration: af.duration || 2.0,
+          volume: composeState.narr_volume !== undefined ? composeState.narr_volume : 100,
+          slide_num: sl.num,
+        });
+        // 대응하는 자막
+        const sentIdx = af.sentence_idx !== undefined ? af.sentence_idx : ai;
+        const sent = sentences[sentIdx];
+        if (sent && sent.text) {
+          subs.push({
+            id: `sub_${sl.num}_${ai}_${Date.now()}`,
+            text: sent.text,
+            start_time: Math.round(clipTime * 100) / 100,
+            end_time: Math.round((clipTime + (af.duration || 2.0)) * 100) / 100,
+          });
+        }
+        clipTime += af.duration || 2.0;
+      });
+    } else if (sentences.length > 0) {
+      // 오디오 없지만 문장은 있는 경우 → 자막만
+      const sentDur = dur / sentences.length;
+      let sentTime = cumTime;
+      sentences.forEach((sent, si) => {
+        if (sent.text) {
+          subs.push({
+            id: `sub_${sl.num}_${si}_${Date.now()}`,
+            text: sent.text,
+            start_time: Math.round(sentTime * 100) / 100,
+            end_time: Math.round((sentTime + sentDur) * 100) / 100,
+          });
+        }
+        sentTime += sentDur;
+      });
+    }
+    cumTime += dur;
+  });
+
+  if (clips.length > 0) {
+    composeState.voice_clips = clips;
+    _dirty = true;
+  }
+  if (subs.length > 0) {
+    composeState.subtitle_entries = subs;
+    _dirty = true;
+  }
 }
 
 // ─── Timeline ───
@@ -310,7 +386,7 @@ function renderTimeline() {
   renderSfxMarkers();
   renderBgmTrack();
   renderSubtitleTrack();
-  renderNarrationTrack();
+  renderVoiceClipTrack();
   renderRuler();
   updatePlayhead();
 }
@@ -485,68 +561,167 @@ function _timeToPct(time, totalDur) {
 }
 
 function renderSubtitleTrack() {
-  const track = document.getElementById("timeline-subtitle");
-  if (!track) return;
-  track.innerHTML = "";
+  const container = document.getElementById("subtitle-entries-container");
+  if (!container) return;
+  container.innerHTML = "";
 
-  const chCfg = composerData.channel_config || {};
-  if (!chCfg.subtitle_enabled) {
-    track.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:8px;color:#4b5563;">자막 비활성</div>`;
+  const entries = composeState.subtitle_entries || [];
+  const total = getTotalDuration() || 1;
+  const trackArea = document.getElementById("timeline-tracks");
+
+  if (entries.length === 0) {
+    container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:8px;color:#4b5563;">자막 없음</div>`;
     return;
   }
 
-  const { items, totalDur } = _calcTrackLayout();
+  entries.forEach(entry => {
+    const leftPct = (entry.start_time / total) * 100;
+    const widthPct = ((entry.end_time - entry.start_time) / total) * 100;
+    const truncated = entry.text.length > 20 ? entry.text.slice(0, 20) + "..." : entry.text;
 
-  items.forEach(({ sl, idx, slideDur, narrDur, startTime }) => {
-    const sents = sl.sentences || [];
-    const text = sents.map(s => s.text || "").join(" ");
-    if (!text) return;
-    const truncated = text.length > 25 ? text.slice(0, 25) + "..." : text;
-    const subDur = narrDur > 0 ? narrDur : slideDur;
-    const pct = _timeToPct(subDur, totalDur);
+    const el = document.createElement("div");
+    el.className = "subtitle-entry";
+    el.style.left = `${leftPct}%`;
+    el.style.width = `${Math.max(widthPct, 1)}%`;
+    el.title = `${entry.text}\n${entry.start_time.toFixed(1)}s - ${entry.end_time.toFixed(1)}s`;
+    el.innerHTML = `
+      <div class="sub-handle sub-handle-l"></div>
+      <span class="subtitle-entry-label">${_esc(truncated)}</span>
+      <div class="sub-handle sub-handle-r"></div>
+    `;
 
-    const block = document.createElement("div");
-    block.className = "tl-clip tl-clip-sub";
-    block.style.cssText = `width:${pct}%;min-width:16px;height:100%;display:flex;align-items:center;padding:0 4px;
-      background:#1e2a45;border:1px solid #2d3a5a;border-radius:3px;overflow:hidden;flex-shrink:0;flex-grow:0;cursor:pointer;`;
-    block.innerHTML = `<span style="font-size:8px;color:#93c5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${_esc(text)}">${_esc(truncated)}</span>`;
-    block.addEventListener("click", () => {
-      const orderIdx = composeState.slide_order.indexOf(sl.num);
-      if (orderIdx >= 0) { selectSlide(orderIdx); }
+    // 좌측 핸들: start_time 조절
+    el.querySelector(".sub-handle-l").addEventListener("mousedown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const rect = trackArea.getBoundingClientRect();
+      function onMove(e2) {
+        const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
+        const newTime = pct * total;
+        if (newTime < entry.end_time - 0.2) {
+          entry.start_time = Math.round(newTime * 10) / 10;
+          _dirty = true;
+          renderSubtitleTrack();
+        }
+      }
+      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
+      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
     });
-    track.appendChild(block);
+
+    // 우측 핸들: end_time 조절
+    el.querySelector(".sub-handle-r").addEventListener("mousedown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const rect = trackArea.getBoundingClientRect();
+      function onMove(e2) {
+        const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
+        const newTime = pct * total;
+        if (newTime > entry.start_time + 0.2) {
+          entry.end_time = Math.round(newTime * 10) / 10;
+          _dirty = true;
+          renderSubtitleTrack();
+        }
+      }
+      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
+      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
+    });
+
+    // 중앙 드래그: 이동
+    el.addEventListener("mousedown", (e) => {
+      if (e.target.classList.contains("sub-handle")) return;
+      e.preventDefault(); e.stopPropagation();
+      const rect = trackArea.getBoundingClientRect();
+      const startMouseX = e.clientX;
+      const origStart = entry.start_time;
+      const origEnd = entry.end_time;
+      const dur = origEnd - origStart;
+      function onMove(e2) {
+        const dx = e2.clientX - startMouseX;
+        const dSec = (dx / rect.width) * total;
+        let newStart = origStart + dSec;
+        newStart = Math.max(0, Math.min(total - dur, newStart));
+        entry.start_time = Math.round(newStart * 10) / 10;
+        entry.end_time = Math.round((newStart + dur) * 10) / 10;
+        _dirty = true;
+        el.style.left = `${(entry.start_time / total) * 100}%`;
+      }
+      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
+      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
+    });
+
+    // 더블클릭: 텍스트 편집
+    el.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      const newText = prompt("자막 텍스트:", entry.text);
+      if (newText !== null && newText.trim()) {
+        entry.text = newText.trim();
+        _dirty = true;
+        renderSubtitleTrack();
+        if (_activeTab === 'narration') renderTabNarration();
+      }
+    });
+
+    container.appendChild(el);
   });
 }
 
-function renderNarrationTrack() {
-  const track = document.getElementById("timeline-narration");
-  if (!track) return;
-  track.innerHTML = "";
+function renderVoiceClipTrack() {
+  const container = document.getElementById("voice-clip-markers");
+  if (!container) return;
+  container.innerHTML = "";
 
-  const { items, totalDur } = _calcTrackLayout();
+  const clips = composeState.voice_clips || [];
+  const total = getTotalDuration() || 1;
+  const trackArea = document.getElementById("timeline-tracks");
 
-  items.forEach(({ sl, idx, slideDur, narrDur }) => {
-    const hasNarr = narrDur > 0;
-    const pct = _timeToPct(hasNarr ? narrDur : slideDur, totalDur);
+  clips.forEach(clip => {
+    const leftPct = (clip.start_time / total) * 100;
+    const widthPct = (clip.duration / total) * 100;
+    const name = clip.file.replace(/\.[^.]+$/, '');
 
-    const block = document.createElement("div");
-    block.className = "tl-clip tl-clip-narr";
-    block.style.cssText = `width:${pct}%;min-width:16px;height:100%;display:flex;align-items:center;
-      background:${hasNarr ? '#0d2818' : '#1a1c24'};border:1px solid ${hasNarr ? '#1a4a2a' : '#2a2d38'};
-      border-radius:3px;overflow:hidden;flex-shrink:0;flex-grow:0;cursor:pointer;padding:0 2px;`;
+    const el = document.createElement("div");
+    el.className = "voice-clip";
+    el.style.left = `${leftPct}%`;
+    el.style.width = `${Math.max(widthPct, 1.5)}%`;
+    el.title = `${clip.file} @ ${clip.start_time.toFixed(1)}s (${clip.duration.toFixed(1)}s)`;
+    el.innerHTML = `
+      <span class="voice-clip-icon">&#127908;</span>
+      <span class="voice-clip-label">${_esc(name)} ${clip.duration.toFixed(1)}s</span>
+    `;
 
-    if (hasNarr) {
-      block.innerHTML = `<div style="width:100%;height:60%;background:#065f46;border-radius:2px;position:relative;">
-        <span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:8px;color:#34d399;">${narrDur.toFixed(1)}s</span>
-      </div>`;
-    } else {
-      block.innerHTML = `<span style="font-size:8px;color:#4b5563;">—</span>`;
-    }
-    block.addEventListener("click", () => {
-      const orderIdx = composeState.slide_order.indexOf(sl.num);
-      if (orderIdx >= 0) { selectSlide(orderIdx); }
+    // 드래그 이동만 (핸들 없음 — 길이 고정)
+    el.addEventListener("mousedown", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const rect = trackArea.getBoundingClientRect();
+      const startMouseX = e.clientX;
+      const origStart = clip.start_time;
+      function onMove(e2) {
+        const dx = e2.clientX - startMouseX;
+        const dSec = (dx / rect.width) * total;
+        let newStart = origStart + dSec;
+        newStart = Math.max(0, Math.min(total - clip.duration, newStart));
+        clip.start_time = Math.round(newStart * 10) / 10;
+        _dirty = true;
+        el.style.left = `${(clip.start_time / total) * 100}%`;
+      }
+      function onUp() {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        renderVoiceClipTrack();
+        if (_activeTab === 'narration') renderTabNarration();
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
     });
-    track.appendChild(block);
+
+    // 더블클릭: 삭제
+    el.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      composeState.voice_clips = composeState.voice_clips.filter(c => c.id !== clip.id);
+      _dirty = true;
+      renderVoiceClipTrack();
+      if (_activeTab === 'narration') renderTabNarration();
+    });
+
+    container.appendChild(el);
   });
 }
 
@@ -1484,6 +1659,9 @@ function stopAllAudio() {
   // SFX 오디오 정리
   if (_sfxAudios) { _sfxAudios.forEach(a => { a.pause(); }); _sfxAudios = []; }
   _sfxFired = new Set();
+  // Voice clip 오디오 정리
+  if (_voiceClipAudios) { _voiceClipAudios.forEach(a => { a.pause(); }); _voiceClipAudios = []; }
+  _voiceClipFired = new Set();
   if (_previewTimer) {
     cancelAnimationFrame(_previewTimer);
     _previewTimer = null;
@@ -1583,41 +1761,38 @@ function updateNarrVolume(val) {
 async function playAllSlides() {
   if (_previewing) { stopAllAudio(); return; }
 
-  // 오디오 파일 존재 여부 확인
-  const hasAnyAudio = _checkAllHaveAudio();
-  if (!hasAnyAudio) {
-    // TTS 미생성 → 자동 생성 후 재생
-    const statusEl = document.getElementById("audio-status");
-    if (statusEl) statusEl.textContent = "TTS 생성 중...";
-    const playBtn = document.querySelector('[onclick="playAllSlides()"]');
-    if (playBtn) { playBtn.textContent = "TTS 생성 중..."; playBtn.disabled = true; }
-
-    try {
-      const engine = document.getElementById("tts-engine")?.value || "edge-tts";
-      const r = await fetch(`/api/jobs/${JOB_ID}/composer/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tts_engine: engine }),
-      });
-      const data = await r.json();
-      if (!data.ok) {
-        if (statusEl) statusEl.textContent = `TTS 실패: ${data.error || ''}`;
-        if (playBtn) { playBtn.textContent = "▶ 전체 미리듣기"; playBtn.disabled = false; }
+  // voice_clips가 없으면 TTS 자동 생성
+  const hasClips = (composeState.voice_clips || []).length > 0;
+  if (!hasClips) {
+    const hasAnyAudio = _checkAllHaveAudio();
+    if (!hasAnyAudio) {
+      const statusEl = document.getElementById("audio-status");
+      if (statusEl) statusEl.textContent = "TTS 생성 중...";
+      try {
+        const engine = document.getElementById("tts-engine")?.value || "edge-tts";
+        const r = await fetch(`/api/jobs/${JOB_ID}/composer/tts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tts_engine: engine }),
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          if (statusEl) statusEl.textContent = `TTS 실패: ${data.error || ''}`;
+          return;
+        }
+        await refreshData();
+        _autoUpdateDurations();
+        _migrateToVoiceClips();
+        if (_activeTab === 'narration') renderTabNarration();
+        renderTimeline();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = `오류: ${e.message}`;
         return;
       }
-      // 데이터 새로고침 + 슬라이드 duration 오디오 길이에 맞춤
-      await refreshData();
-      _autoUpdateDurations();
-      if (statusEl) statusEl.textContent = `TTS 생성 완료 (${data.count}문장) — 재생 시작`;
-    } catch (e) {
-      if (statusEl) statusEl.textContent = `오류: ${e.message}`;
-      if (playBtn) { playBtn.textContent = "▶ 전체 미리듣기"; playBtn.disabled = false; }
-      return;
+    } else {
+      // slide_audio 있지만 voice_clips 없으면 마이그레이션
+      _migrateToVoiceClips();
     }
-    if (playBtn) { playBtn.textContent = "▶ 전체 미리듣기"; playBtn.disabled = false; }
-    // 나레이션 탭 갱신
-    if (_activeTab === 'narration') renderTabNarration();
-    renderTimeline();
   }
 
   stopAllAudio();
@@ -1625,6 +1800,7 @@ async function playAllSlides() {
   _previewStartTime = performance.now();
   _previewSlideIdx = 0;
   _previewAudioPlayed = new Set();
+  _voiceClipFired = new Set();
 
   const pb2 = document.getElementById("btn-play") || document.getElementById("btn-play-slide");
   if (pb2) pb2.innerHTML = "&#9646;&#9646;";
@@ -1632,16 +1808,15 @@ async function playAllSlides() {
   _sfxFired = new Set();
   _buildSlideTimeMap();
 
-  // 첫 슬라이드 오디오를 사용자 제스처 컨텍스트에서 즉시 시작
+  // 첫 슬라이드 표시
   if (_slideTimeMap.length > 0) {
     const firstMap = _slideTimeMap[0];
     const slideOrderIdx = composeState.slide_order.indexOf(firstMap.num);
     if (slideOrderIdx >= 0) { selectedSlide = slideOrderIdx; renderPreview(); }
-    _previewAudioPlayed.add("slide_0");
-    if (firstMap.audioFiles && firstMap.audioFiles.length > 0) {
-      _playAudioChain(firstMap.audioFiles, 0, () => {});
-    }
   }
+
+  // elapsed=0인 voice_clips 즉시 재생 (사용자 제스처 컨텍스트)
+  _triggerVoiceClips(0);
 
   _syncBgm(0);
   _previewTick();
@@ -1679,6 +1854,8 @@ function _buildSlideTimeMap() {
 
 let _sfxFired = new Set();
 let _sfxAudios = [];
+let _voiceClipFired = new Set();
+let _voiceClipAudios = [];
 
 function _syncBgm(elapsed) {
   const bgm = composeState.bgm;
@@ -1759,6 +1936,22 @@ function _triggerSfx(elapsed) {
   });
 }
 
+function _triggerVoiceClips(elapsed) {
+  (composeState.voice_clips || []).forEach(clip => {
+    if (_voiceClipFired.has(clip.id)) return;
+    if (elapsed >= clip.start_time && elapsed < clip.start_time + 0.3) {
+      _voiceClipFired.add(clip.id);
+      if (clip.path) {
+        const a = new Audio(clip.path);
+        const vol = (clip.volume !== undefined ? clip.volume : (composeState.narr_volume !== undefined ? composeState.narr_volume : 100)) / 100;
+        a.volume = vol;
+        a.play().catch(() => {});
+        _voiceClipAudios.push(a);
+      }
+    }
+  });
+}
+
 function _previewTick() {
   if (!_previewing) return;
 
@@ -1799,15 +1992,6 @@ function _previewTick() {
           renderPreview();
         }
 
-        // 나레이션 재생
-        const slideKey = `slide_${curSlideIdx}`;
-        if (!_previewAudioPlayed.has(slideKey)) {
-          _previewAudioPlayed.add(slideKey);
-          if (map.audioFiles && map.audioFiles.length > 0) {
-            if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
-            _playAudioChain(map.audioFiles, 0, () => {});
-          }
-        }
       }
     }
 
@@ -1815,11 +1999,12 @@ function _previewTick() {
     _playheadPos = elapsed / total;
     updatePlayhead();
 
-    // BGM + SFX 동기화
+    // BGM + SFX + Voice Clips 동기화
     _syncBgm(elapsed);
     _triggerSfx(elapsed);
+    _triggerVoiceClips(elapsed);
 
-    // 자막 업데이트
+    // 자막 업데이트 (subtitle_entries 기반)
     _updateSubtitle(curSlideIdx, elapsed);
 
     // 상태 표시
@@ -1839,23 +2024,12 @@ function _updateSubtitle(slideIdx, elapsed) {
   const el = document.getElementById("preview-subtitle");
   if (!el) return;
 
-  const map = _slideTimeMap[slideIdx];
-  if (!map) { el.style.display = "none"; return; }
+  // subtitle_entries 기반: 현재 시간에 맞는 자막 찾기
+  const entries = composeState.subtitle_entries || [];
+  const match = entries.find(e => elapsed >= e.start_time && elapsed < e.end_time);
 
-  const sl = composerData.slides.find(s => s.num === map.num);
-  if (!sl || !sl.sentences || sl.sentences.length === 0) { el.style.display = "none"; return; }
-
-  const sents = sl.sentences;
-  const slideDur = map.end - map.start;
-  const slideElapsed = elapsed - map.start;
-
-  // 문장별 균등 배분으로 현재 문장 결정
-  const sentDur = slideDur / sents.length;
-  const sentIdx = Math.min(Math.floor(slideElapsed / sentDur), sents.length - 1);
-  const text = sents[sentIdx]?.text || "";
-
-  if (text) {
-    el.textContent = text;
+  if (match) {
+    el.textContent = match.text;
     el.style.display = "";
   } else {
     el.style.display = "none";
@@ -2655,12 +2829,14 @@ function renderTabNarration() {
 
   const chCfg = composerData.channel_config || {};
   const curEngine = chCfg.tts_engine || "edge-tts";
-  const narrMap = composeState.narr_file_map || {};
+  const clips = composeState.voice_clips || [];
+  const subs = composeState.subtitle_entries || [];
 
   let html = `<div class="comp-tab-title">나레이션</div>`;
 
-  // ── 음성 파일 풀 ──
-  html += `<div class="comp-tab-subtitle" style="margin-top:4px;">음성 파일</div>`;
+  // ── 음성 파일 풀 (드래그 가능) ──
+  html += `<div class="comp-tab-subtitle" style="margin-top:4px;">음성 파일 풀</div>`;
+  html += `<div style="margin-bottom:4px;font-size:9px;color:#6b7280;">타임라인 나레이션 트랙으로 드래그하세요</div>`;
   html += `<div style="margin-bottom:6px;">
     <input type="file" accept="audio/*" multiple id="narr-pool-input" class="hidden" onchange="uploadNarrFiles(this)">
     <button onclick="document.getElementById('narr-pool-input').click()"
@@ -2669,12 +2845,13 @@ function renderTabNarration() {
 
   if (_narrFilePool.length > 0) {
     _narrFilePool.forEach(f => {
-      const inUse = Object.values(narrMap).includes(f.filename);
-      html += `<div style="display:flex;align-items:center;gap:4px;padding:3px 4px;background:${inUse ? '#1a2e1a' : '#1e1e2e'};border-radius:4px;margin-bottom:2px;font-size:10px;">
-        <button onclick="previewAudio('${f.url}', this)" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:10px;padding:0 2px;">&#9654;</button>
-        <span style="flex:1;color:${inUse ? '#6ee7b7' : '#d1d5db'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_esc(f.filename)}">${_esc(f.filename)}</span>
+      const inUse = clips.some(c => c.file === f.filename);
+      html += `<div class="narr-pool-item ${inUse ? 'in-use' : ''}" draggable="true"
+        ondragstart="onNarrDragStart(event, '${_esc(f.filename)}', ${f.duration}, '${f.url}')">
+        <button onclick="event.stopPropagation(); previewAudio('${f.url}', this)" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:10px;padding:0 2px;">&#9654;</button>
+        <span style="flex:1;color:${inUse ? '#5eead4' : '#d1d5db'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_esc(f.filename)}">${_esc(f.filename)}</span>
         <span style="color:#6b7280;white-space:nowrap;">${f.duration.toFixed(1)}s</span>
-        <button onclick="deleteNarrFile('${_esc(f.filename)}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px;padding:0 2px;" title="삭제">&times;</button>
+        <button onclick="event.stopPropagation(); deleteNarrFile('${_esc(f.filename)}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px;padding:0 2px;" title="삭제">&times;</button>
       </div>`;
     });
   } else {
@@ -2682,59 +2859,35 @@ function renderTabNarration() {
   }
   html += `<div id="narr-pool-status" style="font-size:9px;color:#6b7280;margin-top:2px;margin-bottom:8px;"></div>`;
 
-  // ── 슬라이드별 배치 ──
-  html += `<div style="display:flex;align-items:center;gap:4px;">
-    <div class="comp-tab-subtitle" style="flex:1;margin:0;">슬라이드별 배치</div>
-    <button onclick="syncDurationsToAudio()" style="padding:2px 8px;background:#065f46;color:#34d399;border:none;border-radius:4px;font-size:9px;cursor:pointer;" title="모든 슬라이드 길이를 나레이션 오디오에 맞춤">오디오에 맞춤</button>
-  </div>`;
-
-  const ordered = getOrderedSlides();
-  ordered.forEach(sl => {
-    const slideAudio = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
-    const assigned = narrMap[sl.num] || "";
-    const dur = getSlideDuration(sl.num);
-    const hasAudio = slideAudio.length > 0;
-    const audioDur = hasAudio ? slideAudio.reduce((s, a) => s + (a.duration || 0), 0) : 0;
-
-    html += `<div style="padding:5px 4px;border-bottom:1px solid #2a2d38;">`;
-    html += `<div style="display:flex;align-items:center;gap:4px;margin-bottom:3px;">
-      <span style="font-size:11px;font-weight:600;color:#e5e7eb;min-width:20px;">S${sl.num}</span>
-      <span style="font-size:9px;color:#6b7280;flex:1;">${dur.toFixed(1)}s</span>`;
-    if (hasAudio) {
-      html += `<button onclick="previewAudio('${slideAudio[0].path}', this)" style="background:none;border:none;color:#34d399;cursor:pointer;font-size:10px;padding:0;">&#9654; ${audioDur.toFixed(1)}s</button>`;
-    }
-    html += `</div>`;
-
-    // 파일 선택 드롭다운
-    html += `<select onchange="assignNarrToSlide(${sl.num}, this.value)" style="width:100%;padding:3px;background:#1e1e2e;color:#d1d5db;border:1px solid #374151;border-radius:4px;font-size:10px;margin-bottom:2px;">
-      <option value="">-- 파일 선택 --</option>`;
-    _narrFilePool.forEach(f => {
-      const sel = assigned === f.filename ? "selected" : "";
-      html += `<option value="${_esc(f.filename)}" ${sel}>${_esc(f.filename)} (${f.duration.toFixed(1)}s)</option>`;
+  // ── 배치된 음성 클립 ──
+  html += `<div class="comp-tab-subtitle">배치된 클립 (${clips.length}개)</div>`;
+  if (clips.length > 0) {
+    clips.sort((a, b) => a.start_time - b.start_time).forEach((clip, ci) => {
+      const name = clip.file.replace(/\.[^.]+$/, '');
+      html += `<div style="display:flex;align-items:center;gap:4px;padding:3px 4px;background:#0d2a2a;border-radius:4px;margin-bottom:2px;font-size:10px;">
+        <button onclick="previewAudio('${clip.path}', this)" style="background:none;border:none;color:#5eead4;cursor:pointer;font-size:10px;padding:0 2px;">&#9654;</button>
+        <span style="flex:1;color:#5eead4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_esc(name)}</span>
+        <span style="color:#6b7280;white-space:nowrap;">${clip.start_time.toFixed(1)}s</span>
+        <span style="color:#5eead4;white-space:nowrap;">${clip.duration.toFixed(1)}s</span>
+        <button onclick="_removeVoiceClip('${clip.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px;padding:0 2px;" title="삭제">&times;</button>
+      </div>`;
     });
-    html += `</select>`;
+  } else {
+    html += `<div style="font-size:10px;color:#6b7280;padding:4px;">음성 클립 없음 — TTS 생성 또는 파일 풀에서 드래그</div>`;
+  }
 
-    // 문장 리스트 (접힘)
-    const sentences = sl.sentences || [];
-    if (sentences.length > 0) {
-      html += `<div style="margin-top:2px;">`;
-      sentences.forEach((sen, si) => {
-        const audioInfo = slideAudio.find(a => a.sentence_idx === si);
-        const globalIdx = composerData.slides.reduce((acc, s) => {
-          if (s.num < sl.num) return acc + (s.sentences || []).length;
-          return acc;
-        }, 0) + si;
-        html += `<div style="display:flex;align-items:flex-start;gap:2px;font-size:9px;color:#9ca3af;padding:1px 0;">
-          <span style="color:#6b7280;min-width:12px;padding-top:2px;">${si + 1}</span>
-          <textarea style="flex:1;background:#1e1e2e;color:#d1d5db;border:1px solid #2a2d38;border-radius:3px;padding:2px 4px;font-size:9px;font-family:inherit;resize:vertical;min-height:18px;line-height:1.3;"
-            rows="1" onchange="_updateSentence(${sl.num}, ${si}, this.value)">${_esc(sen.text)}</textarea>
-          ${audioInfo ? `<span style="color:#34d399;padding-top:2px;white-space:nowrap;">${audioInfo.duration.toFixed(1)}s</span>` : `<span style="color:#f97316;padding-top:2px;">-</span>`}
-        </div>`;
-      });
-      html += `</div>`;
-    }
-    html += `</div>`;
-  });
+  // ── 자막 항목 ──
+  html += `<div class="comp-tab-subtitle" style="margin-top:8px;">자막 (${subs.length}개)</div>`;
+  if (subs.length > 0) {
+    subs.sort((a, b) => a.start_time - b.start_time).forEach((sub, si) => {
+      const truncated = sub.text.length > 30 ? sub.text.slice(0, 30) + "..." : sub.text;
+      html += `<div style="display:flex;align-items:center;gap:4px;padding:3px 4px;background:#1e2a45;border-radius:4px;margin-bottom:2px;font-size:10px;">
+        <span style="flex:1;color:#93c5fd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_esc(sub.text)}">${_esc(truncated)}</span>
+        <button onclick="_removeSubtitleEntry('${sub.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px;padding:0 2px;" title="삭제">&times;</button>
+      </div>`;
+    });
+  }
+  html += `<button onclick="_addSubtitleEntry()" style="width:100%;padding:4px;background:#1e2a45;color:#60a5fa;border:1px dashed #3b82f6;border-radius:4px;font-size:10px;cursor:pointer;margin-top:4px;">+ 자막 추가</button>`;
 
   // ── TTS 섹션 ──
   html += `<div class="comp-tab-subtitle" style="margin-top:10px;">TTS 생성</div>`;
@@ -2756,9 +2909,9 @@ function renderTabNarration() {
       <span id="narr-vol-val" style="font-size:9px;color:#9ca3af;width:28px;text-align:right;">${(composeState.narr_volume !== undefined ? composeState.narr_volume : 100)}%</span>
     </div>
     <div style="display:flex;gap:4px;margin-top:4px;">
-      <button onclick="generateTTS(${sl ? sl.num : 1})" id="btn-gen-tts"
-        style="flex:1;padding:6px;background:#065f46;color:#34d399;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;">TTS 생성${sl ? ` (S${sl.num})` : ''}</button>
-      <button onclick="generateAllTTS()" id="btn-gen-all-tts"
+      <button onclick="_generateTTSAndAddClips(${sl ? sl.num : 0})" id="btn-gen-tts"
+        style="flex:1;padding:6px;background:#065f46;color:#34d399;border:none;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;">TTS → 클립${sl ? ` (S${sl.num})` : ''}</button>
+      <button onclick="_generateTTSAndAddClips(0)" id="btn-gen-all-tts"
         style="padding:6px 10px;background:#064e3b;color:#6ee7b7;border:none;border-radius:5px;font-size:10px;cursor:pointer;">전체</button>
     </div>
   </div>`;
@@ -2766,6 +2919,126 @@ function renderTabNarration() {
 
   el.innerHTML = html;
   _updateVoiceSelect();
+}
+
+// 음성 클립 삭제
+function _removeVoiceClip(clipId) {
+  composeState.voice_clips = (composeState.voice_clips || []).filter(c => c.id !== clipId);
+  _dirty = true;
+  renderVoiceClipTrack();
+  renderTabNarration();
+}
+
+// 자막 항목 삭제
+function _removeSubtitleEntry(entryId) {
+  composeState.subtitle_entries = (composeState.subtitle_entries || []).filter(e => e.id !== entryId);
+  _dirty = true;
+  renderSubtitleTrack();
+  renderTabNarration();
+}
+
+// 자막 추가
+function _addSubtitleEntry() {
+  const total = getTotalDuration() || 10;
+  const lastSub = (composeState.subtitle_entries || []).slice(-1)[0];
+  const startTime = lastSub ? lastSub.end_time : 0;
+  composeState.subtitle_entries.push({
+    id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    text: "새 자막",
+    start_time: Math.round(Math.min(startTime, total - 2) * 10) / 10,
+    end_time: Math.round(Math.min(startTime + 2, total) * 10) / 10,
+  });
+  _dirty = true;
+  renderSubtitleTrack();
+  renderTabNarration();
+}
+
+// TTS 생성 후 voice_clips + subtitle_entries로 자동 배치
+async function _generateTTSAndAddClips(slideNum) {
+  const btn = slideNum > 0 ? document.getElementById("btn-gen-tts") : document.getElementById("btn-gen-all-tts");
+  const status = document.getElementById("tts-status");
+  if (btn) { btn.textContent = "생성 중..."; btn.disabled = true; }
+  if (status) status.textContent = "TTS 생성 중...";
+
+  const engine = document.getElementById("tts-engine")?.value || "edge-tts";
+  const voice = document.getElementById("tts-voice")?.value || "";
+
+  try {
+    const body = { tts_engine: engine, tts_voice: voice };
+    if (slideNum > 0) body.slide_num = slideNum;
+    const r = await fetch(`/api/jobs/${JOB_ID}/composer/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (data.ok) {
+      if (status) status.textContent = `생성 완료 (${data.count}개 문장) — 클립 배치 중...`;
+      await refreshData();
+
+      // 기존 voice_clips에서 해당 슬라이드 클립 제거 (재생성)
+      const targetSlides = slideNum > 0 ? [slideNum] : composeState.slide_order;
+      composeState.voice_clips = (composeState.voice_clips || []).filter(
+        c => !targetSlides.includes(c.slide_num)
+      );
+      composeState.subtitle_entries = (composeState.subtitle_entries || []).filter(
+        e => !targetSlides.includes(e.slide_num)
+      );
+
+      // 새로 생성된 오디오를 voice_clips + subtitle_entries로 변환
+      let cumTime = 0;
+      const slides = getOrderedSlides();
+      slides.forEach(sl => {
+        const dur = getSlideDuration(sl.num);
+        if (targetSlides.includes(sl.num)) {
+          const audioFiles = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
+          const sentences = sl.sentences || [];
+          let clipTime = cumTime;
+          audioFiles.forEach((af, ai) => {
+            composeState.voice_clips.push({
+              id: `vc_${sl.num}_${ai}_${Date.now()}`,
+              file: af.file,
+              path: af.path,
+              start_time: Math.round(clipTime * 100) / 100,
+              duration: af.duration || 2.0,
+              volume: composeState.narr_volume !== undefined ? composeState.narr_volume : 100,
+              slide_num: sl.num,
+            });
+            const sentIdx = af.sentence_idx !== undefined ? af.sentence_idx : ai;
+            const sent = sentences[sentIdx];
+            if (sent && sent.text) {
+              composeState.subtitle_entries.push({
+                id: `sub_${sl.num}_${ai}_${Date.now()}`,
+                text: sent.text,
+                start_time: Math.round(clipTime * 100) / 100,
+                end_time: Math.round((clipTime + (af.duration || 2.0)) * 100) / 100,
+                slide_num: sl.num,
+              });
+            }
+            clipTime += af.duration || 2.0;
+          });
+          // 슬라이드 duration 업데이트
+          if (audioFiles.length > 0) {
+            const totalAudioDur = audioFiles.reduce((s, a) => s + (a.duration || 0), 0);
+            if (!composeState.slide_durations) composeState.slide_durations = {};
+            composeState.slide_durations[sl.num] = Math.round(totalAudioDur * 10) / 10;
+          }
+        }
+        cumTime += getSlideDuration(sl.num);
+      });
+
+      _dirty = true;
+      renderTimeline();
+      renderTabNarration();
+      if (status) status.textContent = `완료 — ${data.count}개 클립 배치됨`;
+    } else {
+      if (status) status.textContent = `실패: ${data.error || "알 수 없는 오류"}`;
+    }
+  } catch (e) {
+    if (status) status.textContent = `오류: ${e.message}`;
+  } finally {
+    if (btn) { btn.textContent = slideNum > 0 ? "TTS → 클립" : "전체"; btn.disabled = false; }
+  }
 }
 
 const _FALLBACK_VOICES = {
@@ -2850,6 +3123,60 @@ function removeSfxMarker(idx) {
 
 function onSfxDragStart(e, filename) {
   e.dataTransfer.setData("sfx_file", filename);
+}
+
+function onNarrDragStart(e, filename, duration, url) {
+  e.dataTransfer.setData("narr_file", filename);
+  e.dataTransfer.setData("narr_duration", String(duration));
+  e.dataTransfer.setData("narr_url", url);
+}
+
+function setupVoiceClipDrop() {
+  const narrTrack = document.getElementById("timeline-narration");
+  const timeline = document.getElementById("timeline");
+
+  function handleDrop(e) {
+    e.preventDefault();
+    narrTrack.classList.remove("voice-drag-hover");
+    const file = e.dataTransfer.getData("narr_file");
+    if (!file) return;
+    const duration = parseFloat(e.dataTransfer.getData("narr_duration")) || 2.0;
+    const url = e.dataTransfer.getData("narr_url") || "";
+
+    const total = getTotalDuration();
+    const rect = narrTrack.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const time = pct * total;
+
+    composeState.voice_clips.push({
+      id: `vc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      file,
+      path: url,
+      start_time: Math.round(time * 10) / 10,
+      duration,
+      volume: composeState.narr_volume !== undefined ? composeState.narr_volume : 100,
+    });
+    _dirty = true;
+    renderVoiceClipTrack();
+    if (_activeTab === 'narration') renderTabNarration();
+  }
+
+  timeline.addEventListener("dragover", e => {
+    if (e.dataTransfer.types.includes("narr_file")) {
+      e.preventDefault();
+      narrTrack.classList.add("voice-drag-hover");
+    }
+  });
+  timeline.addEventListener("dragleave", e => {
+    if (!timeline.contains(e.relatedTarget)) {
+      narrTrack.classList.remove("voice-drag-hover");
+    }
+  });
+  timeline.addEventListener("drop", e => {
+    if (e.dataTransfer.types.includes("narr_file")) {
+      handleDrop(e);
+    }
+  });
 }
 
 function setupSfxDrop() {
