@@ -2898,6 +2898,7 @@ function renderTabNarration() {
         <option value="edge-tts" ${curEngine === 'edge-tts' ? 'selected' : ''}>Edge TTS</option>
         <option value="google-cloud" ${curEngine === 'google-cloud' ? 'selected' : ''}>Google Cloud</option>
         <option value="gpt-sovits" ${curEngine === 'gpt-sovits' ? 'selected' : ''}>GPT-SoVITS</option>
+        <option value="gemini-tts" ${curEngine === 'gemini-tts' ? 'selected' : ''}>Gemini TTS</option>
       </select>
     </div>
     <div class="ctrl-row" id="voice-row" style="margin-top:4px;"><span class="ctrl-label">음성</span>
@@ -3074,6 +3075,26 @@ function _updateVoiceSelect() {
   if (engine === "gpt-sovits") {
     voiceRow.style.display = "";
     _loadSovitsVoices(voiceSel, chCfg.sovits_ref_voice || "");
+    return;
+  }
+
+  // Gemini TTS → 프리빌트 음성
+  if (engine === "gemini-tts") {
+    voiceRow.style.display = "";
+    const geminiVoices = {
+      "Kore": "Kore (Firm)", "Puck": "Puck (Upbeat)", "Sulafat": "Sulafat (Warm)",
+      "Charon": "Charon (Informative)", "Fenrir": "Fenrir (Excitable)", "Leda": "Leda (Youthful)",
+      "Orus": "Orus (Firm)", "Aoede": "Aoede (Breezy)", "Zephyr": "Zephyr (Bright)",
+      "Enceladus": "Enceladus (Breathy)", "Iapetus": "Iapetus (Clear)", "Umbriel": "Umbriel (Easy-going)",
+      "Achernar": "Achernar (Soft)", "Achird": "Achird (Friendly)", "Gacrux": "Gacrux (Mature)",
+      "Vindemiatrix": "Vindemiatrix (Gentle)", "Sadachbia": "Sadachbia (Lively)",
+    };
+    const defaultGemini = chCfg.gemini_tts_voice || "Kore";
+    let opts = "";
+    for (const [key, label] of Object.entries(geminiVoices)) {
+      opts += `<option value="${key}" ${key === defaultGemini ? 'selected' : ''}>${label}</option>`;
+    }
+    voiceSel.innerHTML = opts;
     return;
   }
   voiceRow.style.display = "";

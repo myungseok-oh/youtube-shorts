@@ -1084,6 +1084,7 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
   // === Right column: TTS / Narration ===
   // scriptData.channel_config은 API에서 직접 제공 (channelsCache 의존 제거)
   const chCfg = scriptData.channel_config || {};
+  window._currentChannelConfig = chCfg;
   const chTtsEngine = chCfg.tts_engine || "edge-tts";
   const chTtsVoice = chCfg.tts_voice || "ko-KR-SunHiNeural";
   const chTtsRate = parseInt((chCfg.tts_rate || "+0%").replace("%", "").replace("+", "")) || 0;
@@ -1117,9 +1118,10 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
             <option value="edge-tts" ${chTtsEngine === 'edge-tts' ? 'selected' : ''}>Edge TTS</option>
             <option value="google-cloud" ${chTtsEngine === 'google-cloud' ? 'selected' : ''}>Google Cloud TTS</option>
             <option value="gpt-sovits" ${chTtsEngine === 'gpt-sovits' ? 'selected' : ''}>GPT-SoVITS</option>
+            <option value="gemini-tts" ${chTtsEngine === 'gemini-tts' ? 'selected' : ''}>Gemini TTS</option>
           </select>
         </div>
-        <div id="narration-edge-section" class="${chTtsEngine === 'edge-tts' ? '' : 'hidden'}">
+        <div id="narration-edge-section" class="${(chTtsEngine === 'edge-tts' || chTtsEngine === 'gemini-tts') ? '' : 'hidden'}">
           <div class="flex gap-2 items-center">
             <select id="tts-voice-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
               <option value="ko-KR-SunHiNeural" ${chTtsVoice === 'ko-KR-SunHiNeural' ? 'selected' : ''}>선히 (여성)</option>
@@ -2246,8 +2248,26 @@ function renderWizardFooter(step, jobId, scriptData, stepsData) {
         <div class="flex gap-2">
           <button onclick="resetToWaiting('${jobId}')" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition">재작업</button>
           <a href="/api/jobs/${jobId}/video" download class="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs transition inline-block">다운로드</a>
-          <button onclick="manualUpload('${jobId}')" id="btn-manual-upload"
+          <button onclick="showUploadOptions('${jobId}')" id="btn-manual-upload"
                   class="px-3 py-2 bg-red-700 hover:bg-red-600 rounded-lg text-xs font-medium transition">YouTube 업로드</button>
+        </div>
+        <div id="upload-options-${jobId}" class="hidden mt-2 p-3 bg-gray-800 rounded-lg border border-gray-700">
+          <div class="flex gap-2 items-center mb-2">
+            <label class="flex items-center gap-1 cursor-pointer text-xs">
+              <input type="radio" name="upload-mode-${jobId}" value="now" checked class="accent-red-500" onchange="toggleSchedulePicker('${jobId}')"> 즉시 게시
+            </label>
+            <label class="flex items-center gap-1 cursor-pointer text-xs">
+              <input type="radio" name="upload-mode-${jobId}" value="schedule" class="accent-red-500" onchange="toggleSchedulePicker('${jobId}')"> 예약 게시
+            </label>
+          </div>
+          <div id="schedule-picker-${jobId}" class="hidden mb-2">
+            <input type="datetime-local" id="schedule-time-${jobId}" class="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs">
+            <p class="text-xs text-gray-500 mt-1">예약 시 비공개로 업로드 후, 지정 시간에 자동 공개됩니다</p>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="manualUpload('${jobId}')" class="px-3 py-1.5 bg-red-700 hover:bg-red-600 rounded text-xs font-medium transition">업로드</button>
+            <button onclick="document.getElementById('upload-options-${jobId}').classList.add('hidden')" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition">취소</button>
+          </div>
         </div>`;
     } else if (status === "failed") {
       const failedStep = (stepsData.steps || []).find(s => s.status === "failed");
@@ -2347,6 +2367,11 @@ function renderJobDetail(scriptData, stepsData) {
 
   // GPT-SoVITS 참조 음성 목록 로드
   _loadSovitsRefSelect();
+  // Gemini TTS 초기화 (음성 목록 + rate 숨기기)
+  const _engineSel = document.getElementById("tts-engine-select");
+  if (_engineSel && _engineSel.value === "gemini-tts") {
+    toggleNarrationEngine();
+  }
 }
 
 async function _loadSovitsRefSelect() {
@@ -2390,22 +2415,76 @@ async function forceJobStatus(jobId, newStatus) {
   }
 }
 
-async function manualUpload(jobId) {
-  const btn = document.getElementById("btn-manual-upload");
-  const statusEl = document.getElementById(`upload-status-${jobId}`);
-  if (!confirm("YouTube에 업로드하시겠습니까?")) return;
+function showUploadOptions(jobId) {
+  const optionsEl = document.getElementById(`upload-options-${jobId}`);
+  if (optionsEl) {
+    optionsEl.classList.toggle("hidden");
+    // 기본 예약 시간: 내일 오전 9시
+    const picker = document.getElementById(`schedule-time-${jobId}`);
+    if (picker && !picker.value) {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(9, 0, 0, 0);
+      picker.value = tomorrow.toISOString().slice(0, 16);
+    }
+  }
+}
 
+function toggleSchedulePicker(jobId) {
+  const mode = document.querySelector(`input[name="upload-mode-${jobId}"]:checked`)?.value;
+  const picker = document.getElementById(`schedule-picker-${jobId}`);
+  if (picker) {
+    if (mode === "schedule") picker.classList.remove("hidden");
+    else picker.classList.add("hidden");
+  }
+}
+
+async function manualUpload(jobId) {
+  const statusEl = document.getElementById(`upload-status-${jobId}`);
+
+  // 예약 모드 확인
+  const modeEl = document.querySelector(`input[name="upload-mode-${jobId}"]:checked`);
+  const mode = modeEl ? modeEl.value : "now";
+  let publishAt = "";
+
+  if (mode === "schedule") {
+    const picker = document.getElementById(`schedule-time-${jobId}`);
+    if (!picker || !picker.value) {
+      alert("예약 시간을 선택하세요");
+      return;
+    }
+    // 로컬 시간 → ISO 8601 UTC
+    const localDate = new Date(picker.value);
+    publishAt = localDate.toISOString();
+  }
+
+  const confirmMsg = mode === "schedule"
+    ? `예약 게시로 업로드하시겠습니까?\n(${new Date(publishAt).toLocaleString()} 에 자동 공개)`
+    : "YouTube에 즉시 업로드하시겠습니까?";
+  if (!confirm(confirmMsg)) return;
+
+  // 옵션 패널 숨기기
+  const optionsEl = document.getElementById(`upload-options-${jobId}`);
+  if (optionsEl) optionsEl.classList.add("hidden");
+
+  const btn = document.getElementById("btn-manual-upload");
   btnLoading(btn, "업로드 중...");
 
   try {
-    const res = await fetch(`/api/jobs/${jobId}/youtube-upload`, { method: "POST" });
+    const res = await fetch(`/api/jobs/${jobId}/youtube-upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ publish_at: publishAt }),
+    });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
       throw new Error(err.detail || "업로드 실패");
     }
     const data = await res.json();
-    btnDone(btn, "업로드 완료", false);
-    if (statusEl) statusEl.innerHTML = `<span class="text-green-400">업로드 완료! ID: ${data.video_id || ""}</span>`;
+    const label = publishAt ? "예약 업로드 완료" : "업로드 완료";
+    btnDone(btn, label, false);
+    const scheduleInfo = publishAt ? ` (${new Date(publishAt).toLocaleString()} 공개 예정)` : "";
+    if (statusEl) statusEl.innerHTML = `<span class="text-green-400">${label}! ID: ${data.video_id || ""}${scheduleInfo}</span>`;
   } catch (e) {
     btnError(btn, "업로드 실패");
     if (statusEl) statusEl.innerHTML = `<span class="text-red-400">실패: ${e.message}</span>`;
@@ -2610,8 +2689,35 @@ function toggleNarrationEngine() {
   } else if (engine === "gpt-sovits") {
     sovitsSection.classList.remove("hidden");
     _loadSovitsRefSelect();
+  } else if (engine === "gemini-tts") {
+    // Gemini TTS: Edge 섹션의 voice 드롭다운에 Gemini 음성 채우기
+    edgeSection.classList.remove("hidden");
+    const voiceSel = document.getElementById("tts-voice-select");
+    if (voiceSel) {
+      const geminiVoices = {
+        "Kore": "Kore (Firm)", "Puck": "Puck (Upbeat)", "Sulafat": "Sulafat (Warm)",
+        "Charon": "Charon (Informative)", "Fenrir": "Fenrir (Excitable)", "Leda": "Leda (Youthful)",
+        "Orus": "Orus (Firm)", "Aoede": "Aoede (Breezy)", "Zephyr": "Zephyr (Bright)",
+        "Enceladus": "Enceladus (Breathy)", "Iapetus": "Iapetus (Clear)", "Umbriel": "Umbriel (Easy-going)",
+        "Achernar": "Achernar (Soft)", "Achird": "Achird (Friendly)", "Gacrux": "Gacrux (Mature)",
+        "Vindemiatrix": "Vindemiatrix (Gentle)", "Sadachbia": "Sadachbia (Lively)",
+      };
+      const chCfg = window._currentChannelConfig || {};
+      const defaultV = chCfg.gemini_tts_voice || "Kore";
+      let opts = "";
+      for (const [k, v] of Object.entries(geminiVoices)) {
+        opts += `<option value="${k}" ${k === defaultV ? 'selected' : ''}>${v}</option>`;
+      }
+      voiceSel.innerHTML = opts;
+    }
+    // rate 슬라이더 숨기기 (Gemini는 rate 불필요)
+    const rateRow = document.getElementById("tts-rate")?.closest(".flex");
+    if (rateRow) rateRow.style.display = "none";
   } else {
     edgeSection.classList.remove("hidden");
+    // rate 슬라이더 복원
+    const rateRow2 = document.getElementById("tts-rate")?.closest(".flex");
+    if (rateRow2) rateRow2.style.display = "";
   }
 }
 
@@ -2631,6 +2737,28 @@ async function previewVoice() {
   const engineEl = document.getElementById("tts-engine-select");
   const engine = engineEl ? engineEl.value : "edge-tts";
   let voice, rate, btn;
+
+  if (engine === "gemini-tts") {
+    voice = document.getElementById("tts-voice-select")?.value || "Kore";
+    btn = document.getElementById("btn-preview-voice");
+    const audio = document.getElementById("voice-preview-popup");
+    btn.textContent = "로딩...";
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/tts/gemini-sample/${voice}`);
+      if (!res.ok) throw new Error("샘플 없음");
+      const blob = await res.blob();
+      audio.src = URL.createObjectURL(blob);
+      audio.controls = true;
+      audio.classList.remove("hidden");
+      audio.play().catch(() => {});
+    } catch (e) {
+      alert("Gemini 미리듣기 실패: " + e.message);
+    }
+    btn.textContent = "미리듣기";
+    btn.disabled = false;
+    return;
+  }
 
   if (engine === "google-cloud") {
     voice = document.getElementById("google-voice-select").value;
@@ -2909,18 +3037,48 @@ function toggleTtsEngine() {
   const edgeSection = document.getElementById("cs-tts-edge-section");
   const googleSection = document.getElementById("cs-tts-google-section");
   const sovitsSection = document.getElementById("cs-tts-sovits-section");
+  const geminiSection = document.getElementById("cs-tts-gemini-section");
 
   edgeSection.classList.add("hidden");
   googleSection.classList.add("hidden");
   sovitsSection.classList.add("hidden");
+  geminiSection.classList.add("hidden");
 
   if (engine === "google-cloud") {
     googleSection.classList.remove("hidden");
   } else if (engine === "gpt-sovits") {
     sovitsSection.classList.remove("hidden");
     checkSovitsStatus();
+  } else if (engine === "gemini-tts") {
+    geminiSection.classList.remove("hidden");
+    _populateGeminiVoices();
   } else {
     edgeSection.classList.remove("hidden");
+  }
+}
+
+function _populateGeminiVoices() {
+  const sel = document.getElementById("cs-gemini-tts-voice");
+  if (sel.options.length > 1) return; // already populated
+  sel.innerHTML = "";
+  const voices = {
+    "Kore": "Kore (Firm)", "Puck": "Puck (Upbeat)", "Sulafat": "Sulafat (Warm)",
+    "Charon": "Charon (Informative)", "Fenrir": "Fenrir (Excitable)", "Leda": "Leda (Youthful)",
+    "Orus": "Orus (Firm)", "Aoede": "Aoede (Breezy)", "Zephyr": "Zephyr (Bright)",
+    "Enceladus": "Enceladus (Breathy)", "Iapetus": "Iapetus (Clear)", "Umbriel": "Umbriel (Easy-going)",
+    "Algieba": "Algieba (Smooth)", "Despina": "Despina (Smooth)", "Erinome": "Erinome (Clear)",
+    "Algenib": "Algenib (Gravelly)", "Rasalgethi": "Rasalgethi (Informative)",
+    "Laomedeia": "Laomedeia (Upbeat)", "Achernar": "Achernar (Soft)", "Alnilam": "Alnilam (Firm)",
+    "Schedar": "Schedar (Even)", "Gacrux": "Gacrux (Mature)", "Pulcherrima": "Pulcherrima (Forward)",
+    "Achird": "Achird (Friendly)", "Zubenelgenubi": "Zubenelgenubi (Casual)",
+    "Vindemiatrix": "Vindemiatrix (Gentle)", "Sadachbia": "Sadachbia (Lively)",
+    "Sadaltager": "Sadaltager (Knowledgeable)", "Callirrhoe": "Callirrhoe (Easy-going)",
+    "Autonoe": "Autonoe (Bright)",
+  };
+  for (const [k, v] of Object.entries(voices)) {
+    const opt = document.createElement("option");
+    opt.value = k; opt.textContent = v;
+    sel.appendChild(opt);
   }
 }
 
@@ -3416,6 +3574,45 @@ async function previewSovitsVoice() {
     alert("GPT-SoVITS 미리듣기 실패: " + e.message);
   }
   btn.textContent = "GPT-SoVITS 미리듣기";
+  btn.disabled = false;
+}
+
+async function previewGeminiVoice() {
+  const voice = document.getElementById("cs-gemini-tts-voice").value;
+  const style = document.getElementById("cs-gemini-tts-style").value.trim();
+  const audio = document.getElementById("cs-gemini-preview");
+  const btn = document.getElementById("btn-cs-preview-gemini");
+
+  btn.textContent = "로딩...";
+  btn.disabled = true;
+  try {
+    let res;
+    if (style) {
+      // 스타일 인스트럭션 있으면 → API로 새로 생성
+      const apiKey = document.getElementById("cs-gemini-api-key")?.value || "";
+      if (!apiKey) { alert("Gemini API 키를 먼저 입력하세요 (YouTube 탭)"); return; }
+      btn.textContent = "생성중...";
+      res = await fetch("/api/tts/gemini-preview-styled", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voice, style, api_key: apiKey }),
+      });
+    } else {
+      // 인스트럭션 없으면 → 사전 생성된 샘플
+      res = await fetch(`/api/tts/gemini-sample/${voice}`);
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "미리듣기 실패");
+    }
+    const blob = await res.blob();
+    audio.src = URL.createObjectURL(blob);
+    audio.classList.remove("hidden");
+    audio.play().catch(() => {});
+  } catch (e) {
+    alert("Gemini 미리듣기 실패: " + e.message);
+  }
+  btn.textContent = "미리듣기";
   btn.disabled = false;
 }
 
@@ -4656,6 +4853,7 @@ async function openChannelSettings(channelId) {
   // ── 이미지 (image) ──
   document.getElementById("cs-bg-media-type").value = cfg.bg_media_type || "auto";
   document.getElementById("cs-first-slide-single-bg").checked = !!cfg.first_slide_single_bg;
+  document.getElementById("cs-style-reference").checked = !!cfg.style_reference;
   loadCharacterRefPreview();
 
   // ── 인트로/아웃트로 (intro_outro) ──
@@ -4686,7 +4884,13 @@ async function openChannelSettings(channelId) {
   const sovitsSpeed = cfg.sovits_speed || 1.0;
   document.getElementById("cs-sovits-speed").value = sovitsSpeed;
   document.getElementById("cs-sovits-speed-label").textContent = sovitsSpeed + "x";
+  // ── Gemini TTS ──
+  document.getElementById("cs-gemini-tts-style").value = cfg.gemini_tts_style || "";
   toggleTtsEngine();
+  if (cfg.tts_engine === "gemini-tts") {
+    _populateGeminiVoices();
+    document.getElementById("cs-gemini-tts-voice").value = cfg.gemini_tts_voice || "Kore";
+  }
   loadRefVoices(cfg.sovits_ref_voice || "");
 
   // ── RVC ──
@@ -4792,6 +4996,7 @@ async function saveChannelSettings() {
   cfg.format = document.getElementById("cs-format").value;
   cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
   cfg.first_slide_single_bg = document.getElementById("cs-first-slide-single-bg").checked;
+  cfg.style_reference = document.getElementById("cs-style-reference").checked;
 
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
 
@@ -4836,6 +5041,9 @@ async function saveChannelSettings() {
   cfg.sovits_ref_voice = document.getElementById("cs-sovits-ref-voice").value;
   cfg.sovits_ref_text = document.getElementById("cs-sovits-ref-text").value.trim();
   cfg.sovits_speed = parseFloat(document.getElementById("cs-sovits-speed").value) || 1.0;
+  // Gemini TTS
+  cfg.gemini_tts_voice = document.getElementById("cs-gemini-tts-voice").value || "Kore";
+  cfg.gemini_tts_style = document.getElementById("cs-gemini-tts-style").value.trim();
 
   // RVC 설정 저장
   cfg.rvc_enabled = document.getElementById("cs-rvc-enabled").checked;
@@ -5116,6 +5324,7 @@ async function saveChannelSettingsSilent() {
   cfg.format = document.getElementById("cs-format").value;
   cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
   cfg.first_slide_single_bg = document.getElementById("cs-first-slide-single-bg").checked;
+  cfg.style_reference = document.getElementById("cs-style-reference").checked;
 
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
 

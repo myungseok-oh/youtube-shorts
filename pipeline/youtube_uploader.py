@@ -35,6 +35,7 @@ def upload_video(
     refresh_token: str,
     privacy_status: str = "private",
     thumbnail_path: str = "",
+    publish_at: str = "",
 ) -> dict:
     """YouTube에 영상을 업로드하고 video_id와 URL을 반환.
 
@@ -51,8 +52,9 @@ def upload_video(
             "categoryId": "22",  # People & Blogs
         },
         "status": {
-            "privacyStatus": privacy_status,
+            "privacyStatus": "private" if publish_at else privacy_status,
             "selfDeclaredMadeForKids": False,
+            **({"publishAt": publish_at} if publish_at else {}),
         },
     }
 

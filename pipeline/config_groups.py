@@ -34,6 +34,7 @@ DEFAULTS = {
     # 이미지/영상 (image)
     "bg_media_type":             "auto",
     "first_slide_single_bg":     False,
+    "style_reference":           False,
     "image_style":               "mixed",
     "image_prompt_style":        "",
     # image_scene_references 제거됨 (고정 매핑 → 이미지 다양성 저해)
@@ -54,6 +55,8 @@ DEFAULTS = {
     "sovits_ref_voice":  "",
     "sovits_ref_text":   "",
     "sovits_speed":      1.0,
+    "gemini_tts_voice":  "Kore",
+    "gemini_tts_style":  "",
 
     # BGM/SFX (audio_fx)
     "bgm_enabled":       False,
@@ -140,7 +143,7 @@ OPTION_GROUPS = [
         "icon": "I",
         "always_on": False,
         "fields": [
-            "bg_media_type", "first_slide_single_bg",
+            "bg_media_type", "first_slide_single_bg", "style_reference",
         ],
     },
     {

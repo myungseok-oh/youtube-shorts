@@ -47,10 +47,11 @@ def get_composer_data(job_id: str, script: dict | None = None,
     compose_data = load_compose_data(job_id)
 
     # TTS 음성 목록
-    from pipeline.tts_generator import EDGE_VOICES, GOOGLE_CLOUD_VOICES
+    from pipeline.tts_generator import EDGE_VOICES, GOOGLE_CLOUD_VOICES, GEMINI_VOICES
     tts_voices = {
         "edge-tts": {k: v for k, v in EDGE_VOICES.items()},
         "google-cloud": {k: v for k, v in GOOGLE_CLOUD_VOICES.items()},
+        "gemini-tts": {k: v for k, v in GEMINI_VOICES.items()},
     }
 
     return {

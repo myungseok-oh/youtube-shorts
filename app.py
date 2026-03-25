@@ -226,6 +226,12 @@ async def lifespan(app):
                        instructions=DEFAULT_INSTRUCTIONS,
                        default_topics="오늘 주요 뉴스 3개 만들어줘")
     _recover_orphan_jobs()
+    # Gemini TTS 스타일 미리듣기 임시 파일 삭제
+    _gemini_tmp = os.path.join(config.root_dir(), "data", "tts_preview", "gemini_tmp")
+    if os.path.isdir(_gemini_tmp):
+        import shutil
+        shutil.rmtree(_gemini_tmp, ignore_errors=True)
+        print("[startup] Gemini TTS 임시 샘플 삭제 완료")
     # 스케줄러 + WAL 체크포인트 시작
     scheduler_task = asyncio.create_task(_scheduler_loop())
     wal_task = asyncio.create_task(_wal_checkpoint_loop())
@@ -1350,7 +1356,7 @@ async def api_force_status(job_id: str, request: Request):
 # ─── 수동 YouTube 업로드 ───
 
 @app.post("/api/jobs/{job_id}/youtube-upload")
-async def api_manual_youtube_upload(job_id: str):
+async def api_manual_youtube_upload(job_id: str, request: Request):
     """완성된 영상을 수동으로 YouTube에 업로드"""
     from pipeline.youtube_uploader import upload_video
 
@@ -1367,6 +1373,13 @@ async def api_manual_youtube_upload(job_id: str):
     yt_client_secret = ch_config.get("youtube_client_secret", "")
     yt_refresh_token = ch_config.get("youtube_refresh_token", "")
     yt_privacy = ch_config.get("youtube_privacy", "private")
+
+    # 요청 body에서 publish_at 읽기 (없으면 즉시 게시)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    publish_at = body.get("publish_at", "")
 
     if not (yt_client_id and yt_client_secret and yt_refresh_token):
         raise HTTPException(400, "YouTube 인증이 설정되지 않았습니다. 채널 설정에서 OAuth 정보를 입력하세요.")
@@ -1401,6 +1414,7 @@ async def api_manual_youtube_upload(job_id: str):
             refresh_token=yt_refresh_token,
             privacy_status=yt_privacy,
             thumbnail_path=thumb_path if os.path.isfile(thumb_path) else "",
+            publish_at=publish_at,
         )
     except Exception as e:
         import traceback
@@ -2617,6 +2631,57 @@ async def api_tts_preview_sovits(request: Request):
     return FileResponse(out_path, media_type="audio/wav")
 
 
+@app.get("/api/tts/gemini-sample/{voice}")
+async def api_gemini_sample(voice: str):
+    """Gemini TTS 기본 샘플 재생 (사전 생성된 파일)"""
+    sample_path = os.path.join(config.root_dir(), "data", "tts_preview", "gemini", f"{voice}.mp3")
+    if not os.path.exists(sample_path):
+        raise HTTPException(404, f"샘플 없음: {voice}")
+    return FileResponse(sample_path, media_type="audio/mpeg")
+
+
+@app.post("/api/tts/gemini-preview-styled")
+async def api_gemini_preview_styled(request: Request):
+    """Gemini TTS 스타일 인스트럭션 적용 미리듣기 (임시 파일)"""
+    body = await request.json()
+    voice = body.get("voice", "Kore")
+    style = body.get("style", "")
+    api_key = body.get("api_key", "")
+
+    if not api_key:
+        raise HTTPException(400, "Gemini API 키가 필요합니다")
+    if not style:
+        raise HTTPException(400, "스타일 인스트럭션이 필요합니다")
+
+    import hashlib
+    style_hash = hashlib.md5(f"{voice}_{style}".encode()).hexdigest()[:12]
+    tmp_dir = os.path.join(config.root_dir(), "data", "tts_preview", "gemini_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    out_path = os.path.join(tmp_dir, f"{style_hash}.mp3")
+
+    if not os.path.exists(out_path):
+        from pipeline.tts_generator import _generate_gemini
+        sample_text = "오늘의 핵심 뉴스를 60초로 전해드립니다."
+
+        def _gen():
+            return _generate_gemini(
+                [{"text": sample_text, "slide": 1}], tmp_dir,
+                {"api_key": api_key, "voice": voice, "style": style},
+            )
+        try:
+            paths = await asyncio.to_thread(_gen)
+            if paths and os.path.exists(paths[0]):
+                os.replace(paths[0], out_path)
+            else:
+                raise HTTPException(502, "Gemini TTS 응답 없음")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"Gemini TTS 오류: {str(e)[:200]}")
+
+    return FileResponse(out_path, media_type="audio/mpeg")
+
+
 @app.get("/api/sovits/status")
 async def api_sovits_status():
     """GPT-SoVITS 서버 연결 상태"""
@@ -3059,6 +3124,17 @@ async def api_composer_tts(job_id: str, request: Request):
                     voice = ch_cfg.get("tts_voice", "ko-KR-SunHiNeural")
             rate = ch_cfg.get("tts_rate")
 
+    # Gemini TTS 설정
+    gemini_cfg = None
+    if tts_engine == "gemini-tts":
+        gemini_cfg = {
+            "api_key": ch_cfg.get("gemini_api_key", "") if ch_id else "",
+            "voice": tts_voice or ch_cfg.get("gemini_tts_voice", "Kore") if ch_id else "Kore",
+            "style": ch_cfg.get("gemini_tts_style", "") if ch_id else "",
+        }
+        if not voice:
+            voice = gemini_cfg["voice"]
+
     # GPT-SoVITS 설정
     if tts_engine == "gpt-sovits":
         ref_voice = tts_voice or (ch_cfg.get("sovits_ref_voice", "") if ch_id else "")
@@ -3097,6 +3173,7 @@ async def api_composer_tts(job_id: str, request: Request):
                     voice=voice,
                     rate=rate,
                     sovits_cfg=sovits_cfg,
+                    gemini_cfg=gemini_cfg,
                 )
                 # 생성된 파일을 올바른 인덱스로 이동
                 for j, src in enumerate(result):
@@ -3118,6 +3195,7 @@ async def api_composer_tts(job_id: str, request: Request):
                 voice=voice,
                 rate=rate,
                 sovits_cfg=sovits_cfg,
+                gemini_cfg=gemini_cfg,
             )
             count = len(result)
 

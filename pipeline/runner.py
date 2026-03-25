@@ -27,7 +27,7 @@ from pipeline.agent import (
     generate_synopsis, generate_visual_plan, generate_script_from_plan,
     generate_all_in_one, _validate_with_claude,
 )
-from pipeline.tts_generator import generate_audio, GOOGLE_CLOUD_VOICES
+from pipeline.tts_generator import generate_audio, GOOGLE_CLOUD_VOICES, GEMINI_VOICES
 from pipeline.slide_generator import generate_slides, generate_thumbnail
 from pipeline.sync_engine import build_timeline, merge_slide_audio
 from pipeline.video_renderer import (
@@ -357,6 +357,15 @@ def _build_sovits_cfg(ch_config: dict, channel_id: str) -> dict:
         "ref_audio": ref_audio,
         "ref_text": ch_config.get("sovits_ref_text", ""),
         "speed": ch_config.get("sovits_speed", 1.0),
+    }
+
+
+def _build_gemini_tts_cfg(ch_config: dict) -> dict:
+    """채널 config에서 Gemini TTS 설정 dict 생성"""
+    return {
+        "api_key": ch_config.get("gemini_api_key", ""),
+        "voice": ch_config.get("gemini_tts_voice", "Kore"),
+        "style": ch_config.get("gemini_tts_style", ""),
     }
 
 
@@ -898,6 +907,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         gemini_key = ch_config_b.get("gemini_api_key", "")
                         if gemini_key:
                             # ── Step 1: 전체 이미지 생성 ──
+                            _first_bg_path = None  # 스타일 참조용 첫 이미지 경로
                             for idx, prompt in enumerate(image_prompts):
                                 slide_num = prompt.get("slide", idx + 1) if isinstance(prompt, dict) else idx + 1
                                 slide = slides_data[slide_num - 1] if slide_num <= len(slides_data) else {}
@@ -914,9 +924,13 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                     _zone_ratio_b = ch_config_b.get("slide_zone_ratio", "3:4:3")
                                     _ar = _calc_image_aspect_ratio(slide_layout_b, bg_display_mode, _zone_ratio_b)
                                     _char_ref_path = _find_channel_image(channel_id, "character_ref")
+                                    _style_ref = _first_bg_path if ch_config_b.get("style_reference") and idx > 0 else None
                                     gemini_generate_image(en_prompt, out, gemini_key,
                                                           aspect_ratio=_ar,
-                                                          reference_image_path=_char_ref_path)
+                                                          reference_image_path=_char_ref_path,
+                                                          style_reference_path=_style_ref)
+                                    if idx == 0 and ch_config_b.get("style_reference") and os.path.exists(out):
+                                        _first_bg_path = out
                                     print(f"[runner] bg_{idx+1}.png Gemini 이미지 생성 완료 (slide {slide_num})")
                                 except Exception as e:
                                     print(f"[runner] bg_{idx+1} Gemini 이미지 생성 실패: {e}")
@@ -1288,9 +1302,16 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         else:
                             sovits_cfg = None
 
+                        gemini_cfg = None
+                        if tts_engine == "gemini-tts":
+                            gemini_cfg = _build_gemini_tts_cfg(ch_config)
+
                         if tts_engine == "google-cloud":
                             tts_voice = tts_voice_override or ch_config.get("google_voice", "ko-KR-Wavenet-A")
                             tts_rate = tts_rate_override if tts_rate_override is not None else ch_config.get("google_rate", None)
+                        elif tts_engine == "gemini-tts":
+                            tts_voice = tts_voice_override or ch_config.get("gemini_tts_voice", "Kore")
+                            tts_rate = None
                         else:
                             tts_voice = tts_voice_override or ch_config.get("tts_voice", "")
                             tts_rate = tts_rate_override if tts_rate_override is not None else ch_config.get("tts_rate", None)
@@ -1306,8 +1327,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         audio_paths = generate_audio(sentences, dirs["audio"],
                                                      voice=tts_voice, rate=tts_rate,
                                                      sovits_cfg=sovits_cfg,
-                                                     rvc_cfg=rvc_cfg)
-                        engine_label = "GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS")
+                                                     rvc_cfg=rvc_cfg,
+                                                     gemini_cfg=gemini_cfg)
+                        engine_label = "Gemini TTS" if gemini_cfg else ("GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS"))
                         if rvc_cfg:
                             engine_label += f" + RVC({rvc_cfg['model']})"
                         _save_script_hash(dirs["audio"], sentences)
@@ -2068,6 +2090,9 @@ def _generate_narration_audio(text: str, output_path: str, ch_config: dict,
         if tts_engine == "google-cloud":
             voice = ch_config.get("google_voice", "ko-KR-Wavenet-A")
             rate = ch_config.get("google_rate", None)
+        elif tts_engine == "gemini-tts":
+            voice = ch_config.get("gemini_tts_voice", "Kore")
+            rate = None
         else:
             voice = ch_config.get("tts_voice", "")
             rate = ch_config.get("tts_rate", None)
@@ -2076,8 +2101,12 @@ def _generate_narration_audio(text: str, output_path: str, ch_config: dict,
         if tts_engine == "gpt-sovits":
             sovits_cfg = _build_sovits_cfg(ch_config, channel_id)
 
+        gemini_cfg = None
+        if tts_engine == "gemini-tts":
+            gemini_cfg = _build_gemini_tts_cfg(ch_config)
+
         paths = generate_audio(sentences, out_dir, voice=voice, rate=rate,
-                               sovits_cfg=sovits_cfg)
+                               sovits_cfg=sovits_cfg, gemini_cfg=gemini_cfg)
         if paths and os.path.exists(paths[0]):
             os.replace(paths[0], output_path)
             return output_path
@@ -2374,6 +2403,7 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                 gemini_key = ch_config_s3.get("gemini_api_key", "")
                 if gemini_key and image_prompts:
                     # ── Step 1: 전체 이미지 생성 ──
+                    _first_bg_path_s3 = None  # 스타일 참조용 첫 이미지 경로
                     for idx, prompt in enumerate(image_prompts):
                         slide = slides_data[idx] if idx < len(slides_data) else {}
                         bg_type = slide.get("bg_type", "photo")
@@ -2389,9 +2419,13 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                             _zone_ratio_s3 = ch_config_s3.get("slide_zone_ratio", "3:4:3")
                             _ar = _calc_image_aspect_ratio(slide_layout_s3, bg_display_mode, _zone_ratio_s3)
                             _char_ref_path_s3 = _find_channel_image(channel_id, "character_ref")
+                            _style_ref_s3 = _first_bg_path_s3 if ch_config_s3.get("style_reference") and idx > 0 else None
                             gemini_generate_image(en_prompt, output_path, gemini_key,
                                                   aspect_ratio=_ar,
-                                                  reference_image_path=_char_ref_path_s3)
+                                                  reference_image_path=_char_ref_path_s3,
+                                                  style_reference_path=_style_ref_s3)
+                            if idx == 0 and ch_config_s3.get("style_reference") and os.path.exists(output_path):
+                                _first_bg_path_s3 = output_path
                             print(f"[runner] bg_{idx+1}.png Gemini 이미지 생성 완료")
                         except Exception as e:
                             print(f"[runner] bg_{idx+1} Gemini 이미지 생성 실패: {e}")
@@ -2510,16 +2544,24 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
             if tts_engine == "gpt-sovits":
                 sovits_cfg = _build_sovits_cfg(ch_config, channel_id)
 
+            gemini_cfg = None
+            if tts_engine == "gemini-tts":
+                gemini_cfg = _build_gemini_tts_cfg(ch_config)
+
             if tts_engine == "google-cloud":
                 tts_voice = ch_config.get("google_voice", "ko-KR-Wavenet-A")
                 tts_rate = ch_config.get("google_rate", None)
+            elif tts_engine == "gemini-tts":
+                tts_voice = ch_config.get("gemini_tts_voice", "Kore")
+                tts_rate = None
             else:
                 tts_voice = ch_config.get("tts_voice", "")
                 tts_rate = ch_config.get("tts_rate", None)
             audio_paths = generate_audio(sentences, dirs["audio"],
                                          voice=tts_voice, rate=tts_rate,
-                                         sovits_cfg=sovits_cfg)
-            engine_label = "GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS")
+                                         sovits_cfg=sovits_cfg,
+                                         gemini_cfg=gemini_cfg)
+            engine_label = "Gemini TTS" if gemini_cfg else ("GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS"))
             _update_step(db, job_id, "tts", "completed",
                          output_data={"files": audio_paths,
                                       "count": len(audio_paths),

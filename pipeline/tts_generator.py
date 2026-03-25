@@ -1,4 +1,4 @@
-"""TTS 음성 생성 — Edge TTS / Google Cloud TTS / GPT-SoVITS 지원"""
+"""TTS 음성 생성 — Edge TTS / Google Cloud TTS / GPT-SoVITS / Gemini TTS 지원"""
 from __future__ import annotations
 import asyncio
 import base64
@@ -30,6 +30,39 @@ GOOGLE_CLOUD_VOICES = {
     "ko-KR-Neural2-A": "Neural2 A (여성)",
     "ko-KR-Neural2-B": "Neural2 B (여성)",
     "ko-KR-Neural2-C": "Neural2 C (남성)",
+}
+
+GEMINI_VOICES = {
+    "Kore": "Kore (Firm)",
+    "Puck": "Puck (Upbeat)",
+    "Sulafat": "Sulafat (Warm)",
+    "Charon": "Charon (Informative)",
+    "Fenrir": "Fenrir (Excitable)",
+    "Leda": "Leda (Youthful)",
+    "Orus": "Orus (Firm)",
+    "Aoede": "Aoede (Breezy)",
+    "Zephyr": "Zephyr (Bright)",
+    "Enceladus": "Enceladus (Breathy)",
+    "Iapetus": "Iapetus (Clear)",
+    "Umbriel": "Umbriel (Easy-going)",
+    "Algieba": "Algieba (Smooth)",
+    "Despina": "Despina (Smooth)",
+    "Erinome": "Erinome (Clear)",
+    "Algenib": "Algenib (Gravelly)",
+    "Rasalgethi": "Rasalgethi (Informative)",
+    "Laomedeia": "Laomedeia (Upbeat)",
+    "Achernar": "Achernar (Soft)",
+    "Alnilam": "Alnilam (Firm)",
+    "Schedar": "Schedar (Even)",
+    "Gacrux": "Gacrux (Mature)",
+    "Pulcherrima": "Pulcherrima (Forward)",
+    "Achird": "Achird (Friendly)",
+    "Zubenelgenubi": "Zubenelgenubi (Casual)",
+    "Vindemiatrix": "Vindemiatrix (Gentle)",
+    "Sadachbia": "Sadachbia (Lively)",
+    "Sadaltager": "Sadaltager (Knowledgeable)",
+    "Callirrhoe": "Callirrhoe (Easy-going)",
+    "Autonoe": "Autonoe (Bright)",
 }
 
 DEFAULT_VOICE = "ko-KR-SunHiNeural"
@@ -116,6 +149,91 @@ def _generate_google_cloud(sentences: list[dict], audio_dir: str,
         with open(out_path, "wb") as f:
             f.write(audio_bytes)
         paths.append(out_path)
+    return paths
+
+
+def _generate_gemini(sentences: list[dict], audio_dir: str,
+                     gemini_cfg: dict) -> list[str]:
+    """Gemini TTS API로 음성 생성 (Flash TTS 무료 티어)."""
+    import struct
+    from google import genai
+    from google.genai import types
+
+    api_key = gemini_cfg.get("api_key", "")
+    voice_name = gemini_cfg.get("voice", "Kore")
+    style = gemini_cfg.get("style", "")
+
+    if not api_key:
+        raise RuntimeError("Gemini TTS: API 키가 없습니다")
+
+    client = genai.Client(api_key=api_key)
+
+    paths = []
+    for i, item in enumerate(sentences):
+        text = item["text"]
+        if style:
+            text = f"{style}: {text}"
+
+        wav_path = os.path.join(audio_dir, f"audio_{i + 1}.wav")
+        mp3_path = os.path.join(audio_dir, f"audio_{i + 1}.mp3")
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-preview-tts",
+            contents=text,
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name=voice_name,
+                        )
+                    )
+                ),
+            ),
+        )
+
+        # PCM → WAV 변환
+        if not response.candidates or not response.candidates[0].content.parts:
+            raise RuntimeError(f"Gemini TTS: 문장 {i+1} 응답 없음")
+
+        audio_data = response.candidates[0].content.parts[0].inline_data.data
+        sample_rate = 24000
+        num_samples = len(audio_data) // 2  # 16-bit
+
+        with open(wav_path, "wb") as f:
+            f.write(b"RIFF")
+            f.write(struct.pack("<I", 36 + len(audio_data)))
+            f.write(b"WAVE")
+            f.write(b"fmt ")
+            f.write(struct.pack("<I", 16))
+            f.write(struct.pack("<H", 1))       # PCM
+            f.write(struct.pack("<H", 1))       # mono
+            f.write(struct.pack("<I", sample_rate))
+            f.write(struct.pack("<I", sample_rate * 2))
+            f.write(struct.pack("<H", 2))       # block align
+            f.write(struct.pack("<H", 16))      # bits per sample
+            f.write(b"data")
+            f.write(struct.pack("<I", len(audio_data)))
+            f.write(audio_data)
+
+        # WAV → MP3 변환
+        ffmpeg = config.ffmpeg()
+        try:
+            subprocess.run([
+                ffmpeg, "-y", "-i", wav_path,
+                "-codec:a", "libmp3lame", "-q:a", "2",
+                mp3_path,
+            ], capture_output=True, timeout=30)
+            if os.path.exists(mp3_path):
+                os.remove(wav_path)
+                paths.append(mp3_path)
+            else:
+                paths.append(wav_path)
+        except Exception:
+            paths.append(wav_path)
+
+        print(f"[tts] Gemini TTS 생성 완료: audio_{i+1} ({voice_name})")
+
     return paths
 
 
@@ -239,7 +357,8 @@ def _format_rate(rate_value) -> str:
 def generate_audio(sentences: list[dict], audio_dir: str,
                    voice: str = "", rate=None,
                    sovits_cfg: dict = None,
-                   rvc_cfg: dict = None) -> list[str]:
+                   rvc_cfg: dict = None,
+                   gemini_cfg: dict = None) -> list[str]:
     """문장 리스트로부터 오디오 파일 생성.
 
     Args:
@@ -250,6 +369,8 @@ def generate_audio(sentences: list[dict], audio_dir: str,
         sovits_cfg: GPT-SoVITS 설정 dict (있으면 GPT-SoVITS 사용)
         rvc_cfg: RVC 음성 변환 설정 dict (있으면 TTS 후 RVC 적용)
             {"model": "chisaka_airi", "pitch": 0, "index_influence": 0.5}
+        gemini_cfg: Gemini TTS 설정 dict (있으면 Gemini TTS 사용)
+            {"api_key": "...", "voice": "Kore", "style": "..."}
 
     Returns:
         생성된 오디오 파일 경로 리스트
@@ -259,6 +380,10 @@ def generate_audio(sentences: list[dict], audio_dir: str,
     # sentences 내 HTML 태그 제거 (방어)
     for sen in sentences:
         sen["text"] = _strip_html(sen.get("text", ""))
+
+    # Gemini TTS 모드
+    if gemini_cfg and gemini_cfg.get("api_key"):
+        return _generate_gemini(sentences, audio_dir, gemini_cfg)
 
     # GPT-SoVITS 모드
     if sovits_cfg and sovits_cfg.get("ref_audio"):

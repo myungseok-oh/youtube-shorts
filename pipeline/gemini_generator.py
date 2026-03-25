@@ -55,7 +55,8 @@ def _download_ref_image(url: str):
 def generate_image(prompt: str, output_path: str, api_key: str,
                    aspect_ratio: str = "9:16", max_retries: int = 1,
                    reference_image_url: str = None,
-                   reference_image_path: str = None) -> bool:
+                   reference_image_path: str = None,
+                   style_reference_path: str = None) -> bool:
     """Gemini 이미지 생성.
 
     Args:
@@ -66,35 +67,61 @@ def generate_image(prompt: str, output_path: str, api_key: str,
         max_retries: 재시도 횟수 (429 시 즉시 중단)
         reference_image_url: 캐릭터 참조 이미지 URL (선택, 하위 호환)
         reference_image_path: 캐릭터 참조 이미지 로컬 경로 (선택, 우선)
+        style_reference_path: 스타일 참조 이미지 경로 (선택, 화풍/색감 유지)
 
     Returns:
         성공 여부
     """
     client = genai.Client(api_key=api_key)
 
-    # 참조 이미지 준비 (로컬 파일 우선, 없으면 URL 다운로드)
-    ref_path = None
+    # 참조 이미지 준비
+    import mimetypes
+
+    def _make_image_part(path):
+        mime = mimetypes.guess_type(path)[0] or "image/png"
+        with open(path, "rb") as f:
+            return types.Part.from_bytes(data=f.read(), mime_type=mime), mime
+
+    # 캐릭터 참조 (로컬 파일 우선, 없으면 URL 다운로드)
+    char_ref_path = None
     if reference_image_path and os.path.exists(reference_image_path):
-        ref_path = reference_image_path
+        char_ref_path = reference_image_path
     elif reference_image_url:
-        ref_path = _download_ref_image(reference_image_url)
+        char_ref_path = _download_ref_image(reference_image_url)
+
+    # 스타일 참조
+    style_ref_path = None
+    if style_reference_path and os.path.exists(style_reference_path):
+        style_ref_path = style_reference_path
 
     contents = None
-    if ref_path:
-        import mimetypes
-        mime = mimetypes.guess_type(ref_path)[0] or "image/png"
-        with open(ref_path, "rb") as f:
-            ref_bytes = f.read()
-        ref_part = types.Part.from_bytes(data=ref_bytes, mime_type=mime)
-        contents = [
-            ref_part,
-            (f"Generate the following scene as the main background. "
-             f"Place the character from the reference image in a small size in the bottom-right corner, "
-             f"as if the character is a narrator explaining the scene. "
-             f"Keep the character's exact appearance (face, body, outfit, colors). "
-             f"The character should NOT be the main subject — the scene is the focus.\n\n{prompt}"),
-        ]
-        print(f"[gemini] ref image attached: {ref_path} ({mime})")
+    if char_ref_path or style_ref_path:
+        parts = []
+        instructions = []
+
+        if style_ref_path:
+            style_part, style_mime = _make_image_part(style_ref_path)
+            parts.append(style_part)
+            instructions.append(
+                "STYLE REFERENCE: Match the artistic style, color palette, lighting, "
+                "and rendering technique of this reference image. "
+                "Do NOT copy the background scene — generate a completely new scene as described below."
+            )
+            print(f"[gemini] style ref attached: {style_ref_path} ({style_mime})")
+
+        if char_ref_path:
+            char_part, char_mime = _make_image_part(char_ref_path)
+            parts.append(char_part)
+            instructions.append(
+                "CHARACTER REFERENCE: Include the character from this reference image in the scene. "
+                "Keep the character's exact appearance (face, body, outfit, colors). "
+                "Place the character naturally in the scene — do NOT force a fixed position."
+            )
+            print(f"[gemini] char ref attached: {char_ref_path} ({char_mime})")
+
+        parts.append("\n".join(instructions) + f"\n\nSCENE TO GENERATE:\n{prompt}")
+        contents = parts
+
     if contents is None:
         contents = prompt
 
