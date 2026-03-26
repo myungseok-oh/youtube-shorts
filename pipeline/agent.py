@@ -152,6 +152,7 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
                         roundup_rules: str = "",
                         skip_web_search: bool = False,
                         gemini_api_key: str = "",
+                        zone_ratio: str = "3:4:3",
                         channel_id: str | None = None) -> dict:
     agent = get_agent(channel_id) if channel_id else _default_agent
     return agent.generate_all_in_one(topic, instructions, brand,
@@ -161,7 +162,7 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
                                      scene_references, bg_display_mode,
                                      bg_media_type, script_rules,
                                      roundup_rules, skip_web_search,
-                                     gemini_api_key)
+                                     gemini_api_key, zone_ratio)
 
 
 def generate_image_prompts(topic: str, slides: list[dict],

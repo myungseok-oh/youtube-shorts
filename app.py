@@ -333,6 +333,16 @@ async def _run_channel_auto(ch: dict):
         print(f"[scheduler] {channel_id} — default_topics 없음, 스킵")
         return
 
+    # 템플릿 변수 치환: {날짜}, {요일}, {오전오후}
+    _dt = datetime.now()
+    request_text = request_text.replace(
+        "{날짜}", f"{_dt.month}월 {_dt.day}일"
+    ).replace(
+        "{요일}", ["월", "화", "수", "목", "금", "토", "일"][_dt.weekday()] + "요일"
+    ).replace(
+        "{오전오후}", "오전" if _dt.hour < 12 else "오후"
+    )
+
     instructions = ch.get("instructions") or ""
     production_mode = cfg.get("production_mode", "manual")
     channel_format = cfg.get("format", "single")
