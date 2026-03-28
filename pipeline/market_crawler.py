@@ -255,8 +255,7 @@ def _market_time_label(market: str) -> str:
       평일 09~15시  → "오늘 장중"  (장 열려 있음)
       평일 15시 이후 → "오늘 마감"
       평일 09시 이전 → "어제 마감" (화~금) / "지난 금요일 마감" (월)
-      토            → "어제 마감"
-      일            → "지난 금요일 마감"
+      토/일          → "지난 금요일 마감"
 
     코인: 항상 "현재"
     """
@@ -274,10 +273,8 @@ def _market_time_label(market: str) -> str:
         else:             # 화~금
             return "간밤 마감"
     else:  # kr
-        if wd == 6:       # 일요일
+        if wd in (5, 6):  # 토/일 → 금요일 데이터
             return "지난 금요일 마감"
-        elif wd == 5:     # 토요일
-            return "어제 마감"
         elif wd == 0 and hour < 9:  # 월요일 장 전
             return "지난 금요일 마감"
         elif hour < 9:    # 화~금 장 전
@@ -288,6 +285,17 @@ def _market_time_label(market: str) -> str:
             return "오늘 마감"
 
 
+def _is_market_closed(market: str) -> bool:
+    """주말 휴장 여부 판단. market: 'us' | 'kr'"""
+    now = datetime.now(KST)
+    wd = now.weekday()  # 0=월 ~ 6=일
+    if market == "us":
+        # 토/일: 미국장 없음.  월요일: 간밤 미국장 없음 (일요일 밤)
+        return wd in (0, 5, 6)
+    else:  # kr
+        return wd in (5, 6)
+
+
 def format_market_context(data: dict) -> str:
     """수집 데이터 → 프롬프트 주입용 마크다운"""
     now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
@@ -295,12 +303,18 @@ def format_market_context(data: dict) -> str:
 
     us_label = _market_time_label("us")
     kr_label = _market_time_label("kr")
+    us_closed = _is_market_closed("us")
+    kr_closed = _is_market_closed("kr")
 
     # 글로벌 증시
     gl = data.get("global_stocks", {})
     if gl and any(gl.get(k) for k in ("dow", "sp500", "nasdaq")):
         lines.append(f"### 글로벌 증시 ({us_label})")
-        lines.append(f"★ 나레이션에서 \"{us_label}\" 표현을 사용할 것")
+        if us_closed:
+            lines.append(f"⚠️ 오늘은 미국 증시 휴장일입니다. 아래 수치는 지난 거래일 기준입니다.")
+            lines.append(f"★ 나레이션에서 \"지난 거래일\" 또는 \"{us_label}\" 표현을 사용하고, 오늘/어제 장이 열린 것처럼 표현하지 말 것")
+        else:
+            lines.append(f"★ 나레이션에서 \"{us_label}\" 표현을 사용할 것")
         for key in ("dow", "sp500", "nasdaq"):
             info = gl.get(key, {})
             if info.get("price"):
@@ -314,7 +328,11 @@ def format_market_context(data: dict) -> str:
     kr = data.get("kr_stocks", {})
     if kr and any(kr.get(k) for k in ("kospi", "kosdaq")):
         lines.append(f"### 국내 증시 ({kr_label})")
-        lines.append(f"★ 나레이션에서 \"{kr_label}\" 표현을 사용할 것")
+        if kr_closed:
+            lines.append(f"⚠️ 오늘은 국내 증시 휴장일입니다. 아래 수치는 지난 거래일 기준입니다.")
+            lines.append(f"★ 나레이션에서 \"지난 거래일\" 또는 \"{kr_label}\" 표현을 사용하고, 오늘/어제 장이 열린 것처럼 표현하지 말 것")
+        else:
+            lines.append(f"★ 나레이션에서 \"{kr_label}\" 표현을 사용할 것")
         for key in ("kospi", "kosdaq"):
             info = kr.get(key, {})
             if info.get("price"):

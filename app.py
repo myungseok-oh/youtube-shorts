@@ -36,6 +36,7 @@ from pipeline.sd_generator import (
 from pipeline.slide_generator import generate_slides, generate_chart, generate_infographic
 from pipeline.gemini_generator import generate_image as gemini_generate_image
 from pipeline.gemini_generator import image_to_video as gemini_image_to_video
+from pipeline.gemini_generator import extract_last_frame
 from pipeline.video_renderer import (
     XFADE_TRANSITIONS, MOTION_PRESETS,
     generate_transition_preview, generate_motion_preview,
@@ -1180,8 +1181,8 @@ async def api_upload_single_background(job_id: str, index: int,
     os.makedirs(bg_dir, exist_ok=True)
 
     # 기존 파일 삭제
-    for ext in ["jpg", "jpeg", "png", "webp", "gif", "mp4"]:
-        old = os.path.join(bg_dir, f"bg_{index}.{ext}")
+    for ext_del in ["jpg", "jpeg", "png", "webp", "gif", "mp4"]:
+        old = os.path.join(bg_dir, f"bg_{index}.{ext_del}")
         if os.path.exists(old):
             os.remove(old)
 
@@ -1193,8 +1194,28 @@ async def api_upload_single_background(job_id: str, index: int,
     with open(out_path, "wb") as f:
         f.write(content)
 
-    return {"index": index, "filename": f"bg_{index}.{ext}",
-            "size_kb": round(len(content) / 1024, 1)}
+    result = {"index": index, "filename": f"bg_{index}.{ext}",
+              "size_kb": round(len(content) / 1024, 1)}
+
+    # video_chaining: mp4 업로드 시 마지막 프레임 → 다음 슬라이드 배경으로 추출
+    if ext.lower() == "mp4":
+        channel_id = job.get("channel_id", "")
+        ch = get_channel(db_ch, channel_id) if channel_id else None
+        ch_config = json.loads(ch.get("config", "{}")) if ch else {}
+        if ch_config.get("video_chaining"):
+            # 슬라이드 수 확인 (closing 제외)
+            script_json = json.loads(job.get("script_json", "{}"))
+            slides = script_json.get("slides", [])
+            content_slides = [s for s in slides if s.get("bg_type") != "closing"]
+            total = len(content_slides)
+            next_idx = index + 1
+            if next_idx <= total:
+                next_png = os.path.join(bg_dir, f"bg_{next_idx}.png")
+                if extract_last_frame(out_path, next_png):
+                    result["chained"] = {"next_index": next_idx,
+                                         "next_filename": f"bg_{next_idx}.png"}
+
+    return result
 
 
 @app.get("/api/jobs/{job_id}/backgrounds/{filename}")

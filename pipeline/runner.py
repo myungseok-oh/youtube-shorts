@@ -42,6 +42,7 @@ from pipeline.image_generator import generate_backgrounds
 from pipeline.sd_generator import agent_generate_image, generate_video as sd_generate_video, check_available as sd_check_available
 from pipeline.gemini_generator import generate_image as gemini_generate_image
 from pipeline.gemini_generator import image_to_video as gemini_image_to_video
+from pipeline.gemini_generator import extract_last_frame
 # from pipeline.qa_agent import run_qa  # QA 비활성화
 
 
@@ -972,6 +973,14 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                                               gemini_key, duration=6)
                                     if ok:
                                         print(f"[runner] bg_{idx+1}.mp4 Veo 영상화 완료 (slide {slide_num})")
+                                        # video_chaining: 마지막 프레임 → 다음 슬라이드 배경
+                                        if ch_config_b.get("video_chaining"):
+                                            content_slides = [s for s in slides_data if s.get("bg_type") != "closing"]
+                                            next_idx = idx + 2  # 1-based next
+                                            if next_idx <= len(content_slides):
+                                                next_png = os.path.join(dirs["bg"], f"bg_{next_idx}.png")
+                                                if extract_last_frame(mp4_path, next_png):
+                                                    print(f"[runner] video_chaining: bg_{next_idx}.png 추출 완료")
                                     else:
                                         print(f"[runner] bg_{idx+1} 영상화 실패 — 이미지 유지")
                                 except Exception as e:

@@ -188,6 +188,36 @@ VIDEO_POLL_INTERVAL = 10   # 폴링 간격 (초)
 VIDEO_POLL_TIMEOUT = 300   # 최대 대기 시간 (초)
 
 
+def extract_last_frame(mp4_path: str, output_path: str) -> bool:
+    """mp4 영상의 마지막 프레임을 이미지로 추출.
+
+    Args:
+        mp4_path: 원본 영상 경로
+        output_path: 저장할 이미지 경로 (.png)
+
+    Returns:
+        성공 여부
+    """
+    if not os.path.exists(mp4_path):
+        print(f"[gemini] extract_last_frame: file not found: {mp4_path}")
+        return False
+    try:
+        # sseof -0.1: 끝에서 0.1초 전부터 → 마지막 프레임 1장
+        result = subprocess.run(
+            [config.ffmpeg(), "-y", "-sseof", "-0.1", "-i", mp4_path,
+             "-frames:v", "1", "-q:v", "2", output_path],
+            capture_output=True, timeout=30,
+        )
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            print(f"[gemini] last frame extracted: {os.path.basename(output_path)}")
+            return True
+        print(f"[gemini] extract_last_frame failed: empty output")
+        return False
+    except Exception as e:
+        print(f"[gemini] extract_last_frame error: {e}")
+        return False
+
+
 def image_to_video(image_path: str, prompt: str, output_path: str,
                    api_key: str, duration: int = 6) -> bool:
     """Veo 3.1 Fast image-to-video 변환.

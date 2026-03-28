@@ -36,6 +36,7 @@ DEFAULTS = {
     "first_slide_single_bg":     False,
     "style_reference":           False,
     "image_style":               "mixed",
+    "video_chaining":            False,
     # image_prompt_style 제거됨 (통합 지침 내 '# 이미지 프롬프트 지침' 섹션으로 관리)
 
     # 인트로/아웃트로 (intro_outro)
@@ -143,6 +144,7 @@ OPTION_GROUPS = [
         "always_on": False,
         "fields": [
             "bg_media_type", "first_slide_single_bg", "style_reference",
+            "video_chaining",
         ],
     },
     {
