@@ -3332,6 +3332,145 @@ async def api_assign_narration(job_id: str, slide_num: int,
     return result
 
 
+# ── Admin API ──────────────────────────────────────────────
+
+@app.get("/api/admin/jobs")
+async def api_admin_list_jobs(request: Request):
+    """관리용 작업 목록 — 페이지네이션 + 검색 + 필터."""
+    q = request.query_params.get("q", "").strip()
+    status = request.query_params.get("status", "").strip()
+    channel_id = request.query_params.get("channel_id", "").strip()
+    date_from = request.query_params.get("date_from", "").strip()
+    date_to = request.query_params.get("date_to", "").strip()
+    page = int(request.query_params.get("page", "1"))
+    per_page = min(int(request.query_params.get("per_page", "50")), 200)
+    sort = request.query_params.get("sort", "created_at").strip()
+    order = request.query_params.get("order", "desc").strip().upper()
+    if order not in ("ASC", "DESC"):
+        order = "DESC"
+    allowed_sort = {"id", "topic", "status", "channel_id", "created_at", "updated_at"}
+    if sort not in allowed_sort:
+        sort = "created_at"
+
+    where, params = ["1=1"], []
+    if q:
+        where.append("(topic LIKE ? OR script_json LIKE ? OR id LIKE ?)")
+        like = f"%{q}%"
+        params.extend([like, like, like])
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    if channel_id:
+        where.append("channel_id = ?")
+        params.append(channel_id)
+    if date_from:
+        where.append("created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("created_at <= ?")
+        params.append(date_to + "T23:59:59")
+
+    where_sql = " AND ".join(where)
+    count_row = db.fetchone(f"SELECT COUNT(*) as cnt FROM jobs WHERE {where_sql}", params)
+    total = count_row["cnt"] if count_row else 0
+
+    offset = (page - 1) * per_page
+    rows = db.fetchall(
+        f"SELECT * FROM jobs WHERE {where_sql} ORDER BY {sort} {order} LIMIT ? OFFSET ?",
+        params + [per_page, offset]
+    )
+    return {
+        "jobs": rows,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": (total + per_page - 1) // per_page if total else 1,
+    }
+
+
+@app.get("/api/admin/jobs/{job_id}")
+async def api_admin_get_job(job_id: str):
+    """관리용 단일 작업 + steps raw 데이터."""
+    job = db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
+    if not job:
+        raise HTTPException(404, "Job not found")
+    steps = db.fetchall(
+        "SELECT * FROM job_steps WHERE job_id = ? ORDER BY step_order", [job_id]
+    )
+    job["steps"] = steps
+    return job
+
+
+@app.put("/api/admin/jobs/{job_id}")
+async def api_admin_update_job(job_id: str, request: Request):
+    """관리용 작업 필드 직접 수정."""
+    job = db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
+    if not job:
+        raise HTTPException(404, "Job not found")
+    body = await request.json()
+    allowed = {"topic", "category", "status", "script_json", "meta_json", "output_path", "channel_id"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        raise HTTPException(400, "No valid fields to update")
+    # JSON 필드 유효성 검증
+    for jf in ("script_json", "meta_json"):
+        if jf in updates and updates[jf]:
+            try:
+                json.loads(updates[jf])
+            except (json.JSONDecodeError, TypeError):
+                raise HTTPException(400, f"Invalid JSON in {jf}")
+    updates["updated_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    db.execute(
+        f"UPDATE jobs SET {set_clause} WHERE id = ?",
+        list(updates.values()) + [job_id]
+    )
+    return db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
+
+
+@app.delete("/api/admin/jobs")
+async def api_admin_delete_jobs(request: Request):
+    """관리용 작업 벌크 삭제."""
+    body = await request.json()
+    job_ids = body.get("job_ids", [])
+    if not job_ids:
+        raise HTTPException(400, "job_ids required")
+    ph = ",".join("?" for _ in job_ids)
+    db.execute(f"DELETE FROM job_steps WHERE job_id IN ({ph})", job_ids)
+    db.execute(f"DELETE FROM jobs WHERE id IN ({ph})", job_ids)
+    return {"ok": True, "deleted": len(job_ids)}
+
+
+@app.put("/api/admin/steps/{step_id}")
+async def api_admin_update_step(step_id: int, request: Request):
+    """관리용 단계 필드 수정."""
+    step = db.fetchone("SELECT * FROM job_steps WHERE id = ?", [step_id])
+    if not step:
+        raise HTTPException(404, "Step not found")
+    body = await request.json()
+    allowed = {"status", "output_data", "error_msg"}
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if not updates:
+        raise HTTPException(400, "No valid fields to update")
+    updates["updated_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    db.execute(
+        f"UPDATE job_steps SET {set_clause} WHERE id = ?",
+        list(updates.values()) + [step_id]
+    )
+    return db.fetchone("SELECT * FROM job_steps WHERE id = ?", [step_id])
+
+
+@app.delete("/api/admin/steps/{step_id}")
+async def api_admin_delete_step(step_id: int):
+    """관리용 단계 삭제."""
+    step = db.fetchone("SELECT * FROM job_steps WHERE id = ?", [step_id])
+    if not step:
+        raise HTTPException(404, "Step not found")
+    db.execute("DELETE FROM job_steps WHERE id = ?", [step_id])
+    return {"ok": True}
+
+
 if __name__ == "__main__":
     # Windows: ProactorEventLoop의 ConnectionResetError 방지
     # SelectorEventLoop는 소켓 종료를 깔끔하게 처리함

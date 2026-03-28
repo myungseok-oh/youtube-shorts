@@ -6186,3 +6186,378 @@ function _copyFallback(text) {
   document.execCommand("copy");
   document.body.removeChild(ta);
 }
+
+
+/* ═══════════════════════════════════════════════════════════
+   Admin Panel — DB 관리 모드
+   ═══════════════════════════════════════════════════════════ */
+
+let _adminMode = false;
+let _adminData = { jobs: [], total: 0, page: 1, per_page: 50, total_pages: 1 };
+let _adminSort = "created_at";
+let _adminOrder = "desc";
+let _adminSelected = new Set();
+let _adminExpanded = new Set();
+let _adminEditCtx = null; // { type: 'job'|'step', id }
+
+function toggleAdminMode() {
+  _adminMode = !_adminMode;
+  const btn = document.getElementById("btn-admin-toggle");
+  const cards = document.getElementById("job-cards");
+  const panel = document.getElementById("admin-panel");
+  if (_adminMode) {
+    btn.classList.add("admin-active");
+    cards.classList.add("hidden");
+    panel.classList.remove("hidden");
+    _adminInitChannelFilter();
+    adminLoad();
+  } else {
+    btn.classList.remove("admin-active");
+    cards.classList.remove("hidden");
+    panel.classList.add("hidden");
+  }
+}
+
+function _adminInitChannelFilter() {
+  const sel = document.getElementById("admin-channel-filter");
+  if (sel.options.length > 1) return;
+  fetch("/api/channels").then(r => r.json()).then(chs => {
+    chs.forEach(ch => {
+      const opt = document.createElement("option");
+      opt.value = ch.id;
+      opt.textContent = `${ch.id} ${ch.name}`;
+      sel.appendChild(opt);
+    });
+  });
+}
+
+async function adminLoad() {
+  const q = document.getElementById("admin-search").value.trim();
+  const status = document.getElementById("admin-status-filter").value;
+  const channel = document.getElementById("admin-channel-filter").value;
+  const dateFrom = document.getElementById("admin-date-from").value;
+  const dateTo = document.getElementById("admin-date-to").value;
+
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (status) params.set("status", status);
+  if (channel) params.set("channel_id", channel);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+  params.set("page", _adminData.page);
+  params.set("per_page", _adminData.per_page);
+  params.set("sort", _adminSort);
+  params.set("order", _adminOrder);
+
+  const res = await fetch("/api/admin/jobs?" + params.toString());
+  _adminData = await res.json();
+  _adminSelected.clear();
+  _adminExpanded.clear();
+  _adminRenderTable();
+  _adminRenderPagination();
+  _adminUpdateBulkBtn();
+}
+
+function adminSort(col) {
+  if (_adminSort === col) {
+    _adminOrder = _adminOrder === "desc" ? "asc" : "desc";
+  } else {
+    _adminSort = col;
+    _adminOrder = "desc";
+  }
+  _adminData.page = 1;
+  adminLoad();
+}
+
+function _adminRenderTable() {
+  const tbody = document.getElementById("admin-tbody");
+  if (!_adminData.jobs.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-8">데이터 없음</td></tr>';
+    document.getElementById("admin-check-all").checked = false;
+    return;
+  }
+  let html = "";
+  for (const j of _adminData.jobs) {
+    const checked = _adminSelected.has(j.id) ? "checked" : "";
+    const expanded = _adminExpanded.has(j.id);
+    const topicShort = (j.topic || "").length > 40 ? j.topic.substring(0, 40) + "…" : (j.topic || "");
+    const created = (j.created_at || "").replace("T", " ").substring(0, 16);
+    const updated = (j.updated_at || "").replace("T", " ").substring(0, 16);
+    html += `<tr class="${expanded ? 'admin-row-expanded' : ''}" data-jid="${j.id}">
+      <td><input type="checkbox" ${checked} onchange="adminToggleOne('${j.id}', this.checked)"></td>
+      <td class="font-mono text-gray-400 cursor-pointer" onclick="adminToggleExpand('${j.id}')">${j.id}</td>
+      <td>${j.channel_id || ""}</td>
+      <td class="max-w-[200px] truncate cursor-pointer" onclick="adminToggleExpand('${j.id}')" title="${(j.topic||'').replace(/"/g,'&quot;')}">${topicShort}</td>
+      <td><span class="admin-status admin-status-${j.status || 'pending'}">${j.status || "pending"}</span></td>
+      <td class="text-gray-500">${created}</td>
+      <td class="text-gray-500">${updated}</td>
+      <td>
+        <button onclick="adminEditJob('${j.id}')" class="admin-btn" style="padding:2px 6px;">수정</button>
+        <button onclick="adminDeleteOne('${j.id}')" class="admin-btn admin-btn-danger" style="padding:2px 6px;">삭제</button>
+      </td>
+    </tr>`;
+    if (expanded) {
+      html += `<tr class="admin-expand-row" data-expand="${j.id}"><td colspan="8"><div class="admin-expand-inner" id="admin-expand-${j.id}"><span class="text-gray-500 text-xs">로딩...</span></div></td></tr>`;
+    }
+  }
+  tbody.innerHTML = html;
+  document.getElementById("admin-check-all").checked = false;
+
+  // 확장된 행 로드
+  for (const jid of _adminExpanded) {
+    _adminLoadExpand(jid);
+  }
+}
+
+async function _adminLoadExpand(jobId) {
+  const el = document.getElementById("admin-expand-" + jobId);
+  if (!el) return;
+  const res = await fetch("/api/admin/jobs/" + jobId);
+  const job = await res.json();
+
+  let html = '<div class="grid grid-cols-2 gap-3 mb-3">';
+  // script_json
+  html += '<div><div class="flex items-center gap-2 mb-1"><span class="text-xs text-gray-400 font-semibold">script_json</span>';
+  html += `<button onclick="_adminCopyField(this, 'script_json', '${jobId}')" class="admin-btn" style="padding:1px 5px;font-size:10px;">복사</button></div>`;
+  const sj = _adminPrettyJson(job.script_json);
+  html += `<pre>${_adminEsc(sj)}</pre></div>`;
+  // meta_json
+  html += '<div><div class="flex items-center gap-2 mb-1"><span class="text-xs text-gray-400 font-semibold">meta_json</span>';
+  html += `<button onclick="_adminCopyField(this, 'meta_json', '${jobId}')" class="admin-btn" style="padding:1px 5px;font-size:10px;">복사</button></div>`;
+  const mj = _adminPrettyJson(job.meta_json);
+  html += `<pre>${_adminEsc(mj)}</pre></div>`;
+  html += '</div>';
+  // output_path
+  if (job.output_path) {
+    html += `<div class="text-xs text-gray-500 mb-2">output_path: <span class="text-gray-300 font-mono">${_adminEsc(job.output_path)}</span></div>`;
+  }
+  // steps
+  if (job.steps && job.steps.length) {
+    html += '<div class="text-xs text-gray-400 font-semibold mb-1">Job Steps</div>';
+    html += '<table class="admin-sub-table"><thead><tr><th>ID</th><th>Step</th><th>Order</th><th>Status</th><th>Error</th><th>시작</th><th>완료</th><th>작업</th></tr></thead><tbody>';
+    for (const s of job.steps) {
+      const err = (s.error_msg || "").length > 60 ? s.error_msg.substring(0, 60) + "…" : (s.error_msg || "—");
+      html += `<tr>
+        <td class="font-mono text-gray-500">${s.id}</td>
+        <td>${s.step_name}</td>
+        <td>${s.step_order}</td>
+        <td><span class="admin-status admin-status-${s.status || 'pending'}">${s.status || "pending"}</span></td>
+        <td class="max-w-[200px] truncate text-red-400" title="${_adminEsc(s.error_msg || '')}">${_adminEsc(err)}</td>
+        <td class="text-gray-500">${(s.started_at || "—").replace("T"," ").substring(0,16)}</td>
+        <td class="text-gray-500">${(s.completed_at || "—").replace("T"," ").substring(0,16)}</td>
+        <td>
+          <button onclick="adminEditStep(${s.id},'${jobId}')" class="admin-btn" style="padding:1px 5px;font-size:10px;">수정</button>
+          <button onclick="adminDeleteStep(${s.id},'${jobId}')" class="admin-btn admin-btn-danger" style="padding:1px 5px;font-size:10px;">삭제</button>
+        </td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+  }
+  el.innerHTML = html;
+}
+
+function _adminPrettyJson(str) {
+  if (!str) return "(없음)";
+  try { return JSON.stringify(JSON.parse(str), null, 2); } catch { return str; }
+}
+
+function _adminEsc(s) {
+  if (!s) return "";
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function _adminCopyField(btn, field, jobId) {
+  const job = _adminData.jobs.find(j => j.id === jobId);
+  const text = job ? (job[field] || "") : "";
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text);
+  } else {
+    _copyFallback(text);
+  }
+  const orig = btn.textContent;
+  btn.textContent = "OK";
+  setTimeout(() => btn.textContent = orig, 800);
+}
+
+function adminToggleExpand(jobId) {
+  if (_adminExpanded.has(jobId)) {
+    _adminExpanded.delete(jobId);
+  } else {
+    _adminExpanded.add(jobId);
+  }
+  _adminRenderTable();
+}
+
+function adminToggleAll(checked) {
+  _adminSelected.clear();
+  if (checked) {
+    _adminData.jobs.forEach(j => _adminSelected.add(j.id));
+  }
+  _adminRenderTable();
+  _adminUpdateBulkBtn();
+}
+
+function adminToggleOne(jobId, checked) {
+  if (checked) _adminSelected.add(jobId);
+  else _adminSelected.delete(jobId);
+  _adminUpdateBulkBtn();
+}
+
+function _adminUpdateBulkBtn() {
+  const btn = document.getElementById("admin-bulk-delete-btn");
+  const cnt = document.getElementById("admin-sel-count");
+  cnt.textContent = _adminSelected.size;
+  if (_adminSelected.size > 0) btn.classList.remove("hidden");
+  else btn.classList.add("hidden");
+}
+
+async function adminBulkDelete() {
+  if (!_adminSelected.size) return;
+  if (!confirm(`${_adminSelected.size}개 작업을 삭제합니다. 복구 불가합니다.`)) return;
+  await fetch("/api/admin/jobs", {
+    method: "DELETE",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ job_ids: [..._adminSelected] })
+  });
+  adminLoad();
+}
+
+async function adminDeleteOne(jobId) {
+  if (!confirm(`작업 ${jobId}를 삭제합니다.`)) return;
+  await fetch("/api/admin/jobs", {
+    method: "DELETE",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ job_ids: [jobId] })
+  });
+  adminLoad();
+}
+
+// 페이지네이션
+function _adminRenderPagination() {
+  const d = _adminData;
+  document.getElementById("admin-page-info").textContent = `총 ${d.total}건 · ${d.page}/${d.total_pages} 페이지`;
+  document.getElementById("admin-prev-btn").disabled = d.page <= 1;
+  document.getElementById("admin-next-btn").disabled = d.page >= d.total_pages;
+  const nums = document.getElementById("admin-page-nums");
+  let html = "";
+  const start = Math.max(1, d.page - 2);
+  const end = Math.min(d.total_pages, d.page + 2);
+  for (let i = start; i <= end; i++) {
+    html += `<button onclick="adminGoPage(${i})" class="admin-btn${i===d.page?' !bg-indigo-700 !text-white':''}" style="padding:2px 8px;">${i}</button>`;
+  }
+  nums.innerHTML = html;
+}
+
+function adminPage(dir) {
+  if (dir === "prev" && _adminData.page > 1) _adminData.page--;
+  else if (dir === "next" && _adminData.page < _adminData.total_pages) _adminData.page++;
+  adminLoad();
+}
+function adminGoPage(p) { _adminData.page = p; adminLoad(); }
+
+// 수정 모달 — Job
+async function adminEditJob(jobId) {
+  const res = await fetch("/api/admin/jobs/" + jobId);
+  const job = await res.json();
+  _adminEditCtx = { type: "job", id: jobId };
+
+  const statuses = ["pending","running","waiting_slides","queued","completed","failed","deleted"];
+  let html = "";
+  html += _adminField("topic", "주제", job.topic || "", "text");
+  html += _adminField("category", "카테고리", job.category || "", "text");
+  html += `<div><label class="block text-xs text-gray-400 mb-1">status</label>
+    <select id="admin-edit-status" class="admin-input w-full">${statuses.map(s=>`<option value="${s}"${s===job.status?' selected':''}>${s}</option>`).join("")}</select></div>`;
+  html += _adminField("channel_id", "채널 ID", job.channel_id || "", "text");
+  html += _adminField("output_path", "output_path", job.output_path || "", "text");
+  html += _adminJsonField("script_json", "script_json", job.script_json);
+  html += _adminJsonField("meta_json", "meta_json", job.meta_json);
+
+  document.getElementById("admin-edit-title").textContent = `수정: ${jobId}`;
+  document.getElementById("admin-edit-body").innerHTML = html;
+  document.getElementById("admin-edit-modal").classList.remove("hidden");
+}
+
+function _adminField(name, label, value, type) {
+  return `<div><label class="block text-xs text-gray-400 mb-1">${label}</label>
+    <input id="admin-edit-${name}" type="${type}" value="${_adminEsc(value)}" class="admin-input w-full"></div>`;
+}
+
+function _adminJsonField(name, label, value) {
+  const pretty = _adminPrettyJson(value);
+  return `<div><label class="block text-xs text-gray-400 mb-1">${label}</label>
+    <textarea id="admin-edit-${name}" class="admin-input w-full font-mono" rows="8" style="resize:vertical;">${_adminEsc(pretty === "(없음)" ? "" : pretty)}</textarea>
+    <div id="admin-edit-${name}-err" class="text-xs text-red-400 mt-1 hidden"></div></div>`;
+}
+
+async function adminEditSave() {
+  if (!_adminEditCtx) return;
+  if (_adminEditCtx.type === "job") {
+    const body = {};
+    ["topic","category","channel_id","output_path"].forEach(f => {
+      body[f] = document.getElementById("admin-edit-" + f).value;
+    });
+    body.status = document.getElementById("admin-edit-status").value;
+    // JSON 필드
+    for (const jf of ["script_json", "meta_json"]) {
+      const val = document.getElementById("admin-edit-" + jf).value.trim();
+      const errEl = document.getElementById("admin-edit-" + jf + "-err");
+      errEl.classList.add("hidden");
+      if (val) {
+        try { JSON.parse(val); } catch (e) {
+          errEl.textContent = "JSON 형식 오류: " + e.message;
+          errEl.classList.remove("hidden");
+          return;
+        }
+      }
+      body[jf] = val || null;
+    }
+    const res = await fetch("/api/admin/jobs/" + _adminEditCtx.id, {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) { alert("저장 실패: " + (await res.text())); return; }
+  } else if (_adminEditCtx.type === "step") {
+    const body = {};
+    body.status = document.getElementById("admin-edit-status").value;
+    body.error_msg = document.getElementById("admin-edit-error_msg").value;
+    const odVal = document.getElementById("admin-edit-output_data").value.trim();
+    body.output_data = odVal || null;
+    const res = await fetch("/api/admin/steps/" + _adminEditCtx.id, {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) { alert("저장 실패: " + (await res.text())); return; }
+  }
+  closeModal("admin-edit-modal");
+  adminLoad();
+}
+
+// 수정 모달 — Step
+async function adminEditStep(stepId, jobId) {
+  const res = await fetch("/api/admin/jobs/" + jobId);
+  const job = await res.json();
+  const step = (job.steps || []).find(s => s.id === stepId);
+  if (!step) return;
+  _adminEditCtx = { type: "step", id: stepId, jobId };
+
+  const statuses = ["pending","running","completed","failed","skipped"];
+  let html = "";
+  html += `<div><label class="block text-xs text-gray-400 mb-1">step: ${step.step_name} (order: ${step.step_order})</label></div>`;
+  html += `<div><label class="block text-xs text-gray-400 mb-1">status</label>
+    <select id="admin-edit-status" class="admin-input w-full">${statuses.map(s=>`<option value="${s}"${s===step.status?' selected':''}>${s}</option>`).join("")}</select></div>`;
+  html += _adminField("error_msg", "error_msg", step.error_msg || "", "text");
+  html += `<div><label class="block text-xs text-gray-400 mb-1">output_data</label>
+    <textarea id="admin-edit-output_data" class="admin-input w-full font-mono" rows="4" style="resize:vertical;">${_adminEsc(step.output_data || "")}</textarea></div>`;
+
+  document.getElementById("admin-edit-title").textContent = `Step 수정: #${stepId}`;
+  document.getElementById("admin-edit-body").innerHTML = html;
+  document.getElementById("admin-edit-modal").classList.remove("hidden");
+}
+
+async function adminDeleteStep(stepId, jobId) {
+  if (!confirm(`Step #${stepId}를 삭제합니다.`)) return;
+  await fetch("/api/admin/steps/" + stepId, { method: "DELETE" });
+  _adminLoadExpand(jobId);
+}

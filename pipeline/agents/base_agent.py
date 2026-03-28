@@ -36,8 +36,9 @@ class BaseAgent:
 - 하나의 뉴스 브리핑. sentences를 이어 읽으면 완결된 내레이션이 되어야 함
 - 슬라이드 간 자연스러운 연결 (접속 표현 활용)
 - 슬라이드별 역할: ①훅 → ②핵심 → ③배경 → ④영향 → ⑤전망
-- ★ TTS 초당 ~4.5음절 기준, 슬라이드당 5초 또는 10초로 맞춰라
+- ★ 슬라이드당 5초 또는 10초로 맞춰라 (어중간한 6~7초 금지)
   - 5초 = 1~2문장(20~25자), 10초 = 3~4문장(40~50자)
+  - 슬라이드 수와 문장 수는 목표 영상 길이(프롬프트에 명시)에 맞춰 자동 조절
 - sentences에 채널명 언급 금지
 - 문장 종결 다양하게, 채널 지침 톤 준수
 - 첫 슬라이드: category에 주제 태그, main 짧고 강렬
@@ -58,8 +59,10 @@ class BaseAgent:
 ### 슬라이드 구성 (필수)
 1. **첫 슬라이드 (Overview — 헤드라인)**: 5개 뉴스 헤드라인을 빠르게 나열하며 시작
    - category: "오늘의 뉴스" 또는 날짜 포함
-   - main: 채널 지침에 맞는 짧은 타이틀 (15자 이내)
-   - sub: "① 주제1 ② 주제2 ③ ..." (주제별 5~10자 핵심 키워드)
+   - ★ main: 채널 지침에 맞는 **짧은 한줄 타이틀** (15자 이내). 예: "오늘 시장 혼조 흐름"
+     - ❌ 금지: main에 번호 리스트(①②③), 줄바꿈, 여러 항목 나열 절대 금지
+   - ★ sub: "① 주제1 ② 주제2 ③ ..." (주제별 5~10자 핵심 키워드, 한 줄)
+     - 번호 리스트는 반드시 sub에만 넣을 것
    - sentences: 뉴스 헤드라인을 빠르게 나열하며 시작 (2~3문장)
    - **bg_type: "overview"** (전용 레이아웃: 진한 오버레이 + 번호 리스트)
 
@@ -71,10 +74,9 @@ class BaseAgent:
    - bg_type: 주제에 맞게 photo/graph/logo 선택
 
 ### 대본 규칙
-- 전체 문장 14~20개, 각 15~25자
-- 전체 50~60초 (한국어 읽기 속도 초당 4~5음절), 총 200~300자
-- **슬라이드 1개당 문장 2~4개**
-- ★ TTS 초당 ~4.5음절 기준, 슬라이드당 5초 또는 10초로 맞춰라
+- 문장 수와 슬라이드 수는 목표 영상 길이(프롬프트에 명시)에 맞춰 조절
+- 각 문장 15~25자, **슬라이드 1개당 문장 2~4개**
+- ★ 슬라이드당 5초 또는 10초로 맞춰라 (어중간한 6~7초 금지)
   - 5초 = 1~2문장(20~25자), 10초 = 3~4문장(40~50자)
 - 주제 전환 시 자연스러운 연결: "다음 소식입니다", "이어서", "한편" 등
 - sentences에 채널명 언급 금지
@@ -138,6 +140,43 @@ ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera
 - dark, moody, horror themes → always bright/professional
 - low quality, blurry, watermark"""
 
+    # ── 내부 헬퍼 ──────────────────────────────
+
+    def _media_layout_rules(self, bg_media_type: str = "auto") -> str:
+        """bg_media_type에 따른 media 배치 규칙 프롬프트 텍스트."""
+        if bg_media_type == "single":
+            return (
+                '- 모든 프롬프트의 media를 "image"로 지정\n'
+                '- closing 타입 → {"ko":"", "en":"", "motion":"", "media":"image"}'
+            )
+
+        # auto 또는 기타
+        return (
+            "한 슬라이드에 프롬프트가 2~3개일 때, **나레이션 흐름에 맞춰 image/video 순서를 결정**하라.\n"
+            "영상은 이미지에서 변환(image-to-video)되므로, 모든 프롬프트는 먼저 이미지로 생성된다.\n\n"
+            "### 나레이션 → 배경 순서 매핑\n"
+            "- 설명/도입부 → image (정적 장면으로 집중)\n"
+            "- 행동/움직임/변화 묘사 → video (동적 장면)\n"
+            "- 결론/정리 → image (안정감)\n\n"
+            "### 배치 예시 (3개 프롬프트 슬라이드)\n"
+            "| 나레이션 흐름 | 순서 |\n|---|---|\n"
+            "| 설명 → 행동 → 결과 | image → video → image |\n"
+            "| 갑작스러운 행동 → 설명 → 마무리 | video → image → image |\n"
+            "| 도입 → 전개 → 클라이맥스 | image → image → video |\n\n"
+            "### 배치 예시 (2개 프롬프트 슬라이드)\n"
+            "| 나레이션 흐름 | 순서 |\n|---|---|\n"
+            "| 설명 → 행동 | image → video |\n"
+            "| 행동 → 설명 | video → image |\n"
+            "| 정보 → 정보 | image → image |\n\n"
+            "### 비율 규칙\n"
+            "- 이미지:영상 비율 약 6:4 (전체 프롬프트 중 ~40%를 'video'로 지정)\n"
+            "- video: 6초 기본 (Veo 영상 기본 길이)\n"
+            "- graph/overview 타입은 항상 'image'\n"
+            '- "video" 프롬프트의 en 필드에 움직임 키워드 추가 (gentle movement, swaying, flowing 등)\n'
+            "- 같은 슬라이드 안에서 video는 **최대 1개**\n"
+            '- closing 타입 → {"ko":"", "en":"", "motion":"", "media":"image"}'
+        )
+
     # ── Public 메서드 ──────────────────────────────
 
     def parse_request(self, request: str, instructions: str = "",
@@ -146,7 +185,42 @@ ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera
                       skip_web_search: bool = False) -> list[str]:
         """자유 형식 요청을 개별 뉴스 주제 리스트로 변환."""
         if _is_specific_topic(request):
-            return [request.strip()]
+            if skip_web_search:
+                # 교양/상식 채널 — 날짜 무관, 바로 반환
+                return [request.strip()]
+            # 뉴스 채널 — 기사 신선도 사전 검증
+            topic = request.strip()
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            check_prompt = (
+                f"오늘은 {date_str}이다. 아래 뉴스 주제에 대해 웹 검색해서 "
+                f"오늘({date_str}) 또는 어제 게시된 기사가 있는지 확인해.\n\n"
+                f"주제: {topic}\n\n"
+                f"규칙:\n"
+                f"- 오늘 또는 어제 기사가 있으면 JSON으로 응답: {{\"fresh\": true, \"date\": \"기사일자\"}}\n"
+                f"- 2일 이상 지난 기사만 있으면: {{\"fresh\": false, \"date\": \"가장 최근 기사일자\"}}\n"
+                f"- JSON만 출력, 다른 텍스트 금지"
+            )
+            try:
+                raw = _run_claude(check_prompt, timeout=60,
+                                  model="claude-haiku-4-5-20251001", use_web=True)
+                import json as _json
+                import re as _re
+                # JSON 추출
+                _m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+                _txt = _m.group(0) if _m else raw
+                check = _json.loads(_txt)
+                if not check.get("fresh", True):
+                    article_date = check.get("date", "?")
+                    raise RuntimeError(
+                        f"24시간 이전 뉴스입니다 (기사일: {article_date}). "
+                        "최신 뉴스로 다시 시도하세요."
+                    )
+                print(f"[parse_request] 기사 신선도 OK: {topic[:40]}")
+            except RuntimeError:
+                raise
+            except Exception as e:
+                print(f"[parse_request] 기사 신선도 검증 실패, 통과: {e}")
+            return [topic]
 
         recent_section = ""
         if recent_topics:
@@ -490,7 +564,7 @@ Synopsis: {synopsis_text}
 이 비주얼 플랜에 따라 대본이 작성된다. 따라서:
 1. **duration 결정이 핵심**: 모든 씬의 duration 합계가 ~{target_duration}초가 되도록 배분
    - image 씬: 5초 기본. 정보량이 많은 씬만 10초 (10초 씬은 전체의 1~2개 이하)
-   - ★ video 씬: 반드시 6초 고정 (6초 초과 금지)
+   - video 씬: 6초 기본 (Veo 영상 기본 길이)
    - 어중간한 6~7초 image 금지
 2. **시각적 리듬**: wide → medium → close-up → wide 순서로 스케일 변화
 3. **연속 금지**: 같은 앵글/스케일 연속 사용 금지
@@ -817,7 +891,7 @@ brand 값은 "{brand}"로 설정해.
 {_image_size_instruction(layout, bg_display_mode, zone_ratio)}
 
 ### duration/media
-- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). ★ video: 반드시 6초 고정 (6초 초과 금지). 6~7초 image 금지
+- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). video: 6초 기본. 6~7초 image 금지
 {media_instruction}
 - graph/overview → 항상 image. video의 en에 움직임 키워드 포함
 - motion: 카메라+피사체+환경 조합 (예: "slow zoom in on factory as smoke rises")
@@ -1005,7 +1079,7 @@ brand 값은 "{brand}"로 설정해.
 {_image_size_instruction(layout, bg_display_mode, zone_ratio)}
 
 ### duration/media
-- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). ★ video: 반드시 6초 고정 (6초 초과 금지). 6~7초 image 금지
+- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). video: 6초 기본. 6~7초 image 금지
 {media_instruction}
 - graph/overview → 항상 image. video의 en에 움직임 키워드 포함
 - motion: 카메라+피사체+환경 조합 (예: "slow zoom in on factory as smoke rises")
@@ -1209,35 +1283,7 @@ Slides:
 - media: "image" 또는 "video" — 이 배경을 정적 이미지로 쓸지, 6초 영상으로 변환할지 지정
 
 ## ★★★ media 배치 핵심 규칙 (반드시 따를 것) ★★★
-한 슬라이드에 프롬프트가 2~3개일 때, **나레이션 흐름에 맞춰 image/video 순서를 결정**하라.
-영상은 이미지에서 변환(image-to-video)되므로, 모든 프롬프트는 먼저 이미지로 생성된다.
-
-### 나레이션 → 배경 순서 매핑
-- 설명/도입부 → image (정적 장면으로 집중)
-- 행동/움직임/변화 묘사 → video (동적 장면)
-- 결론/정리 → image (안정감)
-
-### 배치 예시 (3개 프롬프트 슬라이드)
-| 나레이션 흐름 | 순서 |
-|---|---|
-| 설명 → 행동 → 결과 | image → video → image |
-| 갑작스러운 행동 → 설명 → 마무리 | video → image → image |
-| 도입 → 전개 → 클라이맥스 | image → image → video |
-
-### 배치 예시 (2개 프롬프트 슬라이드)
-| 나레이션 흐름 | 순서 |
-|---|---|
-| 설명 → 행동 | image → video |
-| 행동 → 설명 | video → image |
-| 정보 → 정보 | image → image |
-
-### 비율 규칙
-- 이미지:영상 비율 약 6:4 (전체 프롬프트 중 ~40%를 "video"로 지정)
-- ★ video는 반드시 6초 고정 (6초 초과 금지). 대본도 6초 분량(25~30자)만 작성
-- graph/overview 타입은 항상 "image"
-- "video" 프롬프트의 en 필드에 움직임 키워드 추가 (gentle movement, swaying, flowing 등)
-- 같은 슬라이드 안에서 video는 **최대 1개**
-- closing 타입 → {{"ko":"", "en":"", "motion":"", "media":"image"}}
+{self._media_layout_rules(bg_media_type)}
 
 ## 기타 규칙
 - ★ 모든 프롬프트는 반드시 서로 다른 장소/피사체/앵글. 같은 장면 반복 금지.

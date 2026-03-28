@@ -2,6 +2,8 @@
 from __future__ import annotations
 import logging
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import requests
 
@@ -96,11 +98,12 @@ _GOOGLE_NEWS_CATEGORIES = {
 }
 
 
-def _fetch_google_news(category: str = "") -> list[dict]:
-    """Google News RSS 피드로 한국 뉴스 상위 20건 수집.
+def _fetch_google_news(category: str = "", max_age_hours: int = 24) -> list[dict]:
+    """Google News RSS 피드로 한국 뉴스 수집 (날짜 필터 적용).
 
     Args:
         category: "" (종합), "BUSINESS", "TECHNOLOGY", "NATION"
+        max_age_hours: 이 시간 이내 기사만 반환 (기본 24시간)
 
     Returns:
         [{"title": "...", "source": "...", "link": "...", "pub_date": "..."}]
@@ -113,8 +116,12 @@ def _fetch_google_news(category: str = "") -> list[dict]:
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
 
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(hours=max_age_hours)
+
     root = ET.fromstring(resp.text)
     items = []
+    skipped = 0
     for item in root.iter("item"):
         raw_title = item.findtext("title", "").strip()
         if not raw_title:
@@ -126,6 +133,17 @@ def _fetch_google_news(category: str = "") -> list[dict]:
             title, source = raw_title, ""
         link = item.findtext("link", "").strip()
         pub_date = item.findtext("pubDate", "").strip()
+
+        # pubDate 파싱 → 날짜 필터링
+        if pub_date:
+            try:
+                pub_dt = parsedate_to_datetime(pub_date)
+                if pub_dt < cutoff:
+                    skipped += 1
+                    continue
+            except Exception:
+                pass  # 파싱 실패 시 포함 (안전하게)
+
         items.append({
             "title": title.strip(),
             "source": source.strip(),
@@ -134,6 +152,9 @@ def _fetch_google_news(category: str = "") -> list[dict]:
         })
         if len(items) >= 20:
             break
+
+    if skipped:
+        logger.info("Google News: %d건 날짜 필터로 제외 (%dh 이내만 수집)", skipped, max_age_hours)
     return items
 
 
