@@ -12,7 +12,7 @@
 ---
 
 ## 프로젝트 구조
-- `app.py` — FastAPI 백엔드 (포트 9999)
+- `app.py` — FastAPI 백엔드 (포트 9999, `/api/admin/` DB 관리 API 포함)
 - `config.json` — ffmpeg 경로, DB 경로, 서버 설정
 - `db/database.py` — SQLite WAL 래퍼
 - `db/models.py` — Channel, Job, JobStep 모델
@@ -263,7 +263,7 @@ ffmpeg -i input.wav -af silenceremove=1:0:-50dB output.wav
 
 ## 최근 변경사항 (요약)
 - **수동 대본**: category 상위 이동 (속보 체크박스), 슬라이드에 image_prompt_ko/en 추가
-- **채널 설정 연동**: 수동 지침에 slide_layout, image_style, image_prompt_style 반영
+- **채널 설정 연동**: 수동 지침에 slide_layout, image_style 반영
 - **image_prompt 자동 사용**: script_json에 image_prompt_en 있으면 Claude 프롬프트 생성 스킵 → 바로 이미지 생성
 - **accent_color**: 고정값 제거, AI가 주제별 색상 추천
 - **그라디언트 제거**: generate_slides.js에서 accent 기반 radial/linear gradient 제거
@@ -353,13 +353,16 @@ ffmpeg -i input.wav -af silenceremove=1:0:-50dB output.wav
 - **이미지 object-fit 레이아웃별 분리**: top/bottom=contain(잘림 없음), center=cover
 - **Windows asyncio 안정화**: SelectorEventLoopPolicy 적용 (ConnectionResetError 제거)
 - **자막 번인 Pillow 폴백**: ffmpeg에 `subtitles` 필터(libass) 없을 때 Pillow+overlay 자동 폴백. `_check_subtitle_filter()` 캐시, `_render_sub_png()` → `_apply_subtitles_pillow()` 체인. ASS PlayRes 288 좌표 → 픽셀 변환 포함
+- **DB 관리 탭**: 대시보드 사이드바 톱니바퀴 버튼 → 카드뷰 ↔ 테이블뷰 전환. jobs/job_steps 조회·검색·필터·수정·삭제. `/api/admin/` 프리픽스 6개 엔드포인트
+- **image_prompt_style config 제거**: 채널 config에서 `image_prompt_style` 키 삭제. 통합 지침(instructions) 내 `# 이미지 프롬프트 지침` 섹션으로만 관리. runner.py에서 `_extract_section()`으로 instructions에서 직접 파싱
+- **image_style OVERRIDE 강화**: `_image_style_instruction()`에 non-mixed 스타일(anime/photo/infographic)일 때 bg_type별 키워드보다 image_style이 우선한다는 명시적 오버라이드 추가
 
 ---
 
 ## 이미지/영상 프롬프트 작성 지침
 
 `pipeline/agent.py`의 `generate_image_prompts()`가 참조하는 기준.
-채널 config의 `image_prompt_style`로 채널별 커스텀 가능 (비어있으면 `DEFAULT_IMAGE_PROMPT_STYLE` 사용).
+채널 instructions 내 `# 이미지 프롬프트 지침` 섹션으로 채널별 커스텀 가능 (없으면 `base_agent.IMAGE_PROMPT_STYLE` 기본값 사용).
 
 ### 핵심 원칙
 1. **구체적 장면 묘사** — 추상 개념 금지, 카메라맨이 실제로 촬영할 수 있는 장소/사물

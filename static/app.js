@@ -57,17 +57,15 @@ function btnRestore(btn) {
 }
 
 // ── 통합 지침 merge/split ──
-function mergeInstructions(instructions, scriptRules, roundupRules, imagePromptStyle) {
+function mergeInstructions(instructions, scriptRules, roundupRules) {
   let parts = [];
   const inst = (instructions || "").trim();
   const sr = (scriptRules || "").trim();
   const rr = (roundupRules || "").trim();
-  const ips = (imagePromptStyle || "").trim();
 
   if (inst) parts.push("# 채널 지침\n\n" + inst);
   if (sr) parts.push("# 대본 규칙\n\n" + sr);
   if (rr) parts.push("# 라운드업 규칙\n\n" + rr);
-  if (ips) parts.push("# 이미지 프롬프트 지침\n\n" + ips);
 
   // 아무 내용도 없으면 빈 문자열
   if (parts.length === 0) return "";
@@ -78,18 +76,18 @@ function mergeInstructions(instructions, scriptRules, roundupRules, imagePromptS
 
 function splitInstructions(unified) {
   const text = (unified || "").trim();
-  if (!text) return { instructions: "", script_rules: "", roundup_rules: "", image_prompt_style: "" };
+  if (!text) return { instructions: "", script_rules: "", roundup_rules: "" };
 
-  // 섹션 헤더로 분리: # 채널 지침 / # 대본 규칙 / # 라운드업 규칙 / # 이미지 프롬프트 지침
-  const sectionRe = /^# (채널 지침|대본 규칙|라운드업 규칙|이미지 프롬프트 지침)\s*$/m;
-  const result = { instructions: "", script_rules: "", roundup_rules: "", image_prompt_style: "" };
+  // 섹션 헤더로 분리: # 채널 지침 / # 대본 규칙 / # 라운드업 규칙
+  const sectionRe = /^# (채널 지침|대본 규칙|라운드업 규칙)\s*$/m;
+  const result = { instructions: "", script_rules: "", roundup_rules: "" };
 
   const lines = text.split("\n");
   let currentKey = null;
   let buf = [];
 
   for (const line of lines) {
-    const m = line.match(/^# (채널 지침|대본 규칙|라운드업 규칙|이미지 프롬프트 지침)\s*$/);
+    const m = line.match(/^# (채널 지침|대본 규칙|라운드업 규칙)\s*$/);
     if (m) {
       // flush
       if (currentKey !== null) result[currentKey] = buf.join("\n").trim();
@@ -99,7 +97,6 @@ function splitInstructions(unified) {
       if (label === "채널 지침") currentKey = "instructions";
       else if (label === "대본 규칙") currentKey = "script_rules";
       else if (label === "라운드업 규칙") currentKey = "roundup_rules";
-      else if (label === "이미지 프롬프트 지침") currentKey = "image_prompt_style";
       continue;
     }
     buf.push(line);
@@ -4804,7 +4801,7 @@ async function openChannelSettings(channelId) {
 
   // 통합 지침: 3개 필드를 merge해서 표시
   document.getElementById("cs-instructions").value = mergeInstructions(
-    ch.instructions || "", cfg.script_rules || "", cfg.roundup_rules || "", cfg.image_prompt_style || ""
+    ch.instructions || "", cfg.script_rules || "", cfg.roundup_rules || ""
   );
 
   // 활성 그룹 감지 및 UI 렌더
@@ -4988,7 +4985,7 @@ async function saveChannelSettings() {
   // 통합 지침 split → 개별 필드
   const _split = splitInstructions(document.getElementById("cs-instructions").value);
   const _setOrDelete = (key, val) => { if (val) cfg[key] = val; else delete cfg[key]; };
-  _setOrDelete("image_prompt_style", _split.image_prompt_style);
+  delete cfg.image_prompt_style;  // config에서 제거 (통합 지침 내 섹션으로 관리)
   _setOrDelete("script_rules", _split.script_rules);
   _setOrDelete("roundup_rules", _split.roundup_rules);
 
@@ -5316,7 +5313,7 @@ async function saveChannelSettingsSilent() {
   // 통합 지침 split → 개별 필드
   const _splitS = splitInstructions(document.getElementById("cs-instructions").value);
   const _setOrDel = (key, val) => { if (val) cfg[key] = val; else delete cfg[key]; };
-  _setOrDel("image_prompt_style", _splitS.image_prompt_style);
+  delete cfg.image_prompt_style;  // config에서 제거
   _setOrDel("script_rules", _splitS.script_rules);
   _setOrDel("roundup_rules", _splitS.roundup_rules);
 
@@ -5439,7 +5436,7 @@ function _buildManualPrompt(channelId) {
   const instructions = (ch && ch.instructions) ? ch.instructions : "";
   const slideLayout = cfg.slide_layout || "full";
   const imageStyle = cfg.image_style || "mixed";
-  const imagePromptStyle = cfg.image_prompt_style || "";
+  // image_prompt_style은 통합 지침(instructions) 내 섹션으로 관리
   const targetDuration = cfg.target_duration || 60;
   const scriptRules = (fmt === "roundup") ? (cfg.roundup_rules || "") : (cfg.script_rules || "");
   const bgMediaType = cfg.bg_media_type || "auto";
@@ -5502,10 +5499,7 @@ ${scriptRules}
 보조 텍스트: 20~30자, 핵심 설명
 
 bg_type: ${imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 사진 스타일)' : imageStyle === 'infographic' ? '모든 슬라이드 "graph" 고정 (인포그래픽/일러스트/차트 스타일)' : imageStyle === 'anime' ? '모든 슬라이드 "photo" 고정 (애니메이션/디지털 일러스트 스타일)' : '슬라이드별 배경 유형 선택 (photo=실사, graph=인포그래픽, broll=B-roll, logo=로고)'}
-슬라이드 레이아웃: ${slideLayout}${imagePromptStyle ? `
-
-[이미지 프롬프트 스타일]
-${imagePromptStyle}` : ''}
+슬라이드 레이아웃: ${slideLayout}
 
 [나레이션 규칙]
 

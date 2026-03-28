@@ -230,6 +230,16 @@ def _now():
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _extract_section(text: str, section_name: str) -> str:
+    """통합 지침(instructions)에서 '# 섹션명' 블록 추출. 없으면 빈 문자열."""
+    if not text:
+        return ""
+    import re
+    pattern = rf'^# {re.escape(section_name)}\s*\n(.*?)(?=^# |\Z)'
+    m = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
 def _update_step(db, job_id, step_name, status, output_data=None, error_msg=None):
     """DB에 단계 상태 갱신"""
     fields = {"status": status, "updated_at": _now()}
@@ -390,7 +400,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
         instructions = channel.get("instructions", "") if channel else ""
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         ch_config = json.loads(channel.get("config", "{}")) if channel else {}
-        image_prompt_style = ch_config.get("image_prompt_style", "")
+        image_prompt_style = _extract_section(instructions, "이미지 프롬프트 지침")
         image_scene_references = ch_config.get("image_scene_references", "")
         channel_format = ch_config.get("format", "single")
         script_rules = ch_config.get("script_rules", "")
@@ -828,7 +838,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 # 배경 자동 생성
                 ch_config_b = json.loads(channel.get("config", "{}")) if channel else {}
                 auto_bg_source = ch_config_b.get("auto_bg_source", "sd_image")
-                image_prompt_style_b = ch_config_b.get("image_prompt_style", "")
+                image_prompt_style_b = _extract_section(instructions, "이미지 프롬프트 지침")
                 image_scene_references_b = ch_config_b.get("image_scene_references", "")
 
                 slide_layout_b = ch_config_b.get("slide_layout", "full")
@@ -2369,7 +2379,7 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
         try:
             ch_config_s3 = json.loads(channel.get("config", "{}")) if channel else {}
             auto_bg_source = ch_config_s3.get("auto_bg_source", "sd_image")
-            image_prompt_style_s3 = ch_config_s3.get("image_prompt_style", "")
+            image_prompt_style_s3 = _extract_section(instructions, "이미지 프롬프트 지침")
             image_scene_references_s3 = ch_config_s3.get("image_scene_references", "")
 
             # 이미지 프롬프트 생성

@@ -36,8 +36,7 @@ DEFAULTS = {
     "first_slide_single_bg":     False,
     "style_reference":           False,
     "image_style":               "mixed",
-    "image_prompt_style":        "",
-    # image_scene_references 제거됨 (고정 매핑 → 이미지 다양성 저해)
+    # image_prompt_style 제거됨 (통합 지침 내 '# 이미지 프롬프트 지침' 섹션으로 관리)
 
     # 인트로/아웃트로 (intro_outro)
     "intro_duration":    3,

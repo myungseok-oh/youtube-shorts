@@ -570,7 +570,10 @@ def _image_style_instruction(image_style: str) -> str:
             "- Use keywords: realistic, sharp focus, professional photography, 8k resolution, photojournalism\n"
             "- Depict real-world scenes: buildings, places, objects, landscapes\n"
             "- Do NOT use illustration, vector art, infographic, or cartoon styles\n"
-            "- Even for data/comparison slides, depict a real-world scene that represents the concept"
+            "- Even for data/comparison slides, depict a real-world scene that represents the concept\n"
+            "\n★★ OVERRIDE: 이 Image Style은 위 '프롬프트 지침'의 bg_type별 스타일 키워드보다 우선합니다.\n"
+            "graph bg_type이더라도 반드시 photorealistic 키워드를 사용하세요.\n"
+            "flat illustration, vector art, infographic 등 일러스트 키워드 사용 금지."
         )
     elif image_style == "infographic":
         return (
@@ -578,7 +581,10 @@ def _image_style_instruction(image_style: str) -> str:
             "- Use keywords: flat illustration, vector art, infographic, clean lines, soft pastels, diagram\n"
             "- Visualize data with charts, graphs, icons, comparison layouts\n"
             "- Do NOT use realistic photography style\n"
-            "- Use split screens for comparisons, bar charts for statistics, icons for concepts"
+            "- Use split screens for comparisons, bar charts for statistics, icons for concepts\n"
+            "\n★★ OVERRIDE: 이 Image Style은 위 '프롬프트 지침'의 bg_type별 스타일 키워드보다 우선합니다.\n"
+            "photo/broll bg_type이더라도 반드시 infographic/illustration 키워드를 사용하세요.\n"
+            "realistic, sharp focus, professional photography 등 실사 키워드 사용 금지."
         )
     elif image_style == "anime":
         return (
@@ -588,7 +594,10 @@ def _image_style_instruction(image_style: str) -> str:
             "- Backgrounds: semi-realistic or painted style environments\n"
             "- Do NOT use realistic photography or photojournalism style\n"
             "- Reference styles: studio ghibli, modern anime, digital illustration\n"
-            "- Keep scenes bright, warm, and visually appealing"
+            "- Keep scenes bright, warm, and visually appealing\n"
+            "\n★★ OVERRIDE: 이 Image Style은 위 '프롬프트 지침'의 bg_type별 스타일 키워드보다 우선합니다.\n"
+            "photo/broll bg_type이더라도 반드시 anime-style illustration 키워드를 사용하세요.\n"
+            "realistic, sharp focus, professional photography, 8k resolution, photojournalism 등 실사 키워드 사용 금지."
         )
     return (
         "Use the style that best matches each slide's bg_type:\n"
