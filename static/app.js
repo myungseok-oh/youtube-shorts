@@ -70,7 +70,7 @@ function mergeInstructions(instructions, scriptRules, roundupRules) {
   // 아무 내용도 없으면 빈 문자열
   if (parts.length === 0) return "";
   // instructions만 있으면 헤더 없이 반환 (하위호환)
-  if (parts.length === 1 && inst && !sr && !rr && !ips) return inst;
+  if (parts.length === 1 && inst && !sr && !rr) return inst;
   return parts.join("\n\n");
 }
 
@@ -120,6 +120,8 @@ let _wizardStep = 1;
 let _lastScriptData = null;
 let _lastStepsData = null;
 let _pollAbort = null;  // 폴링 요청 취소용
+let _perSlideTts = {};  // 슬라이드별 TTS 설정: {slideNum: {engine, voice, rate, style}}
+let _activeSlideTab = null;  // 현재 활성 슬라이드 탭 번호
 const _collapsedChannels = new Set(JSON.parse(localStorage.getItem('collapsedChannels') || '[]'));
 
 const STEP_ICONS = {
@@ -1014,6 +1016,10 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
                     class="text-indigo-300" title="SD 영상 재생성">
               <span class="act-icon">&#9654;</span><span class="act-label">영상</span>
             </button>` : ''}
+            <button onclick="event.stopPropagation(); openSlideTtsModal(${promptSlide})"
+                    class="text-orange-300" title="음성 설정">
+              <span class="act-icon">&#127908;</span><span class="act-label">음성</span>
+            </button>
             <button onclick="event.stopPropagation(); togglePromptEdit('${jobId}', ${i})"
                     class="text-gray-300" title="프롬프트 편집">
               <span class="act-icon">&#9998;</span><span class="act-label">프롬프트</span>
@@ -1093,107 +1099,123 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
   const ttsStep = steps.find(s => s.step_name === "tts");
   const ttsError = (ttsStep && ttsStep.status === "failed") ? ttsStep.error_msg : "";
 
+  // 슬라이드별 TTS 개별 설정 (슬롯 아이콘 팝업에서 설정)
+  const _contentSlides = (script?.slides || []).filter(s => s.bg_type !== "closing");
+  // _perSlideTts 초기화: script_json에 개별 설정이 저장된 슬라이드만 복원
+  _perSlideTts = {};
+  _activeSlideTab = null;
+  _contentSlides.forEach((sl, idx) => {
+    const sn = String(idx + 1);
+    // 슬라이드에 개별 TTS 설정이 있는 경우만 저장
+    if (sl.tts_engine || sl.tts_voice || sl.gemini_tts_style) {
+      _perSlideTts[sn] = {
+        engine: sl.tts_engine || chTtsEngine,
+        voice: sl.tts_voice || (chTtsEngine === "gemini-tts" ? (chCfg.gemini_tts_voice || "Kore") :
+               chTtsEngine === "google-cloud" ? chGoogleVoice : chTtsVoice),
+        rate: sl.tts_rate != null ? sl.tts_rate : chTtsRate,
+        style: sl.gemini_tts_style || chCfg.gemini_tts_style || "",
+      };
+    }
+  });
+
   const rightCol = `
     <div class="wizard-col" id="tab-narration">
       <div class="wizard-col-header">음성 / 나레이션</div>
       ${ttsError ? `<div class="text-xs text-red-400 bg-red-900/20 rounded p-2 mb-3">TTS 실패: ${esc(ttsError)}</div>` : ''}
-      <div class="flex gap-2 mb-3">
-        <button onclick="switchNarrationMode('tts')" id="btn-mode-tts"
-                class="px-3 py-1.5 rounded text-xs font-medium transition ${narrationMode === 'tts' ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}">
-          TTS 생성
-        </button>
-        <button onclick="switchNarrationMode('upload')" id="btn-mode-upload"
-                class="px-3 py-1.5 rounded text-xs font-medium transition ${narrationMode === 'upload' ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}">
-          음성 업로드
-        </button>
-      </div>
-      <div id="narration-tts" class="${narrationMode === 'tts' ? '' : 'hidden'}">
-        <div class="mb-3">
-          <label class="text-xs text-gray-500 mb-1 block">TTS 엔진</label>
-          <select id="tts-engine-select" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs"
-                  onchange="toggleNarrationEngine()">
-            <option value="edge-tts" ${chTtsEngine === 'edge-tts' ? 'selected' : ''}>Edge TTS</option>
-            <option value="google-cloud" ${chTtsEngine === 'google-cloud' ? 'selected' : ''}>Google Cloud TTS</option>
-            <option value="gpt-sovits" ${chTtsEngine === 'gpt-sovits' ? 'selected' : ''}>GPT-SoVITS</option>
-            <option value="gemini-tts" ${chTtsEngine === 'gemini-tts' ? 'selected' : ''}>Gemini TTS</option>
-          </select>
-        </div>
-        <div id="narration-edge-section" class="${(chTtsEngine === 'edge-tts' || chTtsEngine === 'gemini-tts') ? '' : 'hidden'}">
-          <div class="flex gap-2 items-center">
-            <select id="tts-voice-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
-              <option value="ko-KR-SunHiNeural" ${chTtsVoice === 'ko-KR-SunHiNeural' ? 'selected' : ''}>선히 (여성)</option>
-              <option value="ko-KR-InJoonNeural" ${chTtsVoice === 'ko-KR-InJoonNeural' ? 'selected' : ''}>인준 (남성)</option>
-              <option value="ko-KR-HyunsuNeural" ${chTtsVoice === 'ko-KR-HyunsuNeural' ? 'selected' : ''}>현수 (남성)</option>
-              <option value="ko-KR-HyunsuMultilingualNeural" ${chTtsVoice === 'ko-KR-HyunsuMultilingualNeural' ? 'selected' : ''}>현수 멀티링구얼 (남성)</option>
-            </select>
-            <button onclick="previewVoice()" id="btn-preview-voice"
-                    class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
+      <div id="narration-tts">
+        <select id="tts-engine-select" class="hidden"><option value="${chTtsEngine}"></option></select>
+        <div class="grid grid-cols-2 gap-4">
+          <!-- 좌측: 엔진|음성 한줄 + 속도 -->
+          <div>
+            <div id="narration-edge-section" class="${(chTtsEngine === 'edge-tts' || chTtsEngine === 'gemini-tts') ? '' : 'hidden'}">
+              <div class="flex gap-1 items-center">
+                <select id="tts-engine-select-e" class="bg-gray-800 border border-gray-700 rounded px-1.5 py-1.5 text-xs"
+                        style="width:42%" onchange="document.getElementById('tts-engine-select').value=this.value;toggleNarrationEngine()">
+                  <option value="edge-tts" ${chTtsEngine === 'edge-tts' ? 'selected' : ''}>Edge</option>
+                  <option value="google-cloud" ${chTtsEngine === 'google-cloud' ? 'selected' : ''}>Google</option>
+                  <option value="gpt-sovits" ${chTtsEngine === 'gpt-sovits' ? 'selected' : ''}>SoVITS</option>
+                  <option value="gemini-tts" ${chTtsEngine === 'gemini-tts' ? 'selected' : ''}>Gemini</option>
+                </select>
+                <select id="tts-voice-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-1.5 py-1.5 text-xs min-w-0">
+                  <option value="ko-KR-SunHiNeural" ${chTtsVoice === 'ko-KR-SunHiNeural' ? 'selected' : ''}>선히 (여)</option>
+                  <option value="ko-KR-InJoonNeural" ${chTtsVoice === 'ko-KR-InJoonNeural' ? 'selected' : ''}>인준 (남)</option>
+                  <option value="ko-KR-HyunsuNeural" ${chTtsVoice === 'ko-KR-HyunsuNeural' ? 'selected' : ''}>현수 (남)</option>
+                  <option value="ko-KR-HyunsuMultilingualNeural" ${chTtsVoice === 'ko-KR-HyunsuMultilingualNeural' ? 'selected' : ''}>현수M (남)</option>
+                </select>
+                <button onclick="previewVoice()" id="btn-preview-voice"
+                        class="px-1.5 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap shrink-0">듣기</button>
+              </div>
+              <div class="flex items-center gap-2 mt-2">
+                <span class="text-xs text-gray-500 shrink-0">속도</span>
+                <input type="range" id="tts-rate" min="-30" max="50" value="${chTtsRate}" step="10"
+                       class="flex-1 h-1 accent-orange-500" oninput="updateRateLabel()">
+                <span id="tts-rate-label" class="text-xs text-gray-400 w-8 text-right shrink-0">${chTtsRate}%</span>
+              </div>
+            </div>
+            <div id="narration-google-section" class="${chTtsEngine === 'google-cloud' ? '' : 'hidden'}">
+              <div class="flex gap-1 items-center">
+                <select id="tts-engine-select-g" class="bg-gray-800 border border-gray-700 rounded px-1.5 py-1.5 text-xs"
+                        style="width:42%" onchange="document.getElementById('tts-engine-select').value=this.value;toggleNarrationEngine()">
+                  <option value="edge-tts">Edge</option>
+                  <option value="google-cloud" selected>Google</option>
+                  <option value="gpt-sovits">SoVITS</option>
+                  <option value="gemini-tts">Gemini</option>
+                </select>
+                <select id="google-voice-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-1.5 py-1.5 text-xs min-w-0">
+                  <option value="ko-KR-Wavenet-A" ${chGoogleVoice === 'ko-KR-Wavenet-A' ? 'selected' : ''}>Wavenet A (여)</option>
+                  <option value="ko-KR-Wavenet-B" ${chGoogleVoice === 'ko-KR-Wavenet-B' ? 'selected' : ''}>Wavenet B (여)</option>
+                  <option value="ko-KR-Wavenet-C" ${chGoogleVoice === 'ko-KR-Wavenet-C' ? 'selected' : ''}>Wavenet C (남)</option>
+                  <option value="ko-KR-Wavenet-D" ${chGoogleVoice === 'ko-KR-Wavenet-D' ? 'selected' : ''}>Wavenet D (남)</option>
+                  <option value="ko-KR-Neural2-A" ${chGoogleVoice === 'ko-KR-Neural2-A' ? 'selected' : ''}>Neural2 A (여)</option>
+                  <option value="ko-KR-Neural2-B" ${chGoogleVoice === 'ko-KR-Neural2-B' ? 'selected' : ''}>Neural2 B (여)</option>
+                  <option value="ko-KR-Neural2-C" ${chGoogleVoice === 'ko-KR-Neural2-C' ? 'selected' : ''}>Neural2 C (남)</option>
+                </select>
+                <button onclick="previewVoice()" id="btn-preview-google-popup"
+                        class="px-1.5 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap shrink-0">듣기</button>
+              </div>
+              <div class="flex items-center gap-2 mt-2">
+                <span class="text-xs text-gray-500 shrink-0">속도</span>
+                <input type="range" id="google-rate" min="-30" max="50" value="${chGoogleRate}" step="10"
+                       class="flex-1 h-1 accent-orange-500" oninput="updateGoogleRateLabel()">
+                <span id="google-rate-label" class="text-xs text-gray-400 w-8 text-right shrink-0">${chGoogleRate}%</span>
+              </div>
+            </div>
+            <div id="narration-sovits-section" class="${chTtsEngine === 'gpt-sovits' ? '' : 'hidden'}">
+              <div class="flex gap-1 items-center">
+                <select id="tts-engine-select-s" class="bg-gray-800 border border-gray-700 rounded px-1.5 py-1.5 text-xs"
+                        style="width:42%" onchange="document.getElementById('tts-engine-select').value=this.value;toggleNarrationEngine()">
+                  <option value="edge-tts">Edge</option>
+                  <option value="google-cloud">Google</option>
+                  <option value="gpt-sovits" selected>SoVITS</option>
+                  <option value="gemini-tts">Gemini</option>
+                </select>
+                <select id="sovits-ref-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-1.5 py-1.5 text-xs min-w-0">
+                </select>
+                <button onclick="previewSovitsNarration()" id="btn-preview-sovits"
+                        class="px-1.5 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap shrink-0">듣기</button>
+              </div>
+              <div class="mt-2">
+                <input type="text" id="sovits-ref-text" value="${esc(chSovitsText)}"
+                       class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs"
+                       placeholder="참조 텍스트 (선택)">
+                <div id="sovits-status-narration" class="text-xs mt-1"></div>
+              </div>
+            </div>
+            <audio id="voice-preview-popup" class="hidden mt-2"></audio>
           </div>
-          <div class="flex items-center gap-2 mt-2">
-            <span class="text-xs text-gray-500 w-8">속도</span>
-            <input type="range" id="tts-rate" min="-30" max="50" value="${chTtsRate}" step="10"
-                   class="flex-1 h-1 accent-orange-500" oninput="updateRateLabel()">
-            <span id="tts-rate-label" class="text-xs text-gray-400 w-10 text-right">${chTtsRate}%</span>
-          </div>
-        </div>
-        <div id="narration-google-section" class="${chTtsEngine === 'google-cloud' ? '' : 'hidden'}">
-          <div class="flex gap-2 items-center">
-            <select id="google-voice-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
-              <option value="ko-KR-Wavenet-A" ${chGoogleVoice === 'ko-KR-Wavenet-A' ? 'selected' : ''}>Wavenet A (여성)</option>
-              <option value="ko-KR-Wavenet-B" ${chGoogleVoice === 'ko-KR-Wavenet-B' ? 'selected' : ''}>Wavenet B (여성)</option>
-              <option value="ko-KR-Wavenet-C" ${chGoogleVoice === 'ko-KR-Wavenet-C' ? 'selected' : ''}>Wavenet C (남성)</option>
-              <option value="ko-KR-Wavenet-D" ${chGoogleVoice === 'ko-KR-Wavenet-D' ? 'selected' : ''}>Wavenet D (남성)</option>
-              <option value="ko-KR-Neural2-A" ${chGoogleVoice === 'ko-KR-Neural2-A' ? 'selected' : ''}>Neural2 A (여성)</option>
-              <option value="ko-KR-Neural2-B" ${chGoogleVoice === 'ko-KR-Neural2-B' ? 'selected' : ''}>Neural2 B (여성)</option>
-              <option value="ko-KR-Neural2-C" ${chGoogleVoice === 'ko-KR-Neural2-C' ? 'selected' : ''}>Neural2 C (남성)</option>
-            </select>
-            <button onclick="previewVoice()" id="btn-preview-google-popup"
-                    class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
-          </div>
-          <div class="flex items-center gap-2 mt-2">
-            <span class="text-xs text-gray-500 w-8">속도</span>
-            <input type="range" id="google-rate" min="-30" max="50" value="${chGoogleRate}" step="10"
-                   class="flex-1 h-1 accent-orange-500" oninput="updateGoogleRateLabel()">
-            <span id="google-rate-label" class="text-xs text-gray-400 w-10 text-right">${chGoogleRate}%</span>
-          </div>
-        </div>
-        <div id="narration-sovits-section" class="${chTtsEngine === 'gpt-sovits' ? '' : 'hidden'}">
-          <div class="mb-2">
-            <label class="text-xs text-gray-500 mb-1 block">참조 음성</label>
-            <div class="flex gap-2 items-center">
-              <select id="sovits-ref-select" class="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs">
-              </select>
-              <button onclick="previewSovitsNarration()" id="btn-preview-sovits"
-                      class="px-2 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition whitespace-nowrap">미리듣기</button>
+          <!-- 우측: 스타일 -->
+          <div>
+            <div id="narration-gemini-style-section" class="${chTtsEngine === 'gemini-tts' ? '' : 'hidden'}">
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-xs text-gray-500">음성 스타일</label>
+                <button onclick="navigator.clipboard.writeText(document.getElementById('gemini-tts-style-popup').value);this.textContent='copied';setTimeout(()=>this.innerHTML='&#x1f4cb;',1000)"
+                        class="text-gray-500 hover:text-gray-300 text-xs transition" title="복사">&#x1f4cb;</button>
+              </div>
+              <textarea id="gemini-tts-style-popup" rows="4" placeholder="Read aloud in a warm and friendly tone"
+                        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs resize-none">${esc(chCfg.gemini_tts_style || '')}</textarea>
             </div>
           </div>
-          <div>
-            <label class="text-xs text-gray-500 mb-1 block">참조 텍스트 (선택)</label>
-            <input type="text" id="sovits-ref-text" value="${esc(chSovitsText)}"
-                   class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs"
-                   placeholder="참조 음성의 텍스트 내용">
-          </div>
-          <div id="sovits-status-narration" class="text-xs mt-2"></div>
         </div>
-        <audio id="voice-preview-popup" class="hidden mt-2"></audio>
-      </div>
-      <div id="narration-upload" class="${narrationMode === 'upload' ? '' : 'hidden'}">
-        <div class="flex gap-2 items-center">
-          <button onclick="document.getElementById('narration-file').click()"
-                  class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs font-medium transition">
-            ${has_narration ? '다시 업로드' : '파일 선택'}
-          </button>
-          <input type="file" accept="audio/*" class="hidden" id="narration-file"
-                 onchange="uploadNarration('${jobId}', this)">
-          <span id="narration-status" class="text-xs ${has_narration ? 'text-green-400' : 'text-gray-500'}">
-            ${has_narration ? '업로드됨' : '음성 파일을 선택하세요'}
-          </span>
-        </div>
-        ${has_narration ? `
-        <div class="flex items-center gap-2 mt-2">
-          <audio id="narration-preview" controls src="/api/jobs/${jobId}/narration?t=${Date.now()}" class="h-8 flex-1"></audio>
-          <button onclick="deleteNarration('${jobId}')" class="text-xs text-gray-500 hover:text-red-400 transition">삭제</button>
-        </div>` : ''}
       </div>
     </div>`;
 
@@ -1924,23 +1946,11 @@ async function saveTransitionsAndResume(jobId) {
     // Phase B 실행 — Step 2에서 설정한 TTS 엔진/음성 포함
     if (btn) btn.textContent = "영상 제작 중...";
 
-    const _ttsPayload = {};
-    const _engineSel = document.getElementById("tts-engine-select");
-    const _engine = _engineSel ? _engineSel.value : (_lastScriptData?.channel_config?.tts_engine || "edge-tts");
-    _ttsPayload.tts_engine = _engine;
-    if (_engine === "google-cloud") {
-      const _gv = document.getElementById("google-voice-select");
-      const _gr = document.getElementById("google-rate");
-      _ttsPayload.tts_voice = _gv ? _gv.value : (_lastScriptData?.channel_config?.google_voice || "ko-KR-Wavenet-A");
-      _ttsPayload.tts_rate = _gr ? _gr.value : "0";
-    } else if (_engine === "gpt-sovits") {
-      const _ref = document.getElementById("sovits-ref-select");
-      _ttsPayload.sovits_ref_voice = _ref ? _ref.value : "";
-    } else {
-      const _ev = document.getElementById("tts-voice-select");
-      const _er = document.getElementById("tts-rate");
-      _ttsPayload.tts_voice = _ev ? _ev.value : (_lastScriptData?.channel_config?.tts_voice || "");
-      _ttsPayload.tts_rate = _er ? _er.value : "0";
+    const _ttsPayload = _collectTtsPayload();
+
+    // 슬라이드별 개별 TTS 설정 포함
+    if (Object.keys(_perSlideTts).length > 0) {
+      _ttsPayload.per_slide_tts = _perSlideTts;
     }
 
     const res = await fetch(`/api/jobs/${jobId}/resume`, {
@@ -1998,23 +2008,11 @@ async function quickRender(jobId) {
     });
 
     // TTS 엔진/음성 수집
-    const _ttsPayload = {};
-    const _engineSel = document.getElementById("tts-engine-select");
-    const _engine = _engineSel ? _engineSel.value : (_lastScriptData?.channel_config?.tts_engine || "edge-tts");
-    _ttsPayload.tts_engine = _engine;
-    if (_engine === "google-cloud") {
-      const _gv = document.getElementById("google-voice-select");
-      const _gr = document.getElementById("google-rate");
-      _ttsPayload.tts_voice = _gv ? _gv.value : (_lastScriptData?.channel_config?.google_voice || "ko-KR-Wavenet-A");
-      _ttsPayload.tts_rate = _gr ? _gr.value : "0";
-    } else if (_engine === "gpt-sovits") {
-      const _ref = document.getElementById("sovits-ref-select");
-      _ttsPayload.sovits_ref_voice = _ref ? _ref.value : "";
-    } else {
-      const _ev = document.getElementById("tts-voice-select");
-      const _er = document.getElementById("tts-rate");
-      _ttsPayload.tts_voice = _ev ? _ev.value : (_lastScriptData?.channel_config?.tts_voice || "");
-      _ttsPayload.tts_rate = _er ? _er.value : "0";
+    const _ttsPayload = _collectTtsPayload();
+
+    // 슬라이드별 개별 TTS 설정 포함
+    if (Object.keys(_perSlideTts).length > 0) {
+      _ttsPayload.per_slide_tts = _perSlideTts;
     }
 
     const res = await fetch(`/api/jobs/${jobId}/resume`, {
@@ -2369,6 +2367,10 @@ function renderJobDetail(scriptData, stepsData) {
   if (_engineSel && _engineSel.value === "gemini-tts") {
     toggleNarrationEngine();
   }
+  // 슬라이드별 TTS 탭 초기화 — 첫 번째 탭 값 로드
+  if (_activeSlideTab && _perSlideTts[_activeSlideTab]) {
+    _loadSlideTabTts(_activeSlideTab);
+  }
 }
 
 async function _loadSovitsRefSelect() {
@@ -2676,10 +2678,16 @@ function toggleNarrationEngine() {
   const edgeSection = document.getElementById("narration-edge-section");
   const googleSection = document.getElementById("narration-google-section");
   const sovitsSection = document.getElementById("narration-sovits-section");
+  const geminiStyleSection = document.getElementById("narration-gemini-style-section");
 
-  edgeSection.classList.add("hidden");
-  googleSection.classList.add("hidden");
-  sovitsSection.classList.add("hidden");
+  [edgeSection, googleSection, sovitsSection].forEach(el => el && el.classList.add("hidden"));
+  if (geminiStyleSection) geminiStyleSection.classList.add("hidden");
+
+  // 각 섹션의 엔진 셀렉트 동기화
+  ["tts-engine-select-e","tts-engine-select-g","tts-engine-select-s"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = engine;
+  });
 
   if (engine === "google-cloud") {
     googleSection.classList.remove("hidden");
@@ -2687,7 +2695,6 @@ function toggleNarrationEngine() {
     sovitsSection.classList.remove("hidden");
     _loadSovitsRefSelect();
   } else if (engine === "gemini-tts") {
-    // Gemini TTS: Edge 섹션의 voice 드롭다운에 Gemini 음성 채우기
     edgeSection.classList.remove("hidden");
     const voiceSel = document.getElementById("tts-voice-select");
     if (voiceSel) {
@@ -2707,16 +2714,254 @@ function toggleNarrationEngine() {
       }
       voiceSel.innerHTML = opts;
     }
-    // rate 슬라이더 숨기기 (Gemini는 rate 불필요)
-    const rateRow = document.getElementById("tts-rate")?.closest(".flex");
-    if (rateRow) rateRow.style.display = "none";
+    if (geminiStyleSection) geminiStyleSection.classList.remove("hidden");
   } else {
     edgeSection.classList.remove("hidden");
-    // rate 슬라이더 복원
-    const rateRow2 = document.getElementById("tts-rate")?.closest(".flex");
-    if (rateRow2) rateRow2.style.display = "";
+    // Edge 음성 복원
+    const voiceSel = document.getElementById("tts-voice-select");
+    if (voiceSel && !voiceSel.querySelector('option[value="ko-KR-SunHiNeural"]')) {
+      const chCfg = window._currentChannelConfig || {};
+      const dv = chCfg.tts_voice || "ko-KR-SunHiNeural";
+      voiceSel.innerHTML = `
+        <option value="ko-KR-SunHiNeural" ${dv==='ko-KR-SunHiNeural'?'selected':''}>선히 (여)</option>
+        <option value="ko-KR-InJoonNeural" ${dv==='ko-KR-InJoonNeural'?'selected':''}>인준 (남)</option>
+        <option value="ko-KR-HyunsuNeural" ${dv==='ko-KR-HyunsuNeural'?'selected':''}>현수 (남)</option>
+        <option value="ko-KR-HyunsuMultilingualNeural" ${dv==='ko-KR-HyunsuMultilingualNeural'?'selected':''}>현수M (남)</option>`;
+    }
   }
 }
+
+// ─── 공통 TTS 페이로드 수집 ───
+
+function _collectTtsPayload() {
+  const payload = {};
+  const _engineSel = document.getElementById("tts-engine-select");
+  const _engine = _engineSel ? _engineSel.value : (_lastScriptData?.channel_config?.tts_engine || "edge-tts");
+  payload.tts_engine = _engine;
+  if (_engine === "google-cloud") {
+    const _gv = document.getElementById("google-voice-select");
+    const _gr = document.getElementById("google-rate");
+    payload.tts_voice = _gv ? _gv.value : (_lastScriptData?.channel_config?.google_voice || "ko-KR-Wavenet-A");
+    payload.tts_rate = _gr ? _gr.value : "0";
+  } else if (_engine === "gpt-sovits") {
+    const _ref = document.getElementById("sovits-ref-select");
+    payload.sovits_ref_voice = _ref ? _ref.value : "";
+  } else {
+    const _ev = document.getElementById("tts-voice-select");
+    const _er = document.getElementById("tts-rate");
+    payload.tts_voice = _ev ? _ev.value : (_lastScriptData?.channel_config?.tts_voice || "");
+    payload.tts_rate = _er ? _er.value : "0";
+  }
+  if (_engine === "gemini-tts") {
+    const _gs = document.getElementById("gemini-tts-style-popup");
+    if (_gs) payload.gemini_tts_style = _gs.value.trim();
+  }
+  return payload;
+}
+
+// ─── 슬라이드별 TTS 모달 팝업 ───
+
+function openSlideTtsModal(slideNum) {
+  const sn = String(slideNum);
+  const existing = _perSlideTts[sn] || null;
+  const isCustom = !!existing;
+  const chCfg = window._currentChannelConfig || {};
+  const chEngine = chCfg.tts_engine || "edge-tts";
+
+  // 현재 공통 설정값 읽기
+  const commonTts = _collectTtsPayload();
+  const cfg = existing || {
+    engine: commonTts.tts_engine || chEngine,
+    voice: commonTts.tts_voice || chCfg.tts_voice || "ko-KR-SunHiNeural",
+    rate: parseInt(commonTts.tts_rate || "0"),
+    style: commonTts.gemini_tts_style || chCfg.gemini_tts_style || "",
+  };
+
+  // Edge 음성 옵션
+  const edgeVoices = [
+    ["ko-KR-SunHiNeural","선히 (여)"],["ko-KR-InJoonNeural","인준 (남)"],
+    ["ko-KR-HyunsuNeural","현수 (남)"],["ko-KR-HyunsuMultilingualNeural","현수M (남)"]
+  ];
+  const edgeOpts = edgeVoices.map(([v,l]) => `<option value="${v}" ${cfg.voice===v?'selected':''}>${l}</option>`).join("");
+
+  // Google 음성 옵션
+  const googleVoices = [
+    ["ko-KR-Wavenet-A","Wavenet A (여)"],["ko-KR-Wavenet-B","Wavenet B (여)"],
+    ["ko-KR-Wavenet-C","Wavenet C (남)"],["ko-KR-Wavenet-D","Wavenet D (남)"],
+    ["ko-KR-Neural2-A","Neural2 A (여)"],["ko-KR-Neural2-B","Neural2 B (여)"],
+    ["ko-KR-Neural2-C","Neural2 C (남)"]
+  ];
+  const googleOpts = googleVoices.map(([v,l]) => `<option value="${v}" ${cfg.voice===v?'selected':''}>${l}</option>`).join("");
+
+  // Gemini 음성 옵션
+  const geminiVoices = {
+    "Kore":"Kore (Firm)","Puck":"Puck (Upbeat)","Sulafat":"Sulafat (Warm)",
+    "Charon":"Charon (Informative)","Fenrir":"Fenrir (Excitable)","Leda":"Leda (Youthful)",
+    "Orus":"Orus (Firm)","Aoede":"Aoede (Breezy)","Zephyr":"Zephyr (Bright)",
+    "Enceladus":"Enceladus (Breathy)","Iapetus":"Iapetus (Clear)","Umbriel":"Umbriel (Easy-going)",
+    "Achernar":"Achernar (Soft)","Achird":"Achird (Friendly)","Gacrux":"Gacrux (Mature)",
+    "Vindemiatrix":"Vindemiatrix (Gentle)","Sadachbia":"Sadachbia (Lively)"
+  };
+  const geminiOpts = Object.entries(geminiVoices).map(([k,v]) => `<option value="${k}" ${cfg.voice===k?'selected':''}>${v}</option>`).join("");
+
+  const rateVal = cfg.rate || 0;
+  const rateSign = rateVal >= 0 ? "+" : "";
+
+  // 모달 HTML
+  const modalHtml = `
+    <div id="slide-tts-modal" class="fixed inset-0 z-[9999] flex items-center justify-center" style="background:rgba(0,0,0,0.6);backdrop-filter:blur(2px);">
+      <div class="bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-5" style="width:400px;max-width:90vw;">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-sm font-bold text-white">슬라이드 ${slideNum} 음성 설정</span>
+          <button onclick="closeSlideTtsModal()" class="text-gray-500 hover:text-white text-lg leading-none">&times;</button>
+        </div>
+        <div class="flex items-center gap-2 mb-4">
+          <label class="flex items-center gap-2 cursor-pointer text-xs">
+            <input type="checkbox" id="stm-use-custom" ${isCustom ? 'checked' : ''}
+                   onchange="toggleSlideTtsCustom()" class="accent-orange-500">
+            <span class="text-gray-300">이 슬라이드에 개별 음성 적용</span>
+          </label>
+        </div>
+        <div id="stm-custom-area" class="${isCustom ? '' : 'opacity-40 pointer-events-none'}">
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">엔진</label>
+            <select id="stm-engine" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs"
+                    onchange="toggleSlideTtsEngine()">
+              <option value="edge-tts" ${cfg.engine==='edge-tts'?'selected':''}>Edge</option>
+              <option value="google-cloud" ${cfg.engine==='google-cloud'?'selected':''}>Google</option>
+              <option value="gpt-sovits" ${cfg.engine==='gpt-sovits'?'selected':''}>SoVITS</option>
+              <option value="gemini-tts" ${cfg.engine==='gemini-tts'?'selected':''}>Gemini</option>
+            </select>
+          </div>
+          <div id="stm-edge-section" class="${(cfg.engine==='edge-tts'||cfg.engine==='gemini-tts')?'':'hidden'}">
+            <label class="text-xs text-gray-500 mb-1 block">음성</label>
+            <select id="stm-voice-edge" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2">
+              ${cfg.engine==='gemini-tts' ? geminiOpts : edgeOpts}
+            </select>
+          </div>
+          <div id="stm-google-section" class="${cfg.engine==='google-cloud'?'':'hidden'}">
+            <label class="text-xs text-gray-500 mb-1 block">음성</label>
+            <select id="stm-voice-google" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2">
+              ${googleOpts}
+            </select>
+          </div>
+          <div id="stm-sovits-section" class="${cfg.engine==='gpt-sovits'?'':'hidden'}">
+            <label class="text-xs text-gray-500 mb-1 block">참조 음성</label>
+            <select id="stm-voice-sovits" class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs mb-2">
+            </select>
+          </div>
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs text-gray-500 shrink-0">속도</span>
+            <input type="range" id="stm-rate" min="-30" max="50" value="${rateVal}" step="10"
+                   class="flex-1 h-1 accent-orange-500" oninput="document.getElementById('stm-rate-label').textContent=(this.value>=0?'+':'')+this.value+'%'">
+            <span id="stm-rate-label" class="text-xs text-gray-400 w-10 text-right shrink-0">${rateSign}${rateVal}%</span>
+          </div>
+          <div id="stm-gemini-style-section" class="${cfg.engine==='gemini-tts'?'':'hidden'}">
+            <label class="text-xs text-gray-500 mb-1 block">음성 스타일</label>
+            <textarea id="stm-style" rows="3" placeholder="Read aloud in a warm and friendly tone"
+                      class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-xs resize-none">${esc(cfg.style)}</textarea>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 mt-4 pt-3 border-t border-gray-800">
+          <button onclick="closeSlideTtsModal()" class="px-4 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-xs transition">취소</button>
+          <button onclick="saveSlideTtsModal(${slideNum})" class="px-4 py-1.5 bg-orange-600 hover:bg-orange-500 rounded text-xs font-medium transition">저장</button>
+        </div>
+      </div>
+    </div>`;
+
+  // 기존 모달 제거 후 추가
+  closeSlideTtsModal();
+  document.body.insertAdjacentHTML("beforeend", modalHtml);
+
+  // SoVITS 참조 음성 로드
+  if (cfg.engine === "gpt-sovits") {
+    _loadSlideTtsSovitsRefs(cfg.voice);
+  }
+}
+
+function toggleSlideTtsCustom() {
+  const checked = document.getElementById("stm-use-custom")?.checked;
+  const area = document.getElementById("stm-custom-area");
+  if (!area) return;
+  if (checked) {
+    area.classList.remove("opacity-40", "pointer-events-none");
+  } else {
+    area.classList.add("opacity-40", "pointer-events-none");
+  }
+}
+
+function toggleSlideTtsEngine() {
+  const engine = document.getElementById("stm-engine")?.value || "edge-tts";
+  document.getElementById("stm-edge-section")?.classList.add("hidden");
+  document.getElementById("stm-google-section")?.classList.add("hidden");
+  document.getElementById("stm-sovits-section")?.classList.add("hidden");
+  document.getElementById("stm-gemini-style-section")?.classList.add("hidden");
+
+  if (engine === "google-cloud") {
+    document.getElementById("stm-google-section")?.classList.remove("hidden");
+  } else if (engine === "gpt-sovits") {
+    document.getElementById("stm-sovits-section")?.classList.remove("hidden");
+    _loadSlideTtsSovitsRefs();
+  } else {
+    document.getElementById("stm-edge-section")?.classList.remove("hidden");
+    // Gemini면 음성 목록 교체
+    const voiceSel = document.getElementById("stm-voice-edge");
+    if (voiceSel) {
+      if (engine === "gemini-tts") {
+        const gv = {"Kore":"Kore (Firm)","Puck":"Puck (Upbeat)","Sulafat":"Sulafat (Warm)","Charon":"Charon (Informative)","Fenrir":"Fenrir (Excitable)","Leda":"Leda (Youthful)","Orus":"Orus (Firm)","Aoede":"Aoede (Breezy)","Zephyr":"Zephyr (Bright)","Enceladus":"Enceladus (Breathy)","Iapetus":"Iapetus (Clear)","Umbriel":"Umbriel (Easy-going)","Achernar":"Achernar (Soft)","Achird":"Achird (Friendly)","Gacrux":"Gacrux (Mature)","Vindemiatrix":"Vindemiatrix (Gentle)","Sadachbia":"Sadachbia (Lively)"};
+        voiceSel.innerHTML = Object.entries(gv).map(([k,v]) => `<option value="${k}">${v}</option>`).join("");
+        document.getElementById("stm-gemini-style-section")?.classList.remove("hidden");
+      } else {
+        const ev = [["ko-KR-SunHiNeural","선히 (여)"],["ko-KR-InJoonNeural","인준 (남)"],["ko-KR-HyunsuNeural","현수 (남)"],["ko-KR-HyunsuMultilingualNeural","현수M (남)"]];
+        voiceSel.innerHTML = ev.map(([v,l]) => `<option value="${v}">${l}</option>`).join("");
+      }
+    }
+  }
+}
+
+async function _loadSlideTtsSovitsRefs(selectedVoice) {
+  const sel = document.getElementById("stm-voice-sovits");
+  if (!sel) return;
+  try {
+    const res = await fetch("/api/sovits/ref-voices");
+    const data = await res.json();
+    sel.innerHTML = (data.voices || []).map(v =>
+      `<option value="${v.file}" ${v.file===selectedVoice?'selected':''}>${v.name}</option>`
+    ).join("");
+  } catch {}
+}
+
+function saveSlideTtsModal(slideNum) {
+  const sn = String(slideNum);
+  const useCustom = document.getElementById("stm-use-custom")?.checked;
+
+  if (!useCustom) {
+    // 개별 설정 해제 → 공통 설정 사용
+    delete _perSlideTts[sn];
+  } else {
+    const engine = document.getElementById("stm-engine")?.value || "edge-tts";
+    let voice = "";
+    if (engine === "google-cloud") {
+      voice = document.getElementById("stm-voice-google")?.value || "";
+    } else if (engine === "gpt-sovits") {
+      voice = document.getElementById("stm-voice-sovits")?.value || "";
+    } else {
+      voice = document.getElementById("stm-voice-edge")?.value || "";
+    }
+    const rate = parseInt(document.getElementById("stm-rate")?.value || "0");
+    const style = (engine === "gemini-tts") ? (document.getElementById("stm-style")?.value?.trim() || "") : "";
+
+    _perSlideTts[sn] = { engine, voice, rate, style };
+  }
+
+  closeSlideTtsModal();
+}
+
+function closeSlideTtsModal() {
+  const modal = document.getElementById("slide-tts-modal");
+  if (modal) modal.remove();
+}
+
 
 function updateRateLabel() {
   const val = document.getElementById("tts-rate").value;
@@ -2976,12 +3221,11 @@ async function deleteChannelBg(type) {
 
 // ─── Character Reference Image ───
 
-function loadCharacterRefPreview() {
-  const modal = document.getElementById("channel-settings-modal");
-  const channelId = modal.dataset.channelId;
-  const container = document.getElementById("cs-character-ref-preview");
+function _loadCharRefPreview(containerId, url) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
   const img = new Image();
-  img.src = `/api/channels/${channelId}/character-ref?t=${Date.now()}`;
+  img.src = url;
   img.onload = () => {
     container.innerHTML = "";
     img.className = "w-full h-full object-cover";
@@ -2990,6 +3234,15 @@ function loadCharacterRefPreview() {
   img.onerror = () => {
     container.innerHTML = '<span class="text-gray-600 text-xs">없음</span>';
   };
+}
+
+function loadCharacterRefPreview() {
+  const modal = document.getElementById("channel-settings-modal");
+  const channelId = modal.dataset.channelId;
+  const t = Date.now();
+  _loadCharRefPreview("cs-character-ref-preview", `/api/channels/${channelId}/character-ref?t=${t}`);
+  _loadCharRefPreview("cs-character-ref-male-preview", `/api/channels/${channelId}/character-ref/male?t=${t}`);
+  _loadCharRefPreview("cs-character-ref-female-preview", `/api/channels/${channelId}/character-ref/female?t=${t}`);
 }
 
 async function uploadCharacterRef(input) {
@@ -3009,6 +3262,27 @@ async function deleteCharacterRef() {
   const channelId = modal.dataset.channelId;
   if (!confirm("캐릭터 참조 이미지를 삭제하시겠습니까?")) return;
   await fetch(`/api/channels/${channelId}/character-ref`, { method: "DELETE" });
+  loadCharacterRefPreview();
+}
+
+async function uploadCharacterRefRole(input, role) {
+  const file = input.files[0];
+  if (!file) return;
+  const modal = document.getElementById("channel-settings-modal");
+  const channelId = modal.dataset.channelId;
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`/api/channels/${channelId}/character-ref/${role}`, { method: "POST", body: fd });
+  if (res.ok) loadCharacterRefPreview();
+  input.value = "";
+}
+
+async function deleteCharacterRefRole(role) {
+  const modal = document.getElementById("channel-settings-modal");
+  const channelId = modal.dataset.channelId;
+  const label = role === "male" ? "남자" : "여자";
+  if (!confirm(`${label} 캐릭터 참조 이미지를 삭제하시겠습니까?`)) return;
+  await fetch(`/api/channels/${channelId}/character-ref/${role}`, { method: "DELETE" });
   loadCharacterRefPreview();
 }
 
@@ -4556,6 +4830,11 @@ async function resumeJob(jobId) {
     payload.tts_voice = voiceSelect ? voiceSelect.value : "";
     payload.tts_rate = rateInput ? rateInput.value : "0";
   }
+  // Gemini TTS 스타일
+  if (engine === "gemini-tts") {
+    const styleEl = document.getElementById("gemini-tts-style-popup");
+    if (styleEl) payload.gemini_tts_style = styleEl.value.trim();
+  }
 
   try {
     const res = await fetch(`/api/jobs/${jobId}/resume`, {
@@ -4781,6 +5060,7 @@ async function submitAddChannel() {
 
 let _settingsChannelId = null;
 async function openChannelSettings(channelId) {
+  try {
   _settingsChannelId = channelId;
   console.log("openChannelSettings called:", channelId, "cache:", channelsCache.length);
   const ch = channelsCache.find(c => c.id === channelId);
@@ -4851,6 +5131,7 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-bg-media-type").value = cfg.bg_media_type || "auto";
   document.getElementById("cs-first-slide-single-bg").checked = !!cfg.first_slide_single_bg;
   document.getElementById("cs-style-reference").checked = !!cfg.style_reference;
+  document.getElementById("cs-veo-keep-audio").checked = !!cfg.veo_keep_audio;
   loadCharacterRefPreview();
 
   // ── 인트로/아웃트로 (intro_outro) ──
@@ -4966,6 +5247,7 @@ async function openChannelSettings(channelId) {
   // 탭 바 렌더 + 첫 탭 선택
   _renderTabBar();
   document.getElementById("channel-settings-modal").classList.remove("hidden");
+  } catch (e) { console.error("openChannelSettings ERROR:", e); alert("설정 열기 실패: " + e.message); }
 }
 
 async function saveChannelSettings() {
@@ -4994,6 +5276,7 @@ async function saveChannelSettings() {
   cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
   cfg.first_slide_single_bg = document.getElementById("cs-first-slide-single-bg").checked;
   cfg.style_reference = document.getElementById("cs-style-reference").checked;
+  cfg.veo_keep_audio = document.getElementById("cs-veo-keep-audio").checked;
 
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
 
@@ -5322,6 +5605,7 @@ async function saveChannelSettingsSilent() {
   cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
   cfg.first_slide_single_bg = document.getElementById("cs-first-slide-single-bg").checked;
   cfg.style_reference = document.getElementById("cs-style-reference").checked;
+  cfg.veo_keep_audio = document.getElementById("cs-veo-keep-audio").checked;
 
   cfg.slide_layout = document.getElementById("cs-slide-layout").value;
 
@@ -5491,6 +5775,14 @@ ${scriptRules}
     }
   }
 
+  const bgTypeDesc = imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 사진 스타일)'
+    : imageStyle === 'infographic' ? '모든 슬라이드 "graph" 고정 (인포그래픽/일러스트/차트 스타일)'
+    : imageStyle === 'anime' ? '모든 슬라이드 "photo" 고정 (애니메이션/디지털 일러스트 스타일)'
+    : '슬라이드별 배경 유형 선택 (photo=실사, graph=인포그래픽, broll=B-roll, logo=로고)';
+  const bgTypeVal = imageStyle === 'photo' || imageStyle === 'anime' ? 'photo'
+    : imageStyle === 'infographic' ? 'graph' : '';
+  const hasChannelRules = !!scriptRules;
+
   prompt += `
 
 [슬라이드 텍스트 규칙]
@@ -5498,20 +5790,27 @@ ${scriptRules}
 메인 텍스트: 12~20자, 강한 키워드 중심, 강조는 <span class="hl">키워드</span>
 보조 텍스트: 20~30자, 핵심 설명
 
-bg_type: ${imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 사진 스타일)' : imageStyle === 'infographic' ? '모든 슬라이드 "graph" 고정 (인포그래픽/일러스트/차트 스타일)' : imageStyle === 'anime' ? '모든 슬라이드 "photo" 고정 (애니메이션/디지털 일러스트 스타일)' : '슬라이드별 배경 유형 선택 (photo=실사, graph=인포그래픽, broll=B-roll, logo=로고)'}
+bg_type: ${bgTypeDesc}
 슬라이드 레이아웃: ${slideLayout}
 
 [나레이션 규칙]
 
-1. narration 항목 1개 = image_prompts 항목 1개 (반드시 같은 개수, 1:1 대응)
-2. 전체 나레이션 읽기 시간이 ${targetDuration}초에 맞도록 조절
-3. 채널 지침에 맞는 자연스러운 톤
-4. narration text는 TTS가 읽는 텍스트이므로 HTML 태그 금지, 순수 텍스트만
+1. 전체 나레이션 읽기 시간이 ${targetDuration}초에 맞도록 조절
+2. 채널 지침과 대본 규칙의 톤/말투/문장 길이를 반드시 따를 것
+3. narration text는 TTS가 읽는 텍스트이므로 HTML 태그 금지, 순수 텍스트만
+`;
+
+  if (!hasChannelRules) {
+    // 채널 대본 규칙이 없을 때만 기본 세부 규칙 추가
+    prompt += `4. narration 항목 1개 = image_prompts 항목 1개 (반드시 같은 개수, 1:1 대응)
 5. ★ 나레이션 1항목의 글자 수는 대응하는 배경 표시 시간에 맞출 것:
    - image 배경(~5초): 20~25자
    - video 배경(~6초): 25~30자
    - 12~17자처럼 짧으면 배경과 갭이 생김. 반드시 글자 수 지킬 것
+`;
+  }
 
+  prompt += `
 [출력 형식]
 
 반드시 아래 JSON 형식으로만 출력한다.
@@ -5523,18 +5822,16 @@ bg_type: ${imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 
   "category": "",
   "slides": [
     {
-      "bg_type": "${imageStyle === 'photo' || imageStyle === 'anime' ? 'photo' : imageStyle === 'infographic' ? 'graph' : ''}",
+      "bg_type": "${bgTypeVal}",
       "main_text": "핵심 <span class=\\"hl\\">강조</span> 텍스트",
       "sub_text": ""
     }
   ],
   "narration": [
-    { "slide": 1, "text": "첫 번째 배경에 맞는 나레이션 (~5초 분량)" },
-    { "slide": 1, "text": "두 번째 배경에 맞는 나레이션 (~6초 분량)" }
+    { "slide": 1, "text": "나레이션 텍스트" }
   ],
   "image_prompts": [
-    { "slide": 1, "ko": "한국어 장면 묘사", "en": "English prompt 30-60 words", "media": "image", "motion": "" },
-    { "slide": 1, "ko": "같은 슬라이드 두번째 배경", "en": "Different angle prompt", "media": "video", "motion": "gentle pan left to right" }
+    { "slide": 1, "ko": "한국어 장면 묘사", "en": "English prompt 30-60 words", "media": "image", "motion": "" }
   ]
 }
 
@@ -5542,12 +5839,16 @@ bg_type: ${imageStyle === 'photo' ? '모든 슬라이드 "photo" 고정 (실사 
 ★ closing 슬라이드는 생성하지 않는다 (시스템이 자동 추가)
 
 [필드 설명]
-- category: 주제를 대표하는 태그 (예: "경제","정치","코인","테크","사회","교양","과학" 등)
-- image_prompts.ko: 배경 이미지 한국어 프롬프트 (30~50자, 구체적 장면 묘사)
-- image_prompts.en: 영어 프롬프트 (30~60 words, subject+setting+lighting+camera+style 포함)
+- category: 주제를 대표하는 태그
+- image_prompts.ko: 배경 이미지 한국어 프롬프트 (구체적 장면 묘사)
+- image_prompts.en: 영어 프롬프트 (subject+setting+lighting+camera+style 포함)
 - image_prompts.media: "image" 또는 "video" — 정적 이미지(~5초) 또는 영상(~6초)
 - image_prompts.motion: video일 때 카메라/피사체 움직임, image일 때 빈 문자열
+`;
 
+  if (!hasChannelRules) {
+    // 채널 대본 규칙이 없을 때만 기본 media/motion/배경 규칙 추가
+    prompt += `
 [media 배치 규칙]
 - 전체 프롬프트 중 25~35%만 "video" (과하면 산만해짐)
 - ★★ graph/overview 타입 슬라이드는 반드시 전부 "image" (video 절대 금지)
@@ -5583,7 +5884,10 @@ ${bgMediaType === "single" ? `
   - ~5초(배경 1개) | ~10초(배경 2개) | ~15초(배경 3개)
   - 한 슬라이드에 배경 N개 → narration도 N항목 (같은 slide 번호)
   각 배경 프롬프트는 서로 다른 앵글/장면/스케일로 시각적 변화를 준다.`}
+`;
+  }
 
+  prompt += `
 [생성 요청 주제]
 
 `;

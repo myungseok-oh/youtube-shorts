@@ -685,6 +685,49 @@ async def api_delete_character_ref(channel_id: str):
     return {"ok": True}
 
 
+@app.post("/api/channels/{channel_id}/character-ref/{role}")
+async def api_upload_character_ref_role(channel_id: str, role: str, file: UploadFile = File(...)):
+    if role not in ("male", "female"):
+        raise HTTPException(400, "role must be male or female")
+    if not get_channel(db_ch, channel_id):
+        raise HTTPException(404, "Channel not found")
+    d = _channel_asset_dir(channel_id)
+    prefix = f"character_ref_{role}"
+    for ext in ["jpg", "jpeg", "png", "webp"]:
+        old = os.path.join(d, f"{prefix}.{ext}")
+        if os.path.exists(old):
+            os.remove(old)
+    original = file.filename or f"{prefix}.png"
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else "png"
+    if ext not in ("jpg", "jpeg", "png", "webp"):
+        ext = "png"
+    out_path = os.path.join(d, f"{prefix}.{ext}")
+    content = await file.read()
+    with open(out_path, "wb") as f:
+        f.write(content)
+    return {"ok": True, "path": out_path, "size_kb": round(len(content) / 1024, 1)}
+
+
+@app.get("/api/channels/{channel_id}/character-ref/{role}")
+async def api_get_character_ref_role(channel_id: str, role: str):
+    if role not in ("male", "female"):
+        raise HTTPException(400, "role must be male or female")
+    path = _find_channel_image(channel_id, f"character_ref_{role}")
+    if not path:
+        raise HTTPException(404, "Not found")
+    return FileResponse(path)
+
+
+@app.delete("/api/channels/{channel_id}/character-ref/{role}")
+async def api_delete_character_ref_role(channel_id: str, role: str):
+    if role not in ("male", "female"):
+        raise HTTPException(400, "role must be male or female")
+    path = _find_channel_image(channel_id, f"character_ref_{role}")
+    if path:
+        os.remove(path)
+    return {"ok": True}
+
+
 # ─── Job API ───
 
 @app.get("/api/jobs")
@@ -2206,6 +2249,8 @@ async def api_resume_job(job_id: str, request: Request):
     tts_rate = None
     tts_engine = ""
     sovits_override = None
+    gemini_style_override = ""
+    per_slide_tts = None
     try:
         body = await request.json()
         tts_engine = body.get("tts_engine", "")
@@ -2224,11 +2269,36 @@ async def api_resume_job(job_id: str, request: Request):
                     "ref_text": body.get("sovits_ref_text", ""),
                     "speed": 1.0,
                 }
+        gemini_style_override = body.get("gemini_tts_style", "")
+
+        # 슬라이드별 TTS 설정
+        if body.get("per_slide_tts") and isinstance(body["per_slide_tts"], dict):
+            per_slide_tts = body["per_slide_tts"]
+            # script_json.slides[]에 슬라이드별 TTS 설정 저장 (DB 영구화)
+            try:
+                script_json = json.loads(job.get("script_json", "{}") or "{}")
+                slides = script_json.get("slides", [])
+                for idx, sl in enumerate(slides):
+                    if sl.get("bg_type") == "closing":
+                        continue
+                    sn = str(idx + 1)
+                    if sn in per_slide_tts:
+                        sl_tts = per_slide_tts[sn]
+                        sl["tts_engine"] = sl_tts.get("engine", "")
+                        sl["tts_voice"] = sl_tts.get("voice", "")
+                        sl["tts_rate"] = sl_tts.get("rate")
+                        sl["gemini_tts_style"] = sl_tts.get("style", "")
+                db.execute("UPDATE jobs SET script_json = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+                           [json.dumps(script_json, ensure_ascii=False), job_id])
+            except Exception:
+                pass
     except Exception:
         pass
 
     resume_pipeline(db_ch, db, job_id, tts_voice=tts_voice, tts_rate=tts_rate,
-                    tts_engine=tts_engine, sovits_cfg=sovits_override)
+                    tts_engine=tts_engine, sovits_cfg=sovits_override,
+                    gemini_tts_style=gemini_style_override,
+                    per_slide_tts=per_slide_tts)
     return {"ok": True, "message": "Phase B queued"}
 
 

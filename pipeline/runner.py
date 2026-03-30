@@ -538,6 +538,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                     "en": vp.get("en", ""),
                     "motion": vp.get("motion", ""),
                     "media": vp.get("media", "image"),
+                    "character": vp.get("character", "none"),
                     "slide": vp.get("scene", 1),
                 })
             if image_prompts and any(p.get("en") for p in image_prompts):
@@ -665,6 +666,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                     "en": vp.get("en", ""),
                     "motion": vp.get("motion", ""),
                     "media": vp.get("media", "image"),
+                    "character": vp.get("character", "none"),
                     "slide": vp.get("scene", 1),
                 })
             if image_prompts and any(p.get("en") for p in image_prompts):
@@ -797,7 +799,9 @@ def _reset_steps_from(db, job_id, step_names):
 
 def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                   tts_rate_override=None, tts_engine_override: str = "",
-                  sovits_cfg_override: dict = None):
+                  sovits_cfg_override: dict = None,
+                  gemini_tts_style_override: str = "",
+                  per_slide_tts: dict = None):
     """Phase B: slides → tts → render → upload (업로드된 배경 이미지 사용)"""
     try:
         db.execute("UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
@@ -810,6 +814,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
 
         channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
+        instructions = channel.get("instructions", "") if channel else ""
         ch_config_pb = json.loads(channel.get("config", "{}")) if channel else {}
         slide_layout = ch_config_pb.get("slide_layout", "full")
         bg_display_mode = ch_config_pb.get("bg_display_mode", "zone")
@@ -934,7 +939,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                         time.sleep(5)
                                     _zone_ratio_b = ch_config_b.get("slide_zone_ratio", "3:4:3")
                                     _ar = _calc_image_aspect_ratio(slide_layout_b, bg_display_mode, _zone_ratio_b)
-                                    _char_ref_path = _find_channel_image(channel_id, "character_ref")
+                                    _char_ref_path = _find_character_ref(channel_id, prompt)
                                     _style_ref = _first_bg_path if ch_config_b.get("style_reference") and idx > 0 else None
                                     gemini_generate_image(en_prompt, out, gemini_key,
                                                           aspect_ratio=_ar,
@@ -969,8 +974,10 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 en_prompt = _prompt_en(prompt)
                                 vid_prompt = f"{en_prompt}, {motion}" if motion else en_prompt
                                 try:
+                                    _veo_audio = ch_config_b.get("veo_keep_audio", False)
                                     ok = gemini_image_to_video(img_path, vid_prompt, mp4_path,
-                                                              gemini_key, duration=6)
+                                                              gemini_key, duration=6,
+                                                              keep_audio=_veo_audio)
                                     if ok:
                                         print(f"[runner] bg_{idx+1}.mp4 Veo 영상화 완료 (slide {slide_num})")
                                         # video_chaining: 마지막 프레임 → 다음 슬라이드 배경
@@ -1292,7 +1299,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
 
                 if _narr_slide_audio is None:
                     # 이미 오디오 파일이 모두 있으면 스킵 (단, 엔진/음성 변경 시 재생성)
-                    force_tts = bool(tts_engine_override or tts_voice_override or sovits_cfg_override) \
+                    force_tts = bool(tts_engine_override or tts_voice_override or sovits_cfg_override or per_slide_tts) \
                         if not _has_narr_files else False
                     existing_audio = _find_existing_audio(dirs["audio"], len(sentences),
                                                             sentences=sentences)
@@ -1324,6 +1331,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         gemini_cfg = None
                         if tts_engine == "gemini-tts":
                             gemini_cfg = _build_gemini_tts_cfg(ch_config)
+                            if gemini_tts_style_override:
+                                gemini_cfg["style"] = gemini_tts_style_override
 
                         if tts_engine == "google-cloud":
                             tts_voice = tts_voice_override or ch_config.get("google_voice", "ko-KR-Wavenet-A")
@@ -1343,12 +1352,89 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 "index_influence": ch_config.get("rvc_index_influence", 0.5),
                             }
 
-                        audio_paths = generate_audio(sentences, dirs["audio"],
-                                                     voice=tts_voice, rate=tts_rate,
-                                                     sovits_cfg=sovits_cfg,
-                                                     rvc_cfg=rvc_cfg,
-                                                     gemini_cfg=gemini_cfg)
-                        engine_label = "Gemini TTS" if gemini_cfg else ("GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS"))
+                        # ── 슬라이드별 TTS 설정 확인 ──
+                        _slide_tts_map = {}  # {slide_num: {engine, voice, rate, style}}
+                        if per_slide_tts:
+                            _slide_tts_map = per_slide_tts
+                        else:
+                            # script_json.slides[]에 저장된 per-slide TTS 설정 확인 (인덱스 기반)
+                            for idx, sl in enumerate(script_json.get("slides", [])):
+                                if sl.get("bg_type") == "closing":
+                                    continue
+                                sl_num = str(idx + 1)
+                                if sl.get("tts_voice") or sl.get("tts_engine") or sl.get("gemini_tts_style"):
+                                    _slide_tts_map[sl_num] = {
+                                        "engine": sl.get("tts_engine", ""),
+                                        "voice": sl.get("tts_voice", ""),
+                                        "rate": sl.get("tts_rate"),
+                                        "style": sl.get("gemini_tts_style", ""),
+                                    }
+
+                        if _slide_tts_map:
+                            # 슬라이드별 TTS: sentences를 slide별 그룹으로 분리 → 개별 호출
+                            from collections import OrderedDict
+                            slide_groups = OrderedDict()
+                            for idx, sent in enumerate(sentences):
+                                sn = str(sent.get("slide", 1))
+                                slide_groups.setdefault(sn, []).append((idx, sent))
+
+                            audio_paths = [None] * len(sentences)
+                            engine_labels = set()
+                            for sn, items in slide_groups.items():
+                                sl_cfg = _slide_tts_map.get(sn, {})
+                                sl_engine = sl_cfg.get("engine") or tts_engine
+                                sl_voice = sl_cfg.get("voice") or tts_voice
+                                sl_rate = sl_cfg.get("rate") if sl_cfg.get("rate") is not None else tts_rate
+                                sl_style = sl_cfg.get("style", "")
+
+                                # 슬라이드별 엔진 설정 빌드
+                                sl_gemini_cfg = None
+                                sl_sovits_cfg = sovits_cfg
+                                if sl_engine == "gemini-tts":
+                                    sl_gemini_cfg = _build_gemini_tts_cfg(ch_config)
+                                    if sl_style:
+                                        sl_gemini_cfg["style"] = sl_style
+                                    if sl_voice:
+                                        sl_gemini_cfg["voice"] = sl_voice
+                                    sl_sovits_cfg = None
+                                elif sl_engine == "gpt-sovits":
+                                    sl_gemini_cfg = None
+                                elif sl_engine in ("edge-tts", "google-cloud"):
+                                    sl_sovits_cfg = None
+                                    sl_gemini_cfg = None
+
+                                # 이 그룹의 문장만 추출
+                                sub_sentences = [it[1] for it in items]
+                                sub_audio_dir = os.path.join(dirs["audio"], f"slide_{sn}")
+                                os.makedirs(sub_audio_dir, exist_ok=True)
+
+                                sub_paths = generate_audio(sub_sentences, sub_audio_dir,
+                                                           voice=sl_voice, rate=sl_rate,
+                                                           sovits_cfg=sl_sovits_cfg,
+                                                           rvc_cfg=rvc_cfg,
+                                                           gemini_cfg=sl_gemini_cfg)
+                                # 결과를 원래 인덱스에 배치
+                                for (orig_idx, _), path in zip(items, sub_paths):
+                                    audio_paths[orig_idx] = path
+
+                                if sl_gemini_cfg:
+                                    engine_labels.add("Gemini TTS")
+                                elif sl_sovits_cfg:
+                                    engine_labels.add("GPT-SoVITS")
+                                elif sl_voice in _gc_voices():
+                                    engine_labels.add("Google Cloud TTS")
+                                else:
+                                    engine_labels.add("Edge TTS")
+
+                            engine_label = " + ".join(sorted(engine_labels))
+                        else:
+                            # 기존: 단일 호출
+                            audio_paths = generate_audio(sentences, dirs["audio"],
+                                                         voice=tts_voice, rate=tts_rate,
+                                                         sovits_cfg=sovits_cfg,
+                                                         rvc_cfg=rvc_cfg,
+                                                         gemini_cfg=gemini_cfg)
+                            engine_label = "Gemini TTS" if gemini_cfg else ("GPT-SoVITS" if sovits_cfg else ("Google Cloud TTS" if tts_voice in _gc_voices() else "Edge TTS"))
                         if rvc_cfg:
                             engine_label += f" + RVC({rvc_cfg['model']})"
                         _save_script_hash(dirs["audio"], sentences)
@@ -2097,6 +2183,21 @@ def _find_channel_image(channel_id: str, prefix: str) -> str | None:
     return None
 
 
+def _find_character_ref(channel_id: str, prompt: dict) -> str | None:
+    """이미지 프롬프트의 character 필드에 따라 캐릭터 참조 이미지 선택.
+
+    - character="male"  → character_ref_male 우선, 없으면 character_ref 폴백
+    - character="female" → character_ref_female 우선, 없으면 character_ref 폴백
+    - 그 외 → 기존 character_ref
+    """
+    char_type = prompt.get("character", "") if isinstance(prompt, dict) else ""
+    if char_type in ("male", "female"):
+        path = _find_channel_image(channel_id, f"character_ref_{char_type}")
+        if path:
+            return path
+    return _find_channel_image(channel_id, "character_ref")
+
+
 def _generate_narration_audio(text: str, output_path: str, ch_config: dict,
                                channel_id: str) -> str | None:
     """나레이션 텍스트 → TTS 오디오 파일 생성. 실패 시 None 반환."""
@@ -2437,7 +2538,7 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                                 time.sleep(5)
                             _zone_ratio_s3 = ch_config_s3.get("slide_zone_ratio", "3:4:3")
                             _ar = _calc_image_aspect_ratio(slide_layout_s3, bg_display_mode, _zone_ratio_s3)
-                            _char_ref_path_s3 = _find_channel_image(channel_id, "character_ref")
+                            _char_ref_path_s3 = _find_character_ref(channel_id, prompt)
                             _style_ref_s3 = _first_bg_path_s3 if ch_config_s3.get("style_reference") and idx > 0 else None
                             gemini_generate_image(en_prompt, output_path, gemini_key,
                                                   aspect_ratio=_ar,
@@ -2466,8 +2567,10 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                         en_prompt = _prompt_en(prompt)
                         vid_prompt = f"{en_prompt}, {motion}" if motion else en_prompt
                         try:
+                            _veo_audio = ch_config_s3.get("veo_keep_audio", False)
                             ok = gemini_image_to_video(img_path, vid_prompt, mp4_path,
-                                                      gemini_key, duration=6)
+                                                      gemini_key, duration=6,
+                                                      keep_audio=_veo_audio)
                             if ok:
                                 print(f"[runner] bg_{idx+1}.mp4 Veo 영상화 완료")
                             else:
@@ -2846,12 +2949,15 @@ def start_pipeline(db_ch, db, job_id: str, script_json: dict = None,
 
 
 def resume_pipeline(db_ch, db, job_id: str, tts_voice: str = "", tts_rate=None,
-                    tts_engine: str = "", sovits_cfg: dict = None):
+                    tts_engine: str = "", sovits_cfg: dict = None,
+                    gemini_tts_style: str = "", per_slide_tts: dict = None):
     """Phase B를 큐에 등록 (순차 실행)"""
     _job_queue.enqueue(db_ch, db, job_id, tts_voice_override=tts_voice,
                        tts_rate_override=tts_rate,
                        tts_engine_override=tts_engine,
-                       sovits_cfg_override=sovits_cfg)
+                       sovits_cfg_override=sovits_cfg,
+                       gemini_tts_style_override=gemini_tts_style,
+                       per_slide_tts=per_slide_tts)
 
 
 def start_pipeline_full(db_ch, db, job_id: str, script_json: dict = None,

@@ -184,6 +184,11 @@ ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera
                       recent_topics: list[str] | None = None,
                       skip_web_search: bool = False) -> list[str]:
         """자유 형식 요청을 개별 뉴스 주제 리스트로 변환."""
+        # 쉼표/줄바꿈으로 구분된 다중 주제 → 각각 개별 주제로 바로 반환
+        _parts = [p.strip() for p in re.split(r'[,，\n]+', request) if p.strip()]
+        if len(_parts) >= 2:
+            return _parts
+
         if _is_specific_topic(request):
             if skip_web_search:
                 # 교양/상식 채널 — 날짜 무관, 바로 반환
@@ -605,11 +610,12 @@ Synopsis: {synopsis_text}
   {{"scene": 1, "media": "image", "duration": 5, "bg_type": "photo",
     "en": "English prompt 30-60 words...", "ko": "한국어 현장 설명",
     "motion": "camera + subject + environment motion description",
-    "caption": "핵심 키워드/수치 (없으면 빈 문자열)"}},
+    "caption": "핵심 키워드/수치 (없으면 빈 문자열)",
+    "character": "male 또는 female 또는 none"}},
   ...
 ]
 
-★ closing 씬은 {{"scene": N, "media": "image", "duration": 0, "bg_type": "closing", "en": "", "ko": "", "motion": "", "caption": ""}}"""
+★ closing 씬은 {{"scene": N, "media": "image", "duration": 0, "bg_type": "closing", "en": "", "ko": "", "motion": "", "caption": "", "character": "none"}}"""
 
         raw = _run_claude(prompt, timeout=180, use_web=False,
                           model="claude-opus-4-6")
@@ -641,6 +647,7 @@ Synopsis: {synopsis_text}
                             "ko": str(p.get("ko", "")),
                             "motion": str(p.get("motion", "")),
                             "caption": str(p.get("caption", "")),
+                            "character": str(p.get("character", "none")),
                         })
                 return result
 
@@ -1111,7 +1118,8 @@ brand 값은 "{brand}"로 설정해.
   }},
   "visual_plan": [
     {{"scene": 1, "media": "image", "duration": 5, "bg_type": "photo",
-      "en": "★ character_design + environment_design + consistency_keywords 포함 English prompt 30-60 words", "ko": "한국어 설명", "motion": "motion desc", "caption": "핵심 키워드 (없으면 빈 문자열)"}}, ...
+      "en": "★ character_design + environment_design + consistency_keywords 포함 English prompt 30-60 words", "ko": "한국어 설명", "motion": "motion desc", "caption": "핵심 키워드 (없으면 빈 문자열)",
+      "character": "male 또는 female 또는 none — 이 장면에 등장하는 주인공 캐릭터"}}, ...
   ],
   "script": {{
     "news_date": "{date_str}",
@@ -1274,13 +1282,14 @@ Slides:
 {_image_size_instruction(layout, bg_display_mode, zone_ratio)}
 
 ## 출력 형식
-각 슬라이드에 대해 ko, en, motion, media 4개 필드를 생성.
+각 슬라이드에 대해 ko, en, motion, media, character 5개 필드를 생성.
 **[xN prompts]로 표시된 슬라이드는 서로 다른 장면의 프롬프트를 N개 연속 출력하라.**
 
 - ko: 촬영 현장을 구체적으로 (예: "울산 정유소 증류탑 야경, 가스 플레어 불빛")
 - en: 영어 이미지 프롬프트, 30-60 words, 5요소 필수 (Subject, Setting, Lighting, Camera, Style)
 - motion: 이 장면을 영상으로 만들 때의 카메라 움직임 (예: "slow zoom in", "gentle pan left", "slow zoom out")
 - media: "image" 또는 "video" — 이 배경을 정적 이미지로 쓸지, 6초 영상으로 변환할지 지정
+- character: "male" 또는 "female" 또는 "none" — 이 장면에 등장하는 주인공 캐릭터. 캐릭터가 등장하지 않는 장면(인포그래픽, 풍경 등)은 "none"
 
 ## ★★★ media 배치 핵심 규칙 (반드시 따를 것) ★★★
 {self._media_layout_rules(bg_media_type)}
@@ -1291,7 +1300,7 @@ Slides:
 - 이미지 사이즈에 맞는 composition 키워드 포함
 
 Output ONLY a JSON array with exactly {prompt_count} items, no other text:
-[{{"ko":"한국어 설명", "en":"English prompt", "motion":"camera movement", "media":"image"}}, ...]"""
+[{{"ko":"한국어 설명", "en":"English prompt", "motion":"camera movement", "media":"image", "character":"male"}}, ...]"""
 
         slide_prompt_map = []
         for i, s in enumerate(slides):
@@ -1330,11 +1339,12 @@ Output ONLY a JSON array with exactly {prompt_count} items, no other text:
                                     "en": str(p["en"]),
                                     "motion": str(p.get("motion", "")),
                                     "media": str(p.get("media", "image")),
+                                    "character": str(p.get("character", "none")),
                                     "slide": slide_idx + 1,
                                 })
                             else:
                                 result.append({"ko": "", "en": str(p), "motion": "",
-                                               "media": "image",
+                                               "media": "image", "character": "none",
                                                "slide": slide_idx + 1})
                         prompt_idx += 1
                 return result

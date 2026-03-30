@@ -6,7 +6,7 @@
   <title>YouTube Shorts Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/style.css?v=20260327a">
+  <link rel="stylesheet" href="/static/style.css?v=20260330e">
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen">
 
@@ -139,7 +139,7 @@
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">설명</label>
-          <input id="ch-desc" type="text" placeholder="60초 뉴스 브리핑"
+          <input id="ch-desc" type="text" placeholder="채널 설명을 입력하세요"
                  class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
         </div>
       </div>
@@ -192,7 +192,7 @@
         <div>
           <label class="block text-sm text-gray-400 mb-1">요청</label>
           <p class="text-xs text-gray-500 mb-2">실행 시 Claude가 요청을 해석하여 주제를 추출하고 영상을 제작합니다</p>
-          <textarea id="cs-topics" rows="2" placeholder="예: 오늘 경제 뉴스 3개 만들어줘"
+          <textarea id="cs-topics" rows="2" placeholder="예: 오늘 주제 3개 만들어줘"
                     class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm"></textarea>
         </div>
         <div class="flex items-center justify-between">
@@ -214,7 +214,7 @@
         <div class="flex items-center justify-between">
           <div>
             <label class="block text-sm text-gray-400">서브에이전트 (병렬 검색)</label>
-            <p class="text-xs text-gray-500 mt-1">활성화하면 다주제 뉴스 검색을 서브에이전트로 병렬 처리하여 속도 향상</p>
+            <p class="text-xs text-gray-500 mt-1">활성화하면 다주제 검색을 서브에이전트로 병렬 처리하여 속도 향상</p>
           </div>
           <label class="relative inline-flex items-center cursor-pointer ml-4 shrink-0">
             <input id="cs-use-subagent" type="checkbox" class="sr-only peer">
@@ -227,31 +227,31 @@
       <div id="cs-tab-content" class="cs-tab-content hidden space-y-4">
         <div>
           <label class="block text-sm text-gray-400 mb-1">목표 영상 길이 <span id="cs-target-duration-label" class="text-orange-400">60</span>초</label>
-          <input id="cs-target-duration" type="range" min="15" max="180" step="5" value="60"
+          <input id="cs-target-duration" type="range" min="6" max="120" step="1" value="60"
                  oninput="document.getElementById('cs-target-duration-label').textContent=this.value"
                  class="w-full accent-orange-500">
-          <p class="text-xs text-gray-500 mt-1">15~180초. 슬라이드 수와 나레이션 분량이 이 길이에 맞춰 조절됩니다</p>
+          <p class="text-xs text-gray-500 mt-1">6~120초. 슬라이드 수와 나레이션 분량이 이 길이에 맞춰 조절됩니다</p>
         </div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">영상 형식</label>
           <select id="cs-format"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-            <option value="single">단일 뉴스 — 주제 1개 = 영상 1개</option>
+            <option value="single">단일 — 주제 1개 = 영상 1개</option>
             <option value="roundup">라운드업 — 주제 N개를 한 영상에 묶어서</option>
           </select>
-          <p class="text-xs text-gray-500 mt-1">라운드업: 여러 뉴스를 한 영상에 짧게 전달 (첫 슬라이드에 주제 목록 소개)</p>
+          <p class="text-xs text-gray-500 mt-1">라운드업: 여러 주제를 한 영상에 짧게 전달 (첫 슬라이드에 주제 목록 소개)</p>
         </div>
         <div class="border-t border-gray-700"></div>
         <div>
           <label class="block text-sm text-gray-400 mb-1">주제 중복 검사 기간</label>
           <select id="cs-dedup-hours"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
-            <option value="24">24시간 (뉴스 채널용)</option>
+            <option value="24">24시간</option>
             <option value="72">72시간</option>
             <option value="168">7일</option>
-            <option value="0">전체 기간 (교양/상식 채널용)</option>
+            <option value="0">전체 기간</option>
           </select>
-          <p class="text-xs text-gray-500 mt-1">뉴스는 24시간, 교양/상식은 전체 기간 권장</p>
+          <p class="text-xs text-gray-500 mt-1">같은 주제 중복 방지 기간. 짧을수록 같은 주제 재생성 가능</p>
         </div>
         <div class="flex items-center justify-between">
           <div>
@@ -294,7 +294,7 @@
             <option value="anime">애니메 — 애니메이션/디지털 일러스트 스타일</option>
             <option value="mixed">혼합 — bg_type에 따라 자동 (photo→실사, graph→인포그래픽)</option>
           </select>
-          <p class="text-xs text-gray-500 mt-1">포토: 뉴스 현장감, 인포그래픽: 데이터/비교 중심, 혼합: 슬라이드별 자동 판단</p>
+          <p class="text-xs text-gray-500 mt-1">포토: 실사/사진풍, 애니메: 일러스트풍, 인포그래픽: 데이터/비교, 혼합: 자동 판단</p>
         </div>
       </div>
 
@@ -557,21 +557,52 @@
             <span class="text-sm text-gray-400">스타일 참조 (화풍/색감 유지)</span>
           </label>
           <p class="text-xs text-gray-500 mt-1">첫 슬라이드 이미지를 기준으로 나머지 슬라이드의 화풍과 색감을 통일합니다</p>
+          <label class="flex items-center gap-2 mt-3 cursor-pointer">
+            <input type="checkbox" id="cs-veo-keep-audio" class="rounded bg-gray-800 border-gray-600">
+            <span class="text-sm text-gray-400">Veo 오디오 유지</span>
+          </label>
+          <p class="text-xs text-gray-500 mt-1">Veo 영상의 환경음/효과음을 유지합니다 (TTS 나레이션과 믹싱)</p>
         </div>
         <!-- 주제별 현장 레퍼런스 제거됨: 고정 매핑이 이미지 다양성을 저해 -->
         <div>
           <label class="block text-sm text-gray-400 mb-1">캐릭터 참조 이미지</label>
-          <p class="text-xs text-gray-500 mb-2">캐릭터 일관성을 위한 참조 이미지. Gemini 이미지 생성 시 자동 포함됩니다.</p>
-          <div class="flex items-center gap-3">
-            <div id="cs-character-ref-preview" class="w-16 h-16 rounded bg-gray-800 border border-gray-700 flex items-center justify-center overflow-hidden flex-shrink-0">
-              <span class="text-gray-600 text-xs">없음</span>
+          <p class="text-xs text-gray-500 mb-2">프롬프트 character 필드(male/female)에 따라 자동 선택. 남/여 없으면 기본 참조 사용.</p>
+          <div class="flex gap-4">
+            <div class="flex flex-col items-center gap-1">
+              <span class="text-xs text-gray-500">기본</span>
+              <div id="cs-character-ref-preview" class="w-14 h-14 rounded bg-gray-800 border border-gray-700 flex items-center justify-center overflow-hidden flex-shrink-0">
+                <span class="text-gray-600 text-xs">없음</span>
+              </div>
+              <div class="flex gap-1">
+                <label class="cursor-pointer bg-blue-600 hover:bg-blue-500 text-white text-[10px] px-2 py-1 rounded">
+                  업로드<input type="file" accept="image/*" class="hidden" onchange="uploadCharacterRef(this)">
+                </label>
+                <button onclick="deleteCharacterRef()" class="bg-red-700 hover:bg-red-600 text-white text-[10px] px-2 py-1 rounded">X</button>
+              </div>
             </div>
-            <div class="flex gap-2">
-              <label class="cursor-pointer bg-blue-600 hover:bg-blue-500 text-white text-xs px-3 py-1.5 rounded">
-                업로드
-                <input type="file" accept="image/*" class="hidden" onchange="uploadCharacterRef(this)">
-              </label>
-              <button onclick="deleteCharacterRef()" class="bg-red-700 hover:bg-red-600 text-white text-xs px-3 py-1.5 rounded">삭제</button>
+            <div class="flex flex-col items-center gap-1">
+              <span class="text-xs text-blue-400">남자</span>
+              <div id="cs-character-ref-male-preview" class="w-14 h-14 rounded bg-gray-800 border border-blue-700 flex items-center justify-center overflow-hidden flex-shrink-0">
+                <span class="text-gray-600 text-xs">없음</span>
+              </div>
+              <div class="flex gap-1">
+                <label class="cursor-pointer bg-blue-600 hover:bg-blue-500 text-white text-[10px] px-2 py-1 rounded">
+                  업로드<input type="file" accept="image/*" class="hidden" onchange="uploadCharacterRefRole(this,'male')">
+                </label>
+                <button onclick="deleteCharacterRefRole('male')" class="bg-red-700 hover:bg-red-600 text-white text-[10px] px-2 py-1 rounded">X</button>
+              </div>
+            </div>
+            <div class="flex flex-col items-center gap-1">
+              <span class="text-xs text-pink-400">여자</span>
+              <div id="cs-character-ref-female-preview" class="w-14 h-14 rounded bg-gray-800 border border-pink-700 flex items-center justify-center overflow-hidden flex-shrink-0">
+                <span class="text-gray-600 text-xs">없음</span>
+              </div>
+              <div class="flex gap-1">
+                <label class="cursor-pointer bg-blue-600 hover:bg-blue-500 text-white text-[10px] px-2 py-1 rounded">
+                  업로드<input type="file" accept="image/*" class="hidden" onchange="uploadCharacterRefRole(this,'female')">
+                </label>
+                <button onclick="deleteCharacterRefRole('female')" class="bg-red-700 hover:bg-red-600 text-white text-[10px] px-2 py-1 rounded">X</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1037,6 +1068,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260328a"></script>
+  <script src="/static/app.js?v=20260330m"></script>
 </body>
 </html>

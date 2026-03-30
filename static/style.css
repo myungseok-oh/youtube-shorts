@@ -1026,12 +1026,12 @@
 /* ─── Upload Slots ─── */
 /* 프롬프트 스크롤 영역 */
 .prompt-scroll-area {
-  max-height: 25vh;
+  max-height: 40vh;
   overflow-y: auto;
 }
 /* 업로드 스크롤 영역 */
 .upload-scroll-area {
-  max-height: 25vh;
+  max-height: 40vh;
   overflow-y: auto;
   padding-right: 4px;
 }

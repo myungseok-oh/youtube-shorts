@@ -219,7 +219,8 @@ def extract_last_frame(mp4_path: str, output_path: str) -> bool:
 
 
 def image_to_video(image_path: str, prompt: str, output_path: str,
-                   api_key: str, duration: int = 6) -> bool:
+                   api_key: str, duration: int = 6,
+                   keep_audio: bool = False) -> bool:
     """Veo 3.1 Fast image-to-video 변환.
 
     기존 이미지를 가이드로 사용하여 영상 생성.
@@ -231,6 +232,7 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
         output_path: 저장 경로 (.mp4)
         api_key: Google AI Studio API key
         duration: 영상 길이 (초, 5~8)
+        keep_audio: True면 Veo 생성 오디오 유지, False면 제거 (기본)
 
     Returns:
         성공 여부
@@ -287,8 +289,11 @@ def image_to_video(image_path: str, prompt: str, output_path: str,
             else:
                 print(f"[gemini] no video uri")
                 return False
-            # Veo 3.1은 오디오를 항상 포함하므로 ffmpeg로 제거
-            _strip_audio(output_path)
+            # Veo 3.1은 오디오를 항상 포함 — keep_audio=False면 제거
+            if not keep_audio:
+                _strip_audio(output_path)
+            else:
+                print(f"[gemini] keeping Veo audio: {os.path.basename(output_path)}")
             print(f"[gemini] video saved: {os.path.basename(output_path)} "
                   f"(model={VIDEO_MODEL}, {elapsed}s)")
             return True

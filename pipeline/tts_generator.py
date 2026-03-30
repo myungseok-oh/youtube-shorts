@@ -114,6 +114,33 @@ def _generate_edge(sentences: list[dict], audio_dir: str,
     return paths
 
 
+def _normalize_loudness(paths: list[str], target_lufs: float = -16.0):
+    """ffmpeg loudnorm으로 오디오 볼륨 정규화 (EBU R128).
+
+    문장별로 생성된 TTS 오디오의 볼륨 편차를 제거한다.
+    """
+    ffmpeg = config.ffmpeg()
+    for p in paths:
+        tmp = p + ".norm.mp3"
+        try:
+            subprocess.run(
+                [ffmpeg, "-y", "-i", p,
+                 "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11",
+                 "-ar", "24000", "-ac", "1",
+                 tmp],
+                capture_output=True, timeout=30,
+            )
+            if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+                os.replace(tmp, p)
+            else:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+        except Exception as e:
+            print(f"[tts] loudnorm failed ({os.path.basename(p)}): {e}")
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+
 def _generate_google_cloud(sentences: list[dict], audio_dir: str,
                            voice: str,
                            rate: str = "+0%") -> list[str]:
@@ -149,6 +176,7 @@ def _generate_google_cloud(sentences: list[dict], audio_dir: str,
         with open(out_path, "wb") as f:
             f.write(audio_bytes)
         paths.append(out_path)
+
     return paths
 
 
@@ -383,7 +411,14 @@ def generate_audio(sentences: list[dict], audio_dir: str,
 
     # Gemini TTS 모드
     if gemini_cfg and gemini_cfg.get("api_key"):
-        return _generate_gemini(sentences, audio_dir, gemini_cfg)
+        if rate is not None and rate != 0:
+            speed_hint = f"Speak at {100 + rate}% speed."
+            existing_style = gemini_cfg.get("style", "")
+            gemini_cfg = dict(gemini_cfg)  # 원본 변경 방지
+            gemini_cfg["style"] = f"{existing_style} {speed_hint}".strip() if existing_style else speed_hint
+        paths = _generate_gemini(sentences, audio_dir, gemini_cfg)
+        _normalize_loudness(paths)
+        return paths
 
     # GPT-SoVITS 모드
     if sovits_cfg and sovits_cfg.get("ref_audio"):
@@ -391,7 +426,9 @@ def generate_audio(sentences: list[dict], audio_dir: str,
                                        sovits_cfg.get("port", SOVITS_DEFAULT_PORT)):
             print("[tts] GPT-SoVITS 서버 미응답 — Edge-TTS로 폴백합니다")
         else:
-            return _generate_sovits(sentences, audio_dir, sovits_cfg)
+            paths = _generate_sovits(sentences, audio_dir, sovits_cfg)
+            _normalize_loudness(paths)
+            return paths
 
     rate_str = _format_rate(rate) if rate is not None else "+0%"
 
@@ -405,6 +442,9 @@ def generate_audio(sentences: list[dict], audio_dir: str,
     # RVC 음성 변환 후처리
     if rvc_cfg and rvc_cfg.get("model"):
         paths = _apply_rvc_batch(paths, rvc_cfg)
+
+    # 볼륨 정규화 (EBU R128 loudnorm) — 모든 TTS 엔진 공통
+    _normalize_loudness(paths)
 
     return paths
 
