@@ -955,7 +955,7 @@ function renderWizardStep2(jobId, scriptData, stepsData) {
                 ? `<span class="rounded bg-green-800 text-green-300 flex-shrink-0 font-bold" style="font-size:10px;padding:2px 5px;line-height:1;">MP4</span>`
                 : `<button onclick="event.stopPropagation(); bgToVideo('${jobId}', ${i+1}, this)" class="rounded bg-purple-800 hover:bg-purple-600 text-purple-200 flex-shrink-0 font-bold" title="영상화 (Veo)" style="font-size:10px;padding:2px 5px;line-height:1;">VEO</button>`;
             })()}
-            <button onclick="event.stopPropagation(); copyOnePrompt(this, \`${esc(copyText)}\`)" class="copy-icon-btn text-gray-600 hover:text-white flex-shrink-0" style="font-size:11px;padding:1px 3px;">&#x1F4CB;</button>
+            <button onclick="event.stopPropagation(); copyOnePrompt(this)" class="copy-icon-btn text-gray-600 hover:text-white flex-shrink-0" style="font-size:11px;padding:1px 3px;" data-copy="${btoa(unescape(encodeURIComponent(copyText)))}">&#x1F4CB;</button>
           </div>
         </div>
       </div>`;
@@ -1272,12 +1272,12 @@ function renderWizardStep3_Transition(jobId, scriptData, stepsData) {
   const trOptions = _transitionsCache || [];
   const moOptions = _motionsCache || [];
 
-  const MO_ICONS = { none:"\u23F8", random:"\uD83C\uDFB2", zoom_in:"\uD83D\uDD0D", zoom_out:"\uD83D\uDD0E", pan_right:"\u2192", pan_left:"\u2190", pan_down:"\u2193", pan_up:"\u2191" };
+  const MO_ICONS = { none:"\u23F8", random:"\uD83C\uDFB2", zoom_in:"\uD83D\uDD0D", zoom_out:"\uD83D\uDD0E", pan_right:"\u2192", pan_left:"\u2190", shake:"\u2B50", pulse:"\uD83D\uDCAB", rotate:"\uD83D\uDD04", blur_in:"\uD83C\uDF2B\uFE0F", bright_pulse:"\u2600\uFE0F", vignette:"\uD83D\uDD73\uFE0F", glitch:"\u26A1" };
   const TR_ICONS = { fade:"\u25D0", dissolve:"\u25D1", wipeleft:"\u25E7", wiperight:"\u25E8", slideup:"\u2B06", slidedown:"\u2B07",
     slideleft:"\u2B05", slideright:"\u27A1", circlecrop:"\u25CE", radial:"\u21BB", smoothleft:"\u21E0", smoothright:"\u21E2", smoothup:"\u21E1", smoothdown:"\u21E3" };
 
   // CSS 애니메이션 클래스 매핑
-  const MO_ANIM = { zoom_in:"fx-anim-zoom-in", zoom_out:"fx-anim-zoom-out", pan_right:"fx-anim-pan-right", pan_left:"fx-anim-pan-left", pan_down:"fx-anim-pan-down", pan_up:"fx-anim-pan-up" };
+  const MO_ANIM = { zoom_in:"fx-anim-zoom-in", zoom_out:"fx-anim-zoom-out", pan_right:"fx-anim-pan-right", pan_left:"fx-anim-pan-left", shake:"fx-anim-shake", pulse:"fx-anim-pulse", rotate:"fx-anim-rotate", blur_in:"fx-anim-blur-in", bright_pulse:"fx-anim-bright-pulse", vignette:"fx-anim-vignette", glitch:"fx-anim-glitch" };
   const TR_ANIM = { fade:"fx-anim-fade", dissolve:"fx-anim-dissolve", wipeleft:"fx-anim-wipe-left", wiperight:"fx-anim-wipe-right",
     slideup:"fx-anim-slide-up", slidedown:"fx-anim-slide-down", slideleft:"fx-anim-slide-left", slideright:"fx-anim-slide-right",
     circlecrop:"fx-anim-circle", radial:"fx-anim-radial",
@@ -1365,7 +1365,7 @@ function renderWizardStep3_Transition(jobId, scriptData, stepsData) {
     <div class="overflow-x-auto">
       <div class="fx-tl-strip" id="fx-timeline">`;
 
-  const _MO_LABELS = {none:"정적",random:"랜덤",zoom_in:"줌인",zoom_out:"줌아웃",pan_right:"우패닝",pan_left:"좌패닝",pan_down:"하패닝",pan_up:"상패닝"};
+  const _MO_LABELS = {none:"정적",random:"랜덤",zoom_in:"줌인",zoom_out:"줌아웃",pan_right:"우패닝",pan_left:"좌패닝",shake:"흩뿌리기",pulse:"펄스",rotate:"회전",blur_in:"블러인",bright_pulse:"밝기펄스",vignette:"비네팅",glitch:"글리치"};
   for (let i = 1; i <= bgCount; i++) {
     const bgUrl = uploadedBgs[i] || null;
     const isVideo = bgUrl && bgUrl.includes(".mp4");
@@ -1509,8 +1509,8 @@ function _autoSaveEffects() {
 }
 
 function _updateTimelineBadge(slideNum, motionId) {
-  const MO_ICONS = { none:"\u23F8", random:"\uD83C\uDFB2", zoom_in:"\uD83D\uDD0D", zoom_out:"\uD83D\uDD0E", pan_right:"\u2192", pan_left:"\u2190", pan_down:"\u2193", pan_up:"\u2191" };
-  const _MO_LABELS = {none:"정적",random:"랜덤",zoom_in:"줌인",zoom_out:"줌아웃",pan_right:"우패닝",pan_left:"좌패닝",pan_down:"하패닝",pan_up:"상패닝"};
+  const MO_ICONS = { none:"\u23F8", random:"\uD83C\uDFB2", zoom_in:"\uD83D\uDD0D", zoom_out:"\uD83D\uDD0E", pan_right:"\u2192", pan_left:"\u2190", shake:"\u2B50", pulse:"\uD83D\uDCAB", rotate:"\uD83D\uDD04", blur_in:"\uD83C\uDF2B\uFE0F", bright_pulse:"\u2600\uFE0F", vignette:"\uD83D\uDD73\uFE0F", glitch:"\u26A1" };
+  const _MO_LABELS = {none:"정적",random:"랜덤",zoom_in:"줌인",zoom_out:"줌아웃",pan_right:"우패닝",pan_left:"좌패닝",shake:"흩뿌리기",pulse:"펄스",rotate:"회전",blur_in:"블러인",bright_pulse:"밝기펄스",vignette:"비네팅",glitch:"글리치"};
   const slideEl = document.getElementById(`fx-slide-${slideNum}`);
   if (!slideEl) return;
   const badge = slideEl.querySelector('.fx-tl-motion-badge') || slideEl.querySelector('[style*="rgba(139,92,246"]');
@@ -1581,13 +1581,18 @@ let _fullPreviewSlideIdx = 0;
 
 // 모션 → CSS transform 매핑
 const _CSS_MOTIONS = {
-  zoom_in:   { from: "scale(1)",       to: "scale(1.3)" },
-  zoom_out:  { from: "scale(1.3)",     to: "scale(1)" },
-  pan_right: { from: "translateX(-8%) scale(1.1)", to: "translateX(8%) scale(1.1)" },
-  pan_left:  { from: "translateX(8%) scale(1.1)",  to: "translateX(-8%) scale(1.1)" },
-  pan_down:  { from: "translateY(-8%) scale(1.1)", to: "translateY(8%) scale(1.1)" },
-  pan_up:    { from: "translateY(8%) scale(1.1)",  to: "translateY(-8%) scale(1.1)" },
-  none:      { from: "scale(1)",       to: "scale(1)" },
+  zoom_in:       { from: "scale(1)",       to: "scale(1.3)" },
+  zoom_out:      { from: "scale(1.3)",     to: "scale(1)" },
+  pan_right:     { from: "translateX(-8%) scale(1.1)", to: "translateX(8%) scale(1.1)" },
+  pan_left:      { from: "translateX(8%) scale(1.1)",  to: "translateX(-8%) scale(1.1)" },
+  shake:         { from: "translate(-2px, 1px) scale(1.05)", to: "translate(2px, -1px) scale(1.05)" },
+  pulse:         { from: "scale(1)",       to: "scale(1.08)", css: "transform 0.5s ease-in-out", repeat: true },
+  rotate:        { from: "rotate(0deg) scale(1.1)",   to: "rotate(8deg) scale(1.1)" },
+  blur_in:       { from: "scale(1)",       to: "scale(1)", filter_from: "blur(8px)", filter_to: "blur(0px)" },
+  bright_pulse:  { from: "scale(1)",       to: "scale(1)", filter_from: "brightness(0.85)", filter_to: "brightness(1.15)" },
+  vignette:      { from: "scale(1.05)",    to: "scale(1.05)" },
+  glitch:        { from: "scale(1)",       to: "scale(1)" },
+  none:          { from: "scale(1)",       to: "scale(1)" },
 };
 
 // 전환 → CSS 애니메이션 매핑
@@ -1753,12 +1758,14 @@ function playFullPreview(jobId) {
     _setMedia(nxtDiv, "");
     curDiv.style.opacity = "1";
     curDiv.style.transform = cssMotion.from;
+    curDiv.style.filter = cssMotion.filter_from || "";
 
     // 브라우저가 리셋을 렌더한 후 모션 시작 (2프레임 대기)
     requestAnimationFrame(() => { requestAnimationFrame(() => {
       if (!_fullPreviewPlaying) return;
-      curDiv.style.transition = `transform ${SLIDE_DUR/1000}s ease-out`;
+      curDiv.style.transition = `transform ${SLIDE_DUR/1000}s ease-out, filter ${SLIDE_DUR/1000}s ease-out`;
       curDiv.style.transform = cssMotion.to;
+      curDiv.style.filter = cssMotion.filter_to || "";
     }); });
 
     // 전환 시작
@@ -2560,7 +2567,9 @@ function _updateVeoStatus(statusEl) {
   }
 }
 
-function copyOnePrompt(btn, text) {
+function copyOnePrompt(btn) {
+  const encoded = btn.getAttribute("data-copy");
+  const text = encoded ? decodeURIComponent(escape(atob(encoded))) : "";
   navigator.clipboard.writeText(text.replace(/\\n/g, "\n")).then(() => {
     btn.innerHTML = "&#x2705;";
     setTimeout(() => { btn.innerHTML = "&#x1F4CB;"; }, 1500);

@@ -93,8 +93,8 @@ _AUTO_MOTION_MAP = {
     "pan right": "pan_right", "gentle pan right": "pan_right",
     "pan across": "pan_right", "tracking shot": "pan_right",
     "slide left": "pan_left", "slide right": "pan_right",
-    "pan up": "pan_up", "tilt up": "pan_up", "gentle pan up": "pan_up",
-    "pan down": "pan_down", "tilt down": "pan_down", "gentle pan down": "pan_down",
+    "pan up": "pan_right", "tilt up": "pan_right", "gentle pan up": "pan_right",
+    "pan down": "pan_left", "tilt down": "pan_left", "gentle pan down": "pan_left",
     "overhead": "zoom_out", "aerial": "zoom_out", "bird": "zoom_out",
     "establishing": "zoom_out", "wide shot": "zoom_out",
     "static": "none", "still": "none",
@@ -541,6 +541,18 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                     "character": vp.get("character", "none"),
                     "slide": vp.get("scene", 1),
                 })
+
+            # ch-0003: 이미지 프롬프트에 대사(Dialogue) 주입
+            if channel_id == "ch-0003" and script_json:
+                _sents_a = script_json.get("sentences", [])
+                for ip in image_prompts:
+                    _sn = ip.get("slide", 1)
+                    _dl = [s["text"] for s in _sents_a if s.get("slide") == _sn and s.get("text", "").strip()]
+                    if _dl:
+                        _dialogue_text = " ".join(_dl)
+                        ip["en"] = ip.get("en", "") + f'. Dialogue: "{_dialogue_text}". The character\'s lip movements and gestures must perfectly match this dialogue.'
+                        ip["ko"] = ip.get("ko", "") + f" [대사: {_dialogue_text}]"
+
             if image_prompts and any(p.get("en") for p in image_prompts):
                 meta["image_prompts"] = image_prompts
             elif not meta.get("image_prompts") or not any(
@@ -669,6 +681,18 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                     "character": vp.get("character", "none"),
                     "slide": vp.get("scene", 1),
                 })
+
+            # ch-0003: 이미지 프롬프트에 대사(Dialogue) 주입
+            if channel_id == "ch-0003" and script_json:
+                _sents_m = script_json.get("sentences", [])
+                for ip in image_prompts:
+                    _sn = ip.get("slide", 1)
+                    _dl = [s["text"] for s in _sents_m if s.get("slide") == _sn and s.get("text", "").strip()]
+                    if _dl:
+                        _dialogue_text = " ".join(_dl)
+                        ip["en"] = ip.get("en", "") + f'. Dialogue: "{_dialogue_text}". The character\'s lip movements and gestures must perfectly match this dialogue.'
+                        ip["ko"] = ip.get("ko", "") + f" [대사: {_dialogue_text}]"
+
             if image_prompts and any(p.get("en") for p in image_prompts):
                 meta["image_prompts"] = image_prompts
             elif not meta.get("image_prompts") or not any(
@@ -972,7 +996,15 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 mp4_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.mp4")
                                 motion = prompt.get("motion", "") if isinstance(prompt, dict) else ""
                                 en_prompt = _prompt_en(prompt)
-                                vid_prompt = f"{en_prompt}, {motion}" if motion else en_prompt
+                                vid_prompt = en_prompt
+                                # 대사가 프롬프트에 없으면 주입 (Phase A에서 이미 주입된 경우 스킵)
+                                if "Dialogue:" not in vid_prompt:
+                                    _slide_sents = [s["text"] for s in sentences if s.get("slide") == slide_num and s.get("text", "").strip()]
+                                    if _slide_sents:
+                                        _dialogue = " ".join(_slide_sents)
+                                        vid_prompt += f'. Dialogue: "{_dialogue}". The character\'s lip movements and gestures must perfectly match this dialogue.'
+                                if motion:
+                                    vid_prompt += f", {motion}"
                                 try:
                                     _veo_audio = ch_config_b.get("veo_keep_audio", False)
                                     ok = gemini_image_to_video(img_path, vid_prompt, mp4_path,
@@ -1331,6 +1363,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         gemini_cfg = None
                         if tts_engine == "gemini-tts":
                             gemini_cfg = _build_gemini_tts_cfg(ch_config)
+                            if tts_voice_override:
+                                gemini_cfg["voice"] = tts_voice_override
                             if gemini_tts_style_override:
                                 gemini_cfg["style"] = gemini_tts_style_override
 
@@ -1495,7 +1529,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                     _pad_gap = max(0.3, _xfade_dur + 0.1)
                     _pad_slide_audio(merged_audio, timeline, gap=_pad_gap)
                 else:
-                    narration_delay = _ch_cfg_render.get("narration_delay") or 2
+                    _nd = _ch_cfg_render.get("narration_delay")
+                    narration_delay = _nd if _nd is not None else 2
 
                     # 인트로가 있으면 첫 슬라이드 딜레이 축소 (인트로가 리드인 역할)
                     has_intro = bool(_find_channel_image(channel_id, "intro_bg"))
@@ -2281,7 +2316,8 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
                                                ch_config, channel_id)
             if audio:
                 # SFX 오프닝 재생 여유 시간 (narration_delay, 기본 2초)
-                narr_delay = ch_config.get("narration_delay", 2) or 2
+                _nd2 = ch_config.get("narration_delay")
+                narr_delay = _nd2 if _nd2 is not None else 2
                 actual_dur = render_static_with_audio(
                     intro_bg, audio, intro_seg, vcfg, audio_delay=narr_delay)
                 if os.path.exists(intro_seg):
@@ -2565,7 +2601,16 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                         mp4_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.mp4")
                         motion = prompt.get("motion", "") if isinstance(prompt, dict) else ""
                         en_prompt = _prompt_en(prompt)
-                        vid_prompt = f"{en_prompt}, {motion}" if motion else en_prompt
+                        vid_prompt = en_prompt
+                        # 대사가 프롬프트에 없으면 주입
+                        if "Dialogue:" not in vid_prompt:
+                            _slide_num_s3 = prompt.get("slide", idx + 1) if isinstance(prompt, dict) else idx + 1
+                            _slide_sents_s3 = [s["text"] for s in sentences if s.get("slide") == _slide_num_s3 and s.get("text", "").strip()]
+                            if _slide_sents_s3:
+                                _dialogue_s3 = " ".join(_slide_sents_s3)
+                                vid_prompt += f'. Dialogue: "{_dialogue_s3}". The character\'s lip movements and gestures must perfectly match this dialogue.'
+                        if motion:
+                            vid_prompt += f", {motion}"
                         try:
                             _veo_audio = ch_config_s3.get("veo_keep_audio", False)
                             ok = gemini_image_to_video(img_path, vid_prompt, mp4_path,
@@ -2696,7 +2741,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
         _update_step(db, job_id, "render", "running")
         try:
             _ch_cfg_r = json.loads(channel.get("config", "{}")) if channel else {}
-            narration_delay_r = _ch_cfg_r.get("narration_delay") or 2
+            _nd3 = _ch_cfg_r.get("narration_delay")
+            narration_delay_r = _nd3 if _nd3 is not None else 2
 
             # 인트로가 있으면 첫 슬라이드 딜레이 축소
             has_intro_r = bool(_find_channel_image(channel_id, "intro_bg"))

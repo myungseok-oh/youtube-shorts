@@ -148,7 +148,9 @@ const MOTION_RECOMMEND = {
 };
 const MOTION_LABELS = {
   none:"정적", random:"랜덤", zoom_in:"줌인", zoom_out:"줌아웃",
-  pan_right:"우패닝", pan_left:"좌패닝", pan_down:"하패닝", pan_up:"상패닝"
+  pan_right:"우패닝", pan_left:"좌패닝", shake:"흩뿌리기",
+  pulse:"펄스", rotate:"회전", blur_in:"블러인",
+  bright_pulse:"밝기펄스", vignette:"비네팅", glitch:"글리치"
 };
 
 function _getSlideMotion(slideNum) {
@@ -266,7 +268,7 @@ function _showMotionDropdown(badge, slideNum) {
 
   const dd = document.createElement("div");
   dd.className = "motion-dropdown";
-  const motions = ["none","zoom_in","zoom_out","pan_right","pan_left","pan_up","pan_down","random"];
+  const motions = ["none","zoom_in","zoom_out","pan_right","pan_left","shake","pulse","rotate","blur_in","bright_pulse","vignette","glitch","random"];
   const cur = _getSlideMotion(slideNum);
   motions.forEach(m => {
     const active = m === cur ? "active" : "";
@@ -2626,7 +2628,7 @@ function renderTabMotion() {
   html += `<div style="margin-bottom:8px;">
     <div class="comp-tab-subtitle" style="margin-bottom:4px;">전체 일괄</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:2px;">`;
-  const motions = ["none","zoom_in","zoom_out","pan_right","pan_left","pan_up","pan_down","random"];
+  const motions = ["none","zoom_in","zoom_out","pan_right","pan_left","shake","pulse","rotate","blur_in","bright_pulse","vignette","glitch","random"];
   motions.forEach(m => {
     html += `<button onclick="_applyMotionToAll('${m}')"
       style="padding:3px;background:#1e1e2e;color:#9ca3af;border:1px solid #333;border-radius:3px;font-size:9px;cursor:pointer;">${MOTION_LABELS[m]||m}</button>`;

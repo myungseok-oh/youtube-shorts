@@ -181,7 +181,7 @@ def generate_motion_preview(motion: str, output_dir: str,
         is_image = True
         bg_input = ["-i", bg_path]  # 단일 이미지: -loop 1 없이 zoompan 직접 적용
 
-    preset = _select_kb_preset(motion)
+    preset = _select_motion(motion)
     if preset is None:
         # 정적: 단순 스케일
         if is_image:
@@ -190,22 +190,28 @@ def generate_motion_preview(motion: str, output_dir: str,
             "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
             "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,fps=24[vout]"
         )
+    elif isinstance(preset, str) and preset in _FILTER_PRESETS:
+        # 필터 기반 효과 미리보기
+        if is_image:
+            bg_input = ["-loop", "1", "-i", bg_path]
+        fps_out = "fps=24,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
+        filter_v = _build_filter_expr(
+            preset, total_frames, duration,
+            1080, 1920, "", has_overlay=False
+        ).replace("[out]", "[vout]")
     else:
-        # 미리보기 전용 강화 프리셋 (3초 안에 효과 명확히 인지)
+        # zoompan 미리보기 전용 강화 프리셋 (3초 안에 효과 명확히 인지)
         _PREVIEW_PRESETS = {
             "zoom_in":  ("min(2.0,1+0.014*on)",  "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
             "zoom_out": ("if(eq(on,1),2.0,max(1,zoom-0.014))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
             "pan_right": ("min(1.5,1+0.007*on)", "iw/2-(iw/zoom/2)+on*3", "ih/2-(ih/zoom/2)"),
             "pan_left":  ("min(1.5,1+0.007*on)", "iw/2-(iw/zoom/2)-on*3", "ih/2-(ih/zoom/2)"),
-            "pan_down":  ("min(1.5,1+0.007*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)+on*2"),
-            "pan_up":    ("if(eq(on,1),1.5,max(1,zoom-0.007))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)-on*2"),
         }
         motion_key = motion.lower().strip()
         if motion_key in _PREVIEW_PRESETS:
             zoom_expr, x_expr, y_expr = _PREVIEW_PRESETS[motion_key]
         else:
             zoom_expr, x_expr, y_expr = preset
-        # zoompan은 단일 이미지에 직접 적용 (scale/crop 거치면 효과 미미)
         filter_v = (
             f"[0:v]zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
             f":d={total_frames}:s=1080x1920:fps=24[vout]"
@@ -226,7 +232,7 @@ def generate_motion_preview(motion: str, output_dir: str,
     ], capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"[video_renderer] motion preview error: {result.stderr[:300]}")
+        print(f"[video_renderer] motion preview error ({motion}): {result.stderr[:300]}")
         raise RuntimeError("Motion preview generation failed")
 
     return out_path
@@ -360,64 +366,50 @@ def generate_full_preview(job_id: str, output_dir: str,
 
 
 # Ken Burns 효과 프리셋 (zoompan 필터용)
-# 각 프리셋: (zoom_expr, x_expr, y_expr, 설명)
+# 각 프리셋: (zoom_expr, x_expr, y_expr)
 # 출력 해상도 1080x1920, 입력은 여유 있게 스케일 (1.15배)
 _KB_PRESETS = {
-    # ── 줌 ──
+    # ── 기본 줌/패닝 ──
     "zoom_in": ("min(1.15,1+0.0015*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
     "zoom_out": ("if(eq(on,1),1.15,max(1,zoom-0.0015))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
-    "zoom_in_slow": ("min(1.08,1+0.0008*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
-    "zoom_out_slow": ("if(eq(on,1),1.08,max(1,zoom-0.0008))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
-    # ── 패닝 ──
     "pan_right": ("min(1.15,1+0.001*on)", "iw/2-(iw/zoom/2)+on*0.3", "ih/2-(ih/zoom/2)"),
     "pan_left": ("min(1.15,1+0.001*on)", "iw/2-(iw/zoom/2)-on*0.3", "ih/2-(ih/zoom/2)"),
-    "pan_down": ("min(1.15,1+0.001*on)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)+on*0.2"),
-    "pan_up": ("if(eq(on,1),1.15,max(1,zoom-0.001))", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)-on*0.2"),
-    # ── 대각선 패닝 ──
-    "pan_topright": ("min(1.12,1+0.001*on)", "iw/2-(iw/zoom/2)+on*0.2", "ih/2-(ih/zoom/2)-on*0.15"),
-    "pan_topleft": ("min(1.12,1+0.001*on)", "iw/2-(iw/zoom/2)-on*0.2", "ih/2-(ih/zoom/2)-on*0.15"),
-    "pan_bottomright": ("min(1.12,1+0.001*on)", "iw/2-(iw/zoom/2)+on*0.2", "ih/2-(ih/zoom/2)+on*0.15"),
-    "pan_bottomleft": ("min(1.12,1+0.001*on)", "iw/2-(iw/zoom/2)-on*0.2", "ih/2-(ih/zoom/2)+on*0.15"),
-    # ── 코너 줌 ──
-    "zoom_in_topleft": ("min(1.15,1+0.0015*on)", "iw/4-(iw/zoom/4)", "ih/4-(ih/zoom/4)"),
-    "zoom_in_topright": ("min(1.15,1+0.0015*on)", "3*iw/4-(iw/zoom/2)", "ih/4-(ih/zoom/4)"),
-    "zoom_in_bottomleft": ("min(1.15,1+0.0015*on)", "iw/4-(iw/zoom/4)", "3*ih/4-(ih/zoom/2)"),
-    "zoom_in_bottomright": ("min(1.15,1+0.0015*on)", "3*iw/4-(iw/zoom/2)", "3*ih/4-(ih/zoom/2)"),
-    # ── 떨림/흩뿌리기 ──
+    # ── 떨림 ──
     "shake": ("min(1.08,1+0.0008*on)", "iw/2-(iw/zoom/2)+sin(on*0.15)*8", "ih/2-(ih/zoom/2)+cos(on*0.12)*6"),
-    "shake_strong": ("min(1.10,1+0.001*on)", "iw/2-(iw/zoom/2)+sin(on*0.2)*15", "ih/2-(ih/zoom/2)+cos(on*0.18)*12"),
+    # ── 펄스 (리듬감 있는 확대↔축소 반복) ──
+    "pulse": ("1+0.06*sin(on*0.08)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),
+}
+
+# 필터 기반 모션 효과 (zoompan이 아닌 ffmpeg 필터 사용)
+# 각 프리셋: filter_complex 생성 함수 (total_frames, duration 을 인자로 받음)
+_FILTER_PRESETS = {
+    "rotate",       # 느린 회전
+    "blur_in",      # 흐릿 → 선명
+    "bright_pulse", # 밝기 리듬 변화
+    "vignette",     # 모서리 어둡게
+    "glitch",       # RGB 채널 분리
 }
 
 # UI 표시용 모션 프리셋 목록
 MOTION_PRESETS = [
     {"id": "none", "label": "정적", "desc": "모션 없음"},
-    {"id": "random", "label": "랜덤", "desc": "랜덤 Ken Burns"},
-    # ── 줌 ──
+    {"id": "random", "label": "랜덤", "desc": "랜덤 효과"},
+    # ── 줌/패닝 ──
     {"id": "zoom_in", "label": "줌 인", "desc": "느린 확대"},
     {"id": "zoom_out", "label": "줌 아웃", "desc": "느린 축소"},
-    {"id": "zoom_in_slow", "label": "줌 인 (느림)", "desc": "아주 느린 확대"},
-    {"id": "zoom_out_slow", "label": "줌 아웃 (느림)", "desc": "아주 느린 축소"},
-    # ── 패닝 ──
-    {"id": "pan_right", "label": "우측 패닝", "desc": "좌→우 이동 + 줌"},
-    {"id": "pan_left", "label": "좌측 패닝", "desc": "우→좌 이동 + 줌"},
-    {"id": "pan_down", "label": "하단 패닝", "desc": "위→아래 이동"},
-    {"id": "pan_up", "label": "상단 패닝", "desc": "아래→위 이동"},
-    # ── 대각선 ──
-    {"id": "pan_topright", "label": "우상 패닝", "desc": "좌하→우상 이동"},
-    {"id": "pan_topleft", "label": "좌상 패닝", "desc": "우하→좌상 이동"},
-    {"id": "pan_bottomright", "label": "우하 패닝", "desc": "좌상→우하 이동"},
-    {"id": "pan_bottomleft", "label": "좌하 패닝", "desc": "우상→좌하 이동"},
-    # ── 코너 줌 ──
-    {"id": "zoom_in_topleft", "label": "좌상 줌 인", "desc": "좌상단 기준 확대"},
-    {"id": "zoom_in_topright", "label": "우상 줌 인", "desc": "우상단 기준 확대"},
-    {"id": "zoom_in_bottomleft", "label": "좌하 줌 인", "desc": "좌하단 기준 확대"},
-    {"id": "zoom_in_bottomright", "label": "우하 줌 인", "desc": "우하단 기준 확대"},
-    # ── 떨림 ──
+    {"id": "pan_right", "label": "우측 패닝", "desc": "좌→우 이동"},
+    {"id": "pan_left", "label": "좌측 패닝", "desc": "우→좌 이동"},
     {"id": "shake", "label": "흩뿌리기", "desc": "가볍게 흔들리는 효과"},
-    {"id": "shake_strong", "label": "강한 흩뿌리기", "desc": "강하게 흔들리는 효과"},
+    # ── 신규 효과 ──
+    {"id": "pulse", "label": "펄스", "desc": "리듬감 있는 확대↔축소"},
+    {"id": "rotate", "label": "회전", "desc": "느리게 회전"},
+    {"id": "blur_in", "label": "블러 인", "desc": "흐릿→선명 전환"},
+    {"id": "bright_pulse", "label": "밝기 펄스", "desc": "밝기 리듬 변화"},
+    {"id": "vignette", "label": "비네팅", "desc": "모서리 어둡게"},
+    {"id": "glitch", "label": "글리치", "desc": "RGB 채널 분리"},
 ]
 
-# motion 힌트 → Ken Burns 프리셋 매핑
+# motion 힌트 → 프리셋 매핑 (AI 생성 motion 텍스트 → 프리셋 ID)
 _MOTION_MAP = {
     "slow zoom in": "zoom_in",
     "zoom in": "zoom_in",
@@ -428,31 +420,115 @@ _MOTION_MAP = {
     "gentle pan right": "pan_right",
     "pan right": "pan_right",
     "pan across": "pan_right",
-    "pan up": "pan_up",
-    "gentle pan up": "pan_up",
-    "pan down": "pan_down",
-    "gentle pan down": "pan_down",
-    "tilt up": "pan_up",
-    "tilt down": "pan_down",
+    "pan up": "pan_right",
+    "gentle pan up": "pan_right",
+    "pan down": "pan_left",
+    "gentle pan down": "pan_left",
+    "tilt up": "pan_right",
+    "tilt down": "pan_left",
 }
 
+# 전체 모션 ID 목록 (랜덤 선택용)
+_ALL_MOTION_IDS = [k for k in _KB_PRESETS.keys()] + list(_FILTER_PRESETS)
 
-def _select_kb_preset(motion: str = ""):
-    """motion 힌트로 Ken Burns 프리셋 선택. 매칭 안 되면 랜덤.
-    "none" → None 반환 (정적), 프리셋 ID 직접 매칭 지원.
+
+def _select_motion(motion: str = ""):
+    """motion 힌트로 모션 프리셋 선택.
+    "none" → None 반환 (정적).
+    zoompan 프리셋이면 (zoom, x, y) 튜플 반환.
+    필터 프리셋이면 프리셋 ID 문자열 반환.
+    매칭 안 되면 랜덤.
     """
     if motion:
         motion_lower = motion.lower().strip()
         if motion_lower == "none":
-            return None  # 정적: Ken Burns 미적용
+            return None
         # 프리셋 ID 직접 매칭 (UI에서 선택)
         if motion_lower in _KB_PRESETS:
             return _KB_PRESETS[motion_lower]
+        if motion_lower in _FILTER_PRESETS:
+            return motion_lower
         # 긴 구문부터 매칭
         for hint in sorted(_MOTION_MAP.keys(), key=len, reverse=True):
             if hint in motion_lower:
-                return _KB_PRESETS[_MOTION_MAP[hint]]
-    return random.choice(list(_KB_PRESETS.values()))
+                mapped = _MOTION_MAP[hint]
+                if mapped in _KB_PRESETS:
+                    return _KB_PRESETS[mapped]
+                return mapped
+    # 랜덤: zoompan + 필터 전체에서 선택
+    rid = random.choice(_ALL_MOTION_IDS)
+    if rid in _KB_PRESETS:
+        return _KB_PRESETS[rid]
+    return rid
+
+
+def _select_kb_preset(motion: str = ""):
+    """하위 호환: zoompan 프리셋만 반환. 필터 프리셋이면 None."""
+    result = _select_motion(motion)
+    if isinstance(result, tuple):
+        return result
+    return None
+
+
+def _build_filter_expr(motion_id: str, total_frames: int, duration: float,
+                       scale_w: int, scale_h: int, crop: str,
+                       has_overlay: bool) -> str:
+    """필터 기반 모션 효과의 filter_complex 문자열 생성."""
+    base_scale = f"scale={scale_w}:{scale_h},format=rgba{crop}"
+    fps_out = f"fps=24,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
+
+    if motion_id == "rotate":
+        # 느린 시계방향 회전 (5초에 약 8도), fps 먼저 적용해서 t 변수 활성화
+        filt = (
+            f"[0:v]{base_scale},fps=24,"
+            f"rotate='PI/180*t*1.6':c=black@0:ow=1080:oh=1920,"
+            f"scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[bg]"
+        )
+    elif motion_id == "blur_in":
+        # 흐릿→선명 (boxblur가 시간에 따라 감소)
+        max_blur = 15
+        filt = (
+            f"[0:v]{base_scale},fps=24,"
+            f"boxblur=luma_radius='max(0,{max_blur}*(1-t/{duration}))':luma_power=2,"
+            f"scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[bg]"
+        )
+    elif motion_id == "bright_pulse":
+        # 밝기 사인파 변화
+        filt = (
+            f"[0:v]{base_scale},fps=24,"
+            f"eq=brightness='0.15*sin(t*2.5)':eval=frame,"
+            f"scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[bg]"
+        )
+    elif motion_id == "vignette":
+        # 비네팅 (모서리 어둡게, 시간에 따라 강화)
+        filt = (
+            f"[0:v]{base_scale},fps=24,"
+            f"vignette='PI/4+t*0.1':mode=forward,"
+            f"scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[bg]"
+        )
+    elif motion_id == "glitch":
+        # RGB 채널 분리 (사인파 기반 시간 변화)
+        filt = (
+            f"[0:v]{base_scale},fps=24,"
+            f"rgbashift=rh='sin(t*3)*8':bh='sin(t*3+1.5)*-8'"
+            f":rv='cos(t*2.5)*5':bv='cos(t*2.5+1)*-5',"
+            f"scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[bg]"
+        )
+    else:
+        # 폴백: 정적
+        filt = f"[0:v]{base_scale},{fps_out}[bg]"
+
+    if has_overlay:
+        filt += ";[bg][1:v]overlay=0:0:shortest=1[out]"
+    else:
+        filt = filt.replace("[bg]", "[out]")
+
+    return filt
 
 
 def _find_video_bg(image_dir: str, slide_num: int) -> str | None:
@@ -778,11 +854,12 @@ def _render_static_bg_segment(bg_path: str, overlay_path: str, audio_path: str,
 def _render_kenburns_segment(bg_path: str, overlay_path: str | None, audio_path: str,
                               output_path: str, duration: float, vcfg: dict,
                               motion: str = ""):
-    """이미지 배경 + Ken Burns 효과 + PNG 오버레이 + 오디오 합성.
-    motion="none"이면 정적 배경 (zoom/pan 없음).
+    """이미지 배경 + 모션 효과 + PNG 오버레이 + 오디오 합성.
+    motion="none"이면 정적 배경.
     overlay_path=None이면 오버레이 없이 이미지만 사용 (zone 모드).
+    zoompan 프리셋과 필터 프리셋 모두 지원.
     """
-    preset = _select_kb_preset(motion)
+    preset = _select_motion(motion)
     if preset is None:
         if overlay_path:
             _render_static_bg_segment(bg_path, overlay_path, audio_path,
@@ -790,7 +867,7 @@ def _render_kenburns_segment(bg_path: str, overlay_path: str | None, audio_path:
         else:
             _render_static_segment(bg_path, audio_path, output_path, duration, vcfg)
         return
-    zoom_expr, x_expr, y_expr = preset
+
     total_frames = int(duration * 24) + 5  # 24fps
 
     # 입력 이미지 비율 감지 → 1:1이면 중앙 배치, 9:16이면 전체 채움
@@ -803,25 +880,43 @@ def _render_kenburns_segment(bg_path: str, overlay_path: str | None, audio_path:
         _iw, _ih = 1080, 1920
 
     _aspect = _iw / _ih if _ih > 0 else 1.0
-    if _aspect > 0.8:  # 1:1 또는 가로 이미지 (center/top/bottom 레이아웃)
-        # Cover 모드: 프레임 전체를 채우도록 스케일 + 중앙 크롭 (검정 여백 제거)
+    if _aspect > 0.8:
         _scale_h = 2208
         _scale_w = max(1242, int(2208 * _aspect))
         _pad = f",crop=1242:2208:(iw-1242)/2:(ih-2208)/2"
-    else:  # 9:16 세로 이미지 (full 레이아웃)
+    else:
         _scale_w, _scale_h = 1242, 2208
         _pad = ""
 
-    if overlay_path:
-        filter_complex = (
-            f"[0:v]scale={_scale_w}:{_scale_h},format=rgba{_pad},"
-            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
-            f":d={total_frames}:s=1080x1920:fps=24[bg];"
-            f"[bg][1:v]overlay=0:0:shortest=1[out]"
+    # 필터 기반 효과 (rotate, blur_in, bright_pulse, vignette, glitch)
+    is_filter = isinstance(preset, str) and preset in _FILTER_PRESETS
+    if is_filter:
+        filter_complex = _build_filter_expr(
+            preset, total_frames, duration,
+            _scale_w, _scale_h, _pad,
+            has_overlay=bool(overlay_path)
         )
+    else:
+        # zoompan 기반 효과
+        zoom_expr, x_expr, y_expr = preset
+        if overlay_path:
+            filter_complex = (
+                f"[0:v]scale={_scale_w}:{_scale_h},format=rgba{_pad},"
+                f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
+                f":d={total_frames}:s=1080x1920:fps=24[bg];"
+                f"[bg][1:v]overlay=0:0:shortest=1[out]"
+            )
+        else:
+            filter_complex = (
+                f"[0:v]scale={_scale_w}:{_scale_h},format=rgba{_pad},"
+                f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
+                f":d={total_frames}:s=1080x1920:fps=24[out]"
+            )
+
+    if overlay_path:
         cmd = [
             config.ffmpeg(), "-y",
-            "-i", bg_path,
+            "-loop", "1", "-i", bg_path,
             "-loop", "1", "-i", overlay_path,
             "-i", audio_path,
             "-filter_complex", filter_complex,
@@ -833,15 +928,9 @@ def _render_kenburns_segment(bg_path: str, overlay_path: str | None, audio_path:
             output_path
         ]
     else:
-        # overlay 없음 (zone 모드): composite slide PNG에 직접 Ken Burns
-        filter_complex = (
-            f"[0:v]scale={_scale_w}:{_scale_h},format=rgba{_pad},"
-            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
-            f":d={total_frames}:s=1080x1920:fps=24[out]"
-        )
         cmd = [
             config.ffmpeg(), "-y",
-            "-i", bg_path,
+            "-loop", "1", "-i", bg_path,
             "-i", audio_path,
             "-filter_complex", filter_complex,
             "-map", "[out]", "-map", "1:a",
@@ -855,7 +944,7 @@ def _render_kenburns_segment(bg_path: str, overlay_path: str | None, audio_path:
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"[video_renderer] Ken Burns failed: {result.stderr[:300]}")
+        print(f"[video_renderer] motion effect failed ({motion}): {result.stderr[:300]}")
         fallback_img = overlay_path.replace("_overlay.png", ".png") if overlay_path else bg_path
         _render_static_segment(fallback_img, audio_path, output_path, duration, vcfg)
 
