@@ -37,6 +37,8 @@ const layout = data.layout || 'full';
 const bgDisplayMode = data.bgDisplayMode || 'zone';
 const skipOverlay = data.skipOverlay || false;
 const slideOverrides = data.slideOverrides || {};  // {1: {main, sub, x, y, mainSize, subSize, hidden}, ...}
+const compElements = data.elements || [];      // Composer 요소 (bubble/image/emotion)
+const compFreeTexts = data.freeTexts || [];    // Composer 자유 텍스트
 const total = slides.length;
 
 // 상:중:하 비율 (center/top/bottom 레이아웃 전용)
@@ -124,6 +126,108 @@ function badgeHTML(category, style = '') {
   return `<div class="${cls}"${s}>${isBreaking ? category : category}</div>`;
 }
 
+// ──── Composer 요소 SVG 데이터 ────
+const BUBBLE_SVGS = [
+  { name:"둥근말풍선", svg:`<path d="M50,5C25,5,5,22,5,43c0,13,8,24,20,31l-5,16,18-12c4,1,8,1,12,1,25,0,45-17,45-38S75,5,50,5Z" fill="white"/>` },
+  { name:"구름말풍선", svg:`<path d="M25,70c-3,8-10,14-10,14s12-2,18-6c5,2,11,3,17,3c22,0,40-15,40-33S72,15,50,15S10,30,10,48c0,9,5,17,15,22Z" fill="white"/><circle cx="12" cy="78" r="4" fill="white"/><circle cx="6" cy="86" r="2.5" fill="white"/>` },
+  { name:"사각말풍선", svg:`<rect x="5" y="5" width="90" height="60" rx="8" fill="white"/><polygon points="20,65 30,65 15,85" fill="white"/>` },
+  { name:"둥근사각", svg:`<rect x="5" y="10" width="90" height="55" rx="20" fill="white"/><polygon points="50,65 60,65 55,80" fill="white"/>` },
+  { name:"생각풍선", svg:`<ellipse cx="50" cy="38" rx="40" ry="28" fill="white"/><ellipse cx="28" cy="30" rx="18" ry="14" fill="white"/><ellipse cx="72" cy="32" rx="16" ry="12" fill="white"/><ellipse cx="50" cy="18" rx="22" ry="12" fill="white"/><circle cx="22" cy="72" r="6" fill="white"/><circle cx="14" cy="82" r="4" fill="white"/><circle cx="8" cy="88" r="2.5" fill="white"/>` },
+  { name:"외침풍선", svg:`<polygon points="50,2 58,28 95,28 64,46 75,78 50,56 25,78 36,46 5,28 42,28" fill="white"/>` },
+  { name:"타원말풍선", svg:`<ellipse cx="50" cy="40" rx="44" ry="32" fill="white"/><polygon points="35,68 45,68 25,90" fill="white"/>` },
+  { name:"물결말풍선", svg:`<path d="M15,15 Q5,15 5,25 Q5,60 5,60 Q5,70 15,70 L25,70 L15,88 L35,70 L85,70 Q95,70 95,60 L95,25 Q95,15 85,15Z" fill="white" stroke="none"/>` },
+  { name:"우측말풍선", svg:`<rect x="5" y="5" width="90" height="60" rx="12" fill="white"/><polygon points="75,65 85,65 88,82" fill="white"/>` },
+];
+
+const EMOTION_SVGS = [
+  { name:"빙글빙글", svg:`<circle cx="50" cy="50" r="40" fill="none" stroke="#333" stroke-width="1.8"/><circle cx="50" cy="50" r="32" fill="none" stroke="#555" stroke-width="1.4"/><g><path d="M50,4 L52,8 L56,10 L52,12 L50,16 L48,12 L44,10 L48,8Z" fill="#fff" stroke="#333" stroke-width="0.8"/><path d="M90,44 L88,48 L90,52 L86,50 L82,52 L84,48 L82,44 L86,46Z" fill="#FFD700" stroke="#333" stroke-width="0.8"/><path d="M50,84 L52,88 L56,90 L52,92 L50,96 L48,92 L44,90 L48,88Z" fill="#fff" stroke="#333" stroke-width="0.8"/><path d="M10,44 L12,48 L10,52 L14,50 L18,52 L16,48 L18,44 L14,46Z" fill="#4FC3F7" stroke="#333" stroke-width="0.8"/></g>` },
+  { name:"반짝반짝", svg:`<polygon points="50,5 58,38 95,38 65,58 75,92 50,70 25,92 35,58 5,38 42,38" fill="#FFD700" opacity="0.9"/><polygon points="50,25 54,43 72,43 57,53 62,70 50,60 38,70 43,53 28,43 46,43" fill="#FFF3B0"/>` },
+  { name:"한숨", svg:`<ellipse cx="30" cy="50" rx="22" ry="14" fill="#B0C4DE" opacity="0.7"/><ellipse cx="60" cy="35" rx="18" ry="11" fill="#B0C4DE" opacity="0.5"/><ellipse cx="80" cy="55" rx="14" ry="9" fill="#B0C4DE" opacity="0.4"/><path d="M15,50 Q5,40 20,35" fill="none" stroke="#B0C4DE" stroke-width="3" stroke-linecap="round" opacity="0.6"/>` },
+  { name:"하트", svg:`<path d="M50,85 C20,65 5,45 5,30 A20,20,0,0,1,50,25 A20,20,0,0,1,95,30 C95,45 80,65 50,85Z" fill="#FF4D6D"/>` },
+  { name:"분노", svg:`<g fill="#FF3333"><path d="M25,20 L50,30 L40,5 L50,30 L75,20 L50,30 L50,30Z" opacity="0.9"/><path d="M75,80 L50,70 L60,95 L50,70 L25,80 L50,70Z" opacity="0.9"/><path d="M20,75 L30,50 L5,60 L30,50 L20,25 L30,50Z" opacity="0.7"/><path d="M80,25 L70,50 L95,40 L70,50 L80,75 L70,50Z" opacity="0.7"/></g>` },
+  { name:"당황", svg:`<path d="M40,15 Q42,50 35,85" fill="none" stroke="#4FC3F7" stroke-width="5" stroke-linecap="round" opacity="0.8"/><ellipse cx="37" cy="90" rx="5" ry="4" fill="#4FC3F7" opacity="0.6"/><path d="M65,25 Q67,55 62,75" fill="none" stroke="#4FC3F7" stroke-width="4" stroke-linecap="round" opacity="0.6"/><ellipse cx="61" cy="80" rx="4" ry="3" fill="#4FC3F7" opacity="0.4"/>` },
+  { name:"물음표", svg:`<text x="50" y="72" text-anchor="middle" font-size="70" font-weight="900" fill="#FFB300" stroke="#E65100" stroke-width="2">?</text>` },
+  { name:"느낌표", svg:`<text x="50" y="72" text-anchor="middle" font-size="70" font-weight="900" fill="#FF5252" stroke="#B71C1C" stroke-width="2">!</text>` },
+  { name:"음표", svg:`<text x="28" y="60" font-size="50" fill="#AB47BC">♪</text><text x="58" y="45" font-size="38" fill="#AB47BC" opacity="0.7">♫</text>` },
+  { name:"전구", svg:`<ellipse cx="50" cy="40" rx="24" ry="26" fill="#FFEE58" stroke="#FBC02D" stroke-width="2"/><rect x="40" y="64" width="20" height="8" rx="2" fill="#FBC02D"/><rect x="42" y="72" width="16" height="4" rx="2" fill="#F9A825"/><line x1="50" y1="10" x2="50" y2="2" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/><line x1="78" y1="20" x2="84" y2="14" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/><line x1="22" y1="20" x2="16" y2="14" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/><line x1="85" y1="42" x2="92" y2="42" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/><line x1="15" y1="42" x2="8" y2="42" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/>` },
+  { name:"졸림", svg:`<text x="20" y="55" font-size="30" font-weight="900" fill="#78909C" opacity="0.5">z</text><text x="42" y="40" font-size="40" font-weight="900" fill="#78909C" opacity="0.7">z</text><text x="65" y="25" font-size="50" font-weight="900" fill="#78909C" opacity="0.9">Z</text>` },
+  { name:"폭발", svg:`<polygon points="50,2 62,30 95,15 72,42 98,58 68,60 75,92 50,72 25,92 32,60 2,58 28,42 5,15 38,30" fill="#FF9800" stroke="#E65100" stroke-width="1.5"/><circle cx="50" cy="50" r="15" fill="#FFEB3B"/>` },
+];
+
+function _escHtml(str) {
+  return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * Composer 요소(말풍선/이미지/감정표현) + 자유텍스트를 HTML로 생성
+ * 1080×1920 절대 좌표계, z-index: 20
+ */
+function buildElementsHtml(slideNum) {
+  const elems = compElements.filter(e => e.slideNum === slideNum);
+  const fts = compFreeTexts.filter(ft => ft.slideNum === slideNum);
+  if (elems.length === 0 && fts.length === 0) return '';
+
+  let html = '';
+
+  // 요소 (bubble / image / emotion)
+  elems.forEach(elem => {
+    const x = elem.x || 540;
+    const y = elem.y || 960;
+    const w = elem.width || 300;
+    const h = elem.height || 250;
+    const rot = elem.rotation || 0;
+    const flipX = elem.flipX ? ' scaleX(-1)' : '';
+
+    let inner = '';
+    if (elem.type === 'bubble') {
+      const bDef = BUBBLE_SVGS[elem.bubbleIdx];
+      if (bDef) {
+        let svgContent = bDef.svg;
+        // fillColor 적용
+        if (elem.fillColor) {
+          svgContent = svgContent.replace(/fill="white"/g, `fill="${elem.fillColor}"`);
+        }
+        // strokeColor 적용
+        if (elem.strokeColor) {
+          svgContent = svgContent.replace(/stroke="none"/g, `stroke="${elem.strokeColor}" stroke-width="${elem.strokeWidth || 2}"`);
+          svgContent = svgContent.replace(/(<(?:path|rect|ellipse|polygon|circle)\b)(?![^>]*\bstroke=)/g,
+            `$1 stroke="${elem.strokeColor}" stroke-width="${elem.strokeWidth || 2}"`);
+        }
+        inner = `<svg viewBox="0 0 100 95" width="100%" height="100%" style="position:absolute;inset:0;">${svgContent}</svg>`;
+        if (elem.text) {
+          const flipTxt = elem.flipX ? 'transform:scaleX(-1);' : '';
+          inner += `<div style="position:absolute;inset:10%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:${elem.textSize || 36}px;color:${elem.textColor || '#000'};font-weight:700;word-break:keep-all;line-height:1.2;z-index:2;${flipTxt}">${_escHtml(elem.text).replace(/\n/g, '<br>')}</div>`;
+        }
+      }
+    } else if (elem.type === 'image' && elem.dataUrl) {
+      inner = `<img src="${elem.dataUrl}" style="width:100%;height:100%;object-fit:contain;">`;
+    } else if (elem.type === 'emotion') {
+      const eDef = EMOTION_SVGS[elem.emotionIdx];
+      if (eDef) {
+        inner = `<svg viewBox="0 0 100 100" width="100%" height="100%" style="position:absolute;inset:0;">${eDef.svg}</svg>`;
+      }
+    }
+
+    if (inner) {
+      html += `<div style="position:absolute;left:${x}px;top:${y}px;width:${w}px;height:${h}px;transform:translate(-50%,-50%) rotate(${rot}deg)${flipX};z-index:20;pointer-events:none;">${inner}</div>\n`;
+    }
+  });
+
+  // 자유 텍스트
+  fts.forEach(ft => {
+    const x = ft.x || 540;
+    const y = ft.y || 960;
+    const size = ft.size || 48;
+    const color = ft.color || '#ffffff';
+    const font = ft.fontFamily || 'Noto Sans KR';
+    const rot = ft.rotation || 0;
+    const text = _escHtml(ft.text).replace(/\n/g, '<br>');
+    html += `<div style="position:absolute;left:${x}px;top:${y}px;font-size:${size}px;color:${color};font-family:'${font}',sans-serif;font-weight:700;transform:translate(-50%,-50%) rotate(${rot}deg);z-index:20;white-space:nowrap;text-shadow:0 2px 8px rgba(0,0,0,0.8);pointer-events:none;">${text}</div>\n`;
+  });
+
+  return html;
+}
+
 function buildHTML(slide, index) {
   const slideNum = index + 1;
   const ovr = slideOverrides[slideNum] || {};
@@ -137,40 +241,53 @@ function buildHTML(slide, index) {
   const bgData = bgInfo(index);
   const progressPct = total > 1 ? ((slideNum) / total * 100).toFixed(1) : 100;
 
+  let baseHtml;
+
   // hidden 오버라이드: 텍스트 없이 배경만 렌더 (오버레이 제거)
   if (ovr.hidden) {
-    return buildHiddenOverlay(s, bgData.css, progressPct);
+    baseHtml = buildHiddenOverlay(s, bgData.css, progressPct);
   }
-
   // Closing slide: only if explicitly marked as closing (bg_type empty/closing)
   // Content slides with bg_type (photo, graph, broll, etc.) are rendered normally
-  const isClosing = index === total - 1 && (!s.bg_type || s.bg_type === 'closing');
-  if (isClosing) return buildClosing(s, accent, bgData.css, progressPct);
-
+  else if (index === total - 1 && (!s.bg_type || s.bg_type === 'closing')) {
+    baseHtml = buildClosing(s, accent, bgData.css, progressPct);
+  }
   // Overview slide (roundup headline): always full-bg with dark overlay + headline list
-  if (s.bg_type === 'overview') return buildOverview(s, accent, bgData.css, progressPct, bgData.source);
-
+  else if (s.bg_type === 'overview') {
+    baseHtml = buildOverview(s, accent, bgData.css, progressPct, bgData.source);
+  }
   // 위치/크기 오버라이드가 있으면 커스텀 렌더링
-  if (ovr.x !== undefined || ovr.y !== undefined || ovr.mainSize || ovr.subSize) {
-    return buildCustomContent(s, accent, bgData.css, progressPct, index, bgData.source, ovr);
+  else if (ovr.x !== undefined || ovr.y !== undefined || ovr.mainSize || ovr.subSize) {
+    baseHtml = buildCustomContent(s, accent, bgData.css, progressPct, index, bgData.source, ovr);
   }
-
   // For full layout, use original builders
-  if (layout === 'full') {
-    if (index === 0) return buildOpening(s, accent, bgData.css, progressPct, bgData.source);
-    return buildContent(s, accent, bgData.css, progressPct, index, bgData.source);
+  else if (layout === 'full') {
+    baseHtml = index === 0
+      ? buildOpening(s, accent, bgData.css, progressPct, bgData.source)
+      : buildContent(s, accent, bgData.css, progressPct, index, bgData.source);
   }
-
   // Fullscreen mode: full-bg image with semi-transparent text zones
   // top/bottom 레이아웃은 이미지가 특정 영역에만 표시되어야 하므로 zoned 방식 사용
-  if (bgDisplayMode === 'fullscreen' && (layout === 'full' || layout === 'center')) {
-    if (index === 0) return buildFullscreenOpening(s, accent, bgData, progressPct);
-    return buildFullscreenContent(s, accent, bgData, progressPct, index);
+  else if (bgDisplayMode === 'fullscreen' && (layout === 'full' || layout === 'center')) {
+    baseHtml = index === 0
+      ? buildFullscreenOpening(s, accent, bgData, progressPct)
+      : buildFullscreenContent(s, accent, bgData, progressPct, index);
+  }
+  // Zone mode (default): image in designated zone
+  else {
+    baseHtml = index === 0
+      ? buildZonedOpening(s, accent, bgData, progressPct)
+      : buildZonedContent(s, accent, bgData, progressPct, index);
   }
 
-  // Zone mode (default): image in designated zone
-  if (index === 0) return buildZonedOpening(s, accent, bgData, progressPct);
-  return buildZonedContent(s, accent, bgData, progressPct, index);
+  // Composer 요소/자유텍스트 삽입
+  const elemHtml = buildElementsHtml(slideNum);
+  if (elemHtml) {
+    // </body></html> 바로 앞에 삽입
+    baseHtml = baseHtml.replace('</body>', elemHtml + '</body>');
+  }
+
+  return baseHtml;
 }
 
 // ──── Hidden overlay (배경만, 텍스트 없음) ────

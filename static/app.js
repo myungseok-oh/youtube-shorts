@@ -5801,6 +5801,7 @@ ${scriptRules}
 
 bg_type: ${bgTypeDesc}
 슬라이드 레이아웃: ${slideLayout}
+${imageStyle !== 'mixed' ? `이미지 스타일: ${imageStyle === 'anime' ? '애니메이션/디지털 일러스트 (실사 금지, 모든 이미지 프롬프트에 anime/illustration 스타일 키워드 필수)' : imageStyle === 'photo' ? '실사 사진 (사람/얼굴 금지)' : imageStyle === 'infographic' ? '인포그래픽/일러스트 (실사 금지)' : imageStyle}` : ''}
 
 [나레이션 규칙]
 
@@ -5809,7 +5810,11 @@ bg_type: ${bgTypeDesc}
 3. narration text는 TTS가 읽는 텍스트이므로 HTML 태그 금지, 순수 텍스트만
 `;
 
-  if (!hasChannelRules) {
+  if (bgMediaType === "single") {
+    prompt += `4. ★ 슬라이드당 narration 1항목, image_prompts 1개씩만 생성한다 (1:1 대응).
+5. ★ 나레이션 1항목의 글자 수: 20~25자 (image 배경 ~5초 기준). 12~17자는 짧아서 갭 발생. 반드시 지킬 것.
+`;
+  } else if (!hasChannelRules) {
     // 채널 대본 규칙이 없을 때만 기본 세부 규칙 추가
     prompt += `4. narration 항목 1개 = image_prompts 항목 1개 (반드시 같은 개수, 1:1 대응)
 5. ★ 나레이션 1항목의 글자 수는 대응하는 배경 표시 시간에 맞출 것:
@@ -5851,13 +5856,27 @@ bg_type: ${bgTypeDesc}
 - category: 주제를 대표하는 태그
 - image_prompts.ko: 배경 이미지 한국어 프롬프트 (구체적 장면 묘사)
 - image_prompts.en: 영어 프롬프트 (subject+setting+lighting+camera+style 포함)
-- image_prompts.media: "image" 또는 "video" — 정적 이미지(~5초) 또는 영상(~6초)
-- image_prompts.motion: video일 때 카메라/피사체 움직임, image일 때 빈 문자열
+${bgMediaType === "single"
+    ? `- image_prompts.media: 반드시 "image"만 사용 (video 금지)
+- image_prompts.motion: 빈 문자열 ""`
+    : `- image_prompts.media: "image" 또는 "video" — 정적 이미지(~5초) 또는 영상(~6초)
+- image_prompts.motion: video일 때 카메라/피사체 움직임, image일 때 빈 문자열`}
 `;
+
+  // bg_media_type=single 규칙은 채널 규칙 유무와 무관하게 항상 추가
+  if (bgMediaType === "single") {
+    prompt += `
+[배경 프롬프트 규칙 — 필수]
+★★★ 슬라이드당 image_prompts 1개, narration 1항목만 생성한다.
+★★★ 모든 media는 반드시 "image". video 절대 금지. motion은 빈 문자열 "".
+★★★ 한 슬라이드에 narration 2개 이상 = image_prompts 2개 이상 생성은 절대 금지.
+`;
+  }
 
   if (!hasChannelRules) {
     // 채널 대본 규칙이 없을 때만 기본 media/motion/배경 규칙 추가
-    prompt += `
+    if (bgMediaType !== "single") {
+      prompt += `
 [media 배치 규칙]
 - 전체 프롬프트 중 25~35%만 "video" (과하면 산만해짐)
 - ★★ graph/overview 타입 슬라이드는 반드시 전부 "image" (video 절대 금지)
@@ -5887,13 +5906,12 @@ motion 구성 요소 (2~3개 조합할 것):
 - ★ 매번 다른 motion 조합 사용 (같은 패턴 반복 금지)
 - ★ en 프롬프트에도 motion 내용을 자연스럽게 포함할 것
 [배경 프롬프트 개수 규칙]
-${bgMediaType === "single" ? `
-★ 슬라이드당 narration 1항목, image_prompts 1개씩만 생성한다.` : `
 ★ 슬라이드 나레이션 총 길이에 따라 배경 개수 결정:
   - ~5초(배경 1개) | ~10초(배경 2개) | ~15초(배경 3개)
   - 한 슬라이드에 배경 N개 → narration도 N항목 (같은 slide 번호)
-  각 배경 프롬프트는 서로 다른 앵글/장면/스케일로 시각적 변화를 준다.`}
+  각 배경 프롬프트는 서로 다른 앵글/장면/스케일로 시각적 변화를 준다.
 `;
+    }
   }
 
   prompt += `

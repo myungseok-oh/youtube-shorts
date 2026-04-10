@@ -57,6 +57,7 @@ def get_composer_data(job_id: str, script: dict | None = None,
     return {
         "job_id": job_id,
         "slides": slides,
+        "slide_audio": slide_audio_map,
         "sfx_list": sfx_list,
         "bgm_list": bgm_list,
         "compose_data": compose_data,
@@ -127,11 +128,15 @@ def get_slide_audio_files(job_id: str, script: dict) -> dict:
 
 
 def load_compose_data(job_id: str) -> dict:
-    """편집 상태 로드."""
+    """편집 상태 로드. 중첩 구조(get_composer_data 응답)도 자동 해제."""
     path = _compose_data_path(job_id)
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # get_composer_data 응답 전체가 저장된 경우 → compose_data 키만 추출
+        if "compose_data" in data and isinstance(data["compose_data"], dict):
+            return data["compose_data"]
+        return data
     return {"slide_order": [], "slide_durations": {}, "sfx_markers": [], "bgm": None}
 
 
@@ -237,6 +242,78 @@ def assign_narration_to_slide(job_id: str, slide_num: int,
 
     dur = _get_duration(out_path)
     return {"ok": True, "file": f"audio_{first_idx + 1}.{ext}", "duration": dur}
+
+
+def split_and_assign_narration(job_id: str, source_file: str,
+                                script: dict) -> dict:
+    """narration_files/ 의 단일 파일을 무음 기준으로 슬라이드별 분할 → audio/ 에 배치.
+
+    Returns:
+        {"ok": True, "slides": [{"slide_num": 1, "duration": 5.2, "file": "audio_1.mp3"}, ...]}
+    """
+    import shutil
+    from pipeline.runner import _split_narration
+
+    src = os.path.join(_narr_files_dir(job_id), source_file)
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"파일 없음: {source_file}")
+
+    sentences = script.get("sentences", [])
+    slides = script.get("slides", [])
+
+    # content 슬라이드만 (closing 제외)
+    content_slides = [s for i, s in enumerate(slides) if s.get("bg_type") != "closing"]
+    slide_count = len(content_slides)
+    if slide_count == 0:
+        raise ValueError("분할 대상 슬라이드 없음")
+
+    job_dir = os.path.join(config.output_dir(), job_id)
+    audio_dir = os.path.join(job_dir, "audio")
+    segment_dir = os.path.join(job_dir, "segments")
+    os.makedirs(audio_dir, exist_ok=True)
+
+    # 무음 기준 분할
+    split_result = _split_narration(src, slide_count, segment_dir)
+
+    # 분할 결과 → audio/ 폴더에 복사
+    result_slides = []
+    for slide_idx in range(slide_count):
+        slide_num = slide_idx + 1  # content slide 1-based
+        seg = split_result.get(slide_idx + 1)
+        if not seg:
+            continue
+
+        # 해당 슬라이드의 첫 번째 문장 인덱스 찾기
+        first_sent_idx = None
+        for si, sen in enumerate(sentences):
+            if sen.get("slide") == slide_num:
+                first_sent_idx = si
+                break
+
+        if first_sent_idx is None:
+            # 문장 매핑 없으면 슬라이드 번호로 폴백
+            first_sent_idx = slide_idx
+
+        audio_filename = f"audio_{first_sent_idx + 1}.mp3"
+        dst = os.path.join(audio_dir, audio_filename)
+
+        # 기존 오디오 정리 (해당 슬라이드의 모든 문장)
+        for si, sen in enumerate(sentences):
+            if sen.get("slide") == slide_num:
+                for ext in ("mp3", "wav", "m4a"):
+                    old = os.path.join(audio_dir, f"audio_{si + 1}.{ext}")
+                    if os.path.exists(old):
+                        os.remove(old)
+
+        shutil.copy2(seg["path"], dst)
+        result_slides.append({
+            "slide_num": slide_num,
+            "duration": seg["duration"],
+            "file": audio_filename,
+            "sentence_idx": first_sent_idx,
+        })
+
+    return {"ok": True, "slides": result_slides}
 
 
 def _unique_filename(directory: str, name: str) -> str:

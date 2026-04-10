@@ -517,16 +517,55 @@ brand 값은 "{brand}"로 설정해.
 
         style_rules = prompt_style.strip() if prompt_style and prompt_style.strip() else self.IMAGE_PROMPT_STYLE
 
-        if bg_media_type == "auto":
-            media_instruction = (
-                "- 이미지:영상 비율 약 6:4 (전체 프롬프트 중 ~40%를 'video'로 지정)\n"
-                "- 나머지는 'image'\n"
-                "- 동적 장면(행동/움직임/변화)은 video, 정적 장면(설명/도입/정리)은 image"
+        if bg_media_type == "single":
+            _vp_duration_media = (
+                f"## media 배치 규칙\n"
+                f"- ★★★ 모든 씬의 media를 반드시 \"image\"로 지정. video 생성 금지. motion은 빈 문자열.\n"
+                f"- graph/overview 타입은 항상 \"image\"\n"
+                f"- 첫 씬은 시청자 주의를 끄는 강렬한 비주얼"
             )
-        elif bg_media_type == "single":
-            media_instruction = "- 모든 씬을 'image'로 지정 (영상 없음)"
+            _vp_duration_rules = (
+                f"1. **duration 결정이 핵심**: 모든 씬의 duration 합계가 ~{target_duration}초가 되도록 배분\n"
+                f"   - 모든 씬 5초 또는 10초 (정보 많은 씬만 10초)\n"
+                f"2. **시각적 리듬**: wide → medium → close-up → wide 순서로 스케일 변화\n"
+                f"3. **연속 금지**: 같은 앵글/스케일 연속 사용 금지\n"
+                f"4. **각 씬은 독립적 장면**: 같은 장소/피사체 반복 금지"
+            )
         else:
-            media_instruction = f"- bg_media_type: {bg_media_type} 설정에 따라 지정"
+            if bg_media_type == "auto":
+                _media_rules = (
+                    "- 이미지:영상 비율 약 6:4 (전체 프롬프트 중 ~40%를 'video'로 지정)\n"
+                    "- 동적 장면(행동/움직임/변화)은 video, 정적 장면(설명/도입/정리)은 image"
+                )
+            else:
+                _media_rules = f"- bg_media_type: {bg_media_type} 설정에 따라 지정"
+            _vp_duration_media = (
+                f"## media 배치 규칙\n"
+                f"{_media_rules}\n"
+                f"- video 프롬프트의 en 필드에 움직임 키워드 추가 (gentle movement, swaying, flowing 등)\n"
+                f"- graph/overview 타입은 항상 \"image\"\n"
+                f"- 첫 씬은 시청자 주의를 끄는 강렬한 비주얼"
+            )
+            _vp_duration_rules = (
+                f"1. **duration 결정이 핵심**: 모든 씬의 duration 합계가 ~{target_duration}초가 되도록 배분\n"
+                f"   - image 씬: 5초 기본. 정보량이 많은 씬만 10초 (10초 씬은 전체의 1~2개 이하)\n"
+                f"   - video 씬: 6초 기본 (Veo 영상 기본 길이)\n"
+                f"   - 어중간한 6~7초 image 금지\n"
+                f"2. **시각적 리듬**: wide → medium → close-up → wide 순서로 스케일 변화\n"
+                f"3. **연속 금지**: 같은 앵글/스케일 연속 사용 금지\n"
+                f"4. **각 씬은 독립적 장면**: 같은 장소/피사체 반복 금지"
+            )
+
+        _motion_section = ""
+        if bg_media_type != "single":
+            _motion_section = (
+                "\n## motion 작성 규칙\n"
+                "- 단순 카메라 동작만 쓰지 마라 (\"slow zoom in\" 만 X)\n"
+                "- 카메라 + 피사체 + 환경을 조합:\n"
+                "  \"slow zoom in on factory exterior as smoke rises from chimneys\"\n"
+                "  \"gentle pan across trading floor with flickering monitors\"\n"
+                "- video 씬의 motion은 실제 영상 생성에 사용되므로 구체적으로"
+            )
 
         prompt = f"""너는 뉴스 영상의 비주얼 디렉터야.
 시놉시스를 기반으로 각 씬(scene)의 비주얼을 설계해.
@@ -567,34 +606,17 @@ Synopsis: {synopsis_text}
 ★ 목표 영상 길이: **{target_duration}초** (closing 제외 duration 합계가 이 범위에 맞아야 함)
 
 이 비주얼 플랜에 따라 대본이 작성된다. 따라서:
-1. **duration 결정이 핵심**: 모든 씬의 duration 합계가 ~{target_duration}초가 되도록 배분
-   - image 씬: 5초 기본. 정보량이 많은 씬만 10초 (10초 씬은 전체의 1~2개 이하)
-   - video 씬: 6초 기본 (Veo 영상 기본 길이)
-   - 어중간한 6~7초 image 금지
-2. **시각적 리듬**: wide → medium → close-up → wide 순서로 스케일 변화
-3. **연속 금지**: 같은 앵글/스케일 연속 사용 금지
-4. **각 씬은 독립적 장면**: 같은 장소/피사체 반복 금지
+{_vp_duration_rules}
 
-## media 배치 규칙
-{media_instruction}
-- video 프롬프트의 en 필드에 움직임 키워드 추가 (gentle movement, swaying, flowing 등)
-- graph/overview 타입은 항상 "image"
-- 첫 씬은 시청자 주의를 끄는 강렬한 비주얼
+{_vp_duration_media}
 
 ## bg_type 선택
 - overview: 뉴스 라운드업 첫 씬 전용
 - photo: 실제 장소/사물 (가장 일반적)
-- broll: 시네마틱 (1~2개만, video와 잘 어울림)
-- graph: 인포그래픽/일러스트 (수치 비교, 데이터)
+{("- broll: 시네마틱 (1~2개만, video와 잘 어울림)" + chr(10)) if bg_media_type != "single" else ""}- graph: 인포그래픽/일러스트 (수치 비교, 데이터)
 - logo: 기업 건물 외관
 - closing: 빈 프롬프트 (마지막 씬 배경 재사용)
-
-## motion 작성 규칙
-- 단순 카메라 동작만 쓰지 마라 ("slow zoom in" 만 X)
-- 카메라 + 피사체 + 환경을 조합:
-  "slow zoom in on factory exterior as smoke rises from chimneys"
-  "gentle pan across trading floor with flickering monitors"
-- video 씬의 motion은 실제 영상 생성에 사용되므로 구체적으로
+{_motion_section}
 
 ## caption (배경 위 키워드 오버레이)
 - 전체 씬의 **30% 이하**에만 caption 부여 (과하면 역효과)
@@ -649,6 +671,10 @@ Synopsis: {synopsis_text}
                             "caption": str(p.get("caption", "")),
                             "character": str(p.get("character", "none")),
                         })
+                # bg_media_type=single → 모든 media를 image로 강제
+                if bg_media_type == "single":
+                    for item in result:
+                        item["media"] = "image"
                 return result
 
         raise RuntimeError(f"visual_plan 파싱 실패:\n{raw[:1000]}")
@@ -827,24 +853,39 @@ brand 값은 "{brand}"로 설정해.
         if has_outro:
             outro_note = "\n- ★ 별도 아웃트로가 있으므로 마지막 씬에 마무리 인사/구독 요청 넣지 마라."
 
-        style_rules = prompt_style.strip() if prompt_style and prompt_style.strip() else (
-            "ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera, style\n"
-            "- 추상 개념 금지 → 카메라맨이 촬영할 수 있는 구체적 장소/사물\n"
-            "- wide→medium→close-up→wide 스케일 변화, 같은 구도 연속 금지\n"
-            "- photo/broll/logo: realistic, sharp focus, 8k, photojournalism\n"
-            "- graph: flat illustration, vector art, infographic (실사 금지)\n"
-            "- BANNED: text/numbers in image, dark/moody themes, same scene repeated"
-        )
+        style_rules = prompt_style.strip() if prompt_style and prompt_style.strip() else self.IMAGE_PROMPT_STYLE
 
-        if bg_media_type == "auto":
-            media_instruction = (
-                "- 이미지:영상 비율 약 6:4 (전체 씬 중 ~40%를 'video'로 지정)\n"
-                "- 동적 장면(행동/움직임/변화)은 video, 정적 장면(설명/도입/정리)은 image"
+        if bg_media_type == "single":
+            _duration_media_block = (
+                f"### duration/media\n"
+                f"- duration 합계 ≈ {target_duration}초. 모든 씬 5초 또는 10초 (정보 많은 씬만 10초)\n"
+                f"- ★★★ 슬라이드 1개 = visual_plan 1개 (1:1 매핑). 슬라이드당 2개 이상 생성 절대 금지.\n"
+                f"- ★★★ 모든 씬의 media를 반드시 \"image\"로 지정. video 생성 금지. motion은 빈 문자열.\n"
+                f"- graph/overview → 항상 image\n"
+                f"- bg_type: photo/graph/logo. overview는 라운드업 전용\n"
+                f"- ★ closing 슬라이드는 생성하지 마라 (시스템이 자동 처리)"
             )
-        elif bg_media_type == "single":
-            media_instruction = "- 모든 씬을 'image'로 지정"
+        elif bg_media_type == "auto":
+            _duration_media_block = (
+                f"### duration/media\n"
+                f"- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). video: 6초 기본. 6~7초 image 금지\n"
+                f"- 이미지:영상 비율 약 6:4 (전체 씬 중 ~40%를 'video'로 지정)\n"
+                f"- 동적 장면(행동/움직임/변화)은 video, 정적 장면(설명/도입/정리)은 image\n"
+                f"- graph/overview → 항상 image. video의 en에 움직임 키워드 포함\n"
+                f"- motion: 카메라+피사체+환경 조합 (예: \"slow zoom in on factory as smoke rises\")\n"
+                f"- bg_type: photo/broll/graph/logo. overview는 라운드업 전용\n"
+                f"- ★ closing 슬라이드는 생성하지 마라 (시스템이 자동 처리)"
+            )
         else:
-            media_instruction = f"- bg_media_type: {bg_media_type}"
+            _duration_media_block = (
+                f"### duration/media\n"
+                f"- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초). video: 6초 기본\n"
+                f"- bg_media_type: {bg_media_type}\n"
+                f"- graph/overview → 항상 image. video의 en에 움직임 키워드 포함\n"
+                f"- motion: 카메라+피사체+환경 조합\n"
+                f"- bg_type: photo/broll/graph/logo. overview는 라운드업 전용\n"
+                f"- ★ closing 슬라이드는 생성하지 마라"
+            )
 
         scene_ref_section = ""
         if scene_references and scene_references.strip():
@@ -895,13 +936,7 @@ brand 값은 "{brand}"로 설정해.
 ### Image Size
 {_image_size_instruction(layout, bg_display_mode, zone_ratio)}
 
-### duration/media
-- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). video: 6초 기본. 6~7초 image 금지
-{media_instruction}
-- graph/overview → 항상 image. video의 en에 움직임 키워드 포함
-- motion: 카메라+피사체+환경 조합 (예: "slow zoom in on factory as smoke rises")
-- bg_type: photo/broll/graph/logo. overview는 라운드업 전용
-- ★ closing 슬라이드는 생성하지 마라 (채널 설정에 따라 시스템이 자동 처리)
+{_duration_media_block}
 
 ## 입력 대본
 {script_str}
@@ -962,6 +997,12 @@ brand 값은 "{brand}"로 설정해.
         else:
             result["visual_plan"] = _sync_visual_plan([], result["script"].get("slides", []))
 
+        # bg_media_type=single → visual_plan의 모든 media를 image로 강제
+        if bg_media_type == "single":
+            for vp in result.get("visual_plan", []):
+                if isinstance(vp, dict):
+                    vp["media"] = "image"
+
         return result
 
     def generate_all_in_one(self, topic: str, instructions: str,
@@ -1010,27 +1051,41 @@ brand 값은 "{brand}"로 설정해.
 
         style_rules = prompt_style.strip() if prompt_style and prompt_style.strip() else self.IMAGE_PROMPT_STYLE
 
-        if bg_media_type == "auto":
-            media_instruction = (
-                "- 이미지:영상 비율 약 6:4 (전체 씬 중 ~40%를 'video'로 지정)\n"
-                "- 동적 장면(행동/움직임/변화)은 video, 정적 장면(설명/도입/정리)은 image"
+        # duration/media 블록: bg_media_type에 따라 전체 교체
+        if bg_media_type == "single":
+            _duration_media_block = (
+                f"### duration/media\n"
+                f"- duration 합계 ≈ {target_duration}초. 모든 씬 5초 또는 10초 (정보 많은 씬만 10초)\n"
+                f"- ★★★ 슬라이드 1개 = visual_plan 1개 (1:1 매핑). 슬라이드당 2개 이상 생성 절대 금지.\n"
+                f"- ★★★ 모든 씬의 media를 반드시 \"image\"로 지정. video 생성 금지. motion은 빈 문자열.\n"
+                f"- graph/overview → 항상 image\n"
+                f"- bg_type: photo/graph/logo. overview는 라운드업 전용\n"
+                f"- ★ closing 슬라이드는 생성하지 마라 (시스템이 자동 처리)"
             )
-        elif bg_media_type == "single":
-            media_instruction = "- 모든 씬을 'image'로 지정"
+        elif bg_media_type == "auto":
+            _duration_media_block = (
+                f"### duration/media\n"
+                f"- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). video: 6초 기본. 6~7초 image 금지\n"
+                f"- 이미지:영상 비율 약 6:4 (전체 씬 중 ~40%를 'video'로 지정)\n"
+                f"- 동적 장면(행동/움직임/변화)은 video, 정적 장면(설명/도입/정리)은 image\n"
+                f"- graph/overview → 항상 image. video의 en에 움직임 키워드 포함\n"
+                f"- motion: 카메라+피사체+환경 조합 (예: \"slow zoom in on factory as smoke rises\")\n"
+                f"- bg_type: photo/broll/graph/logo. overview는 라운드업 전용 (단일 형식 사용 금지)\n"
+                f"- ★ closing 슬라이드는 생성하지 마라 (채널 설정에 따라 시스템이 자동 처리)"
+            )
         else:
-            media_instruction = f"- bg_media_type: {bg_media_type}"
-
-        _compact_style = style_rules
-        if not (prompt_style and prompt_style.strip()):
-            _compact_style = (
-                "ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera, style\n"
-                "- 추상 개념 금지 → 카메라맨이 촬영할 수 있는 구체적 장소/사물\n"
-                "- wide→medium→close-up→wide 스케일 변화, 같은 구도 연속 금지\n"
-                "- photo/broll/logo: realistic, sharp focus, 8k, photojournalism\n"
-                "- graph: flat illustration, vector art, infographic (실사 금지)\n"
-                "- overview: modern news studio, broadcast newsroom\n"
-                "- BANNED: text/numbers in image, dark/moody themes, same scene repeated"
+            _duration_media_block = (
+                f"### duration/media\n"
+                f"- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초). video: 6초 기본\n"
+                f"- bg_media_type: {bg_media_type}\n"
+                f"- graph/overview → 항상 image. video의 en에 움직임 키워드 포함\n"
+                f"- motion: 카메라+피사체+환경 조합\n"
+                f"- bg_type: photo/broll/graph/logo. overview는 라운드업 전용\n"
+                f"- ★ closing 슬라이드는 생성하지 마라"
             )
+
+        # prompt_style이 비어있으면 Agent의 IMAGE_PROMPT_STYLE이 style_rules에 이미 할당됨
+        _compact_style = style_rules
 
         if skip_web_search:
             _synopsis_instruction = "위 지침에 제공된 데이터만으로 스토리 구조를 설계해. 웹 검색 금지."
@@ -1083,13 +1138,7 @@ brand 값은 "{brand}"로 설정해.
 ### Image Size
 {_image_size_instruction(layout, bg_display_mode, zone_ratio)}
 
-### duration/media
-- duration 합계 ≈ {target_duration}초. image: 5초(정보 많으면 10초, 최대 1~2개). video: 6초 기본. 6~7초 image 금지
-{media_instruction}
-- graph/overview → 항상 image. video의 en에 움직임 키워드 포함
-- motion: 카메라+피사체+환경 조합 (예: "slow zoom in on factory as smoke rises")
-- bg_type: photo/broll/graph/logo. overview는 라운드업 전용 (단일 형식 사용 금지)
-- ★ closing 슬라이드는 생성하지 마라 (채널 설정에 따라 시스템이 자동 처리)
+{_duration_media_block}
 
 ## STEP 3: 대본
 
@@ -1190,6 +1239,12 @@ brand 값은 "{brand}"로 설정해.
         script = result.get("script", {})
         if "sentences" not in script or "slides" not in script:
             raise RuntimeError(f"script에 필수 필드 누락: {list(script.keys())}")
+
+        # bg_media_type=single → visual_plan의 모든 media를 image로 강제
+        if bg_media_type == "single":
+            for vp in result.get("visual_plan", []):
+                if isinstance(vp, dict):
+                    vp["media"] = "image"
 
         news_date_str = script.get("news_date", "")
         if news_date_str:
@@ -1348,6 +1403,10 @@ Output ONLY a JSON array with exactly {prompt_count} items, no other text:
                                                "media": "image", "character": "none",
                                                "slide": slide_idx + 1})
                         prompt_idx += 1
+                # bg_media_type=single → 모든 media를 image로 강제
+                if bg_media_type == "single":
+                    for item in result:
+                        item["media"] = "image"
                 return result
 
         return []

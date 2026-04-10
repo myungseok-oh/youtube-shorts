@@ -27,8 +27,8 @@ class Agent(BaseAgent):
 - 핵심만 전달, 군더더기 없이
 - 문장 어미 다양: ~입니다 / ~인데요 / ~됩니다 / ~한 상황입니다
   - 같은 어미 2번 연속 금지
-- sentences에 채널명 언급 금지
-- 강조 키워드: <span class="hl">...</span>
+- sentences에 채널명 언급 금지, HTML 태그 금지 (순수 텍스트만)
+- 강조 키워드는 main/sub에만: <span class="hl">...</span>
 - 첫 슬라이드: category에 주제 태그, main 짧고 강렬
 - youtube_title: 40자 이내, 핵심 수치/키워드 포함
 - bg_type: photo | broll | graph | logo

@@ -568,9 +568,10 @@ def _image_style_instruction(image_style: str) -> str:
         return (
             "★ ALL slides must use PHOTOREALISTIC style.\n"
             "- Use keywords: realistic, sharp focus, professional photography, 8k resolution, photojournalism\n"
-            "- Depict real-world scenes: buildings, places, objects, landscapes\n"
+            "- Depict real-world scenes: objects, equipment, devices, materials, interiors, exteriors\n"
+            "- ★ VARIETY: Do NOT repeat the same subject category (e.g. building+building). Mix closeups, wide shots, macro, aerial\n"
             "- Do NOT use illustration, vector art, infographic, or cartoon styles\n"
-            "- Even for data/comparison slides, depict a real-world scene that represents the concept\n"
+            "- Even for data/comparison slides, depict a real-world object/scene that symbolizes the concept\n"
             "\n★★ OVERRIDE: 이 Image Style은 위 '프롬프트 지침'의 bg_type별 스타일 키워드보다 우선합니다.\n"
             "graph bg_type이더라도 반드시 photorealistic 키워드를 사용하세요.\n"
             "flat illustration, vector art, infographic 등 일러스트 키워드 사용 금지."

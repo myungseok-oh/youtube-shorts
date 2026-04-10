@@ -851,11 +851,21 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
         orig_sent_count = len(sentences)
         sentences = [s for s in sentences if s.get("text", "").strip()]
         if len(sentences) < orig_sent_count:
-            # 오디오 캐시 무효화 (인덱스 불일치 방지)
-            import glob as glob_mod
-            for f in glob_mod.glob(os.path.join(dirs["audio"], "audio_*")):
-                os.remove(f)
-            print(f"[runner] 빈 문장 {orig_sent_count - len(sentences)}개 제거, 오디오 캐시 삭제")
+            # voice_clips 존재 시 오디오 캐시 삭제 스킵 (voice_clips 모드는 audio_* 미사용)
+            _early_vc = False
+            try:
+                from pipeline.composer import load_compose_data
+                _early_vc = bool(load_compose_data(job_id).get("voice_clips"))
+            except Exception:
+                pass
+            if _early_vc:
+                print(f"[runner] 빈 문장 {orig_sent_count - len(sentences)}개 제거 (voice_clips 모드 — 오디오 보존)")
+            else:
+                # 오디오 캐시 무효화 (인덱스 불일치 방지)
+                import glob as glob_mod
+                for f in glob_mod.glob(os.path.join(dirs["audio"], "audio_*")):
+                    os.remove(f)
+                print(f"[runner] 빈 문장 {orig_sent_count - len(sentences)}개 제거, 오디오 캐시 삭제")
 
         # --- Step 3: slides (배경 자동 생성 + 슬라이드 렌더링) ---
         _update_step(db, job_id, "slides", "running")
@@ -1070,12 +1080,17 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
             # compose_data에서 슬라이드 오버라이드 로드
             _compose_ovr = {}
             _cd = {}
+            _cd_file_exists = os.path.exists(os.path.join(dirs["job"], "compose_data.json"))
             try:
                 from pipeline.composer import load_compose_data
                 _cd = load_compose_data(job_id)
                 _compose_ovr = _cd.get("slide_overrides", {})
             except Exception:
                 pass
+
+            # Composer 요소/자유텍스트 로드
+            _compose_elements = _cd.get("elements", [])
+            _compose_freetexts = _cd.get("freeTexts", [])
 
             # Composer 스타일 오버라이드 → 채널 config에 병합
             _style_ovr = _cd.get("style_overrides", {})
@@ -1085,9 +1100,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
 
             # Composer BGM 오버라이드
             _cd_bgm = _cd.get("bgm")
-            if _cd_bgm and _cd_bgm.get("path"):
+            if _cd_bgm and (_cd_bgm.get("file") or _cd_bgm.get("path")):
                 ch_config_pb["bgm_enabled"] = True
-                ch_config_pb["bgm_file"] = _cd_bgm["path"]
+                ch_config_pb["bgm_file"] = _cd_bgm.get("file") or _cd_bgm["path"].rsplit("/", 1)[-1]
                 if _cd_bgm.get("volume") is not None:
                     ch_config_pb["bgm_volume"] = _cd_bgm["volume"]
                 if _cd_bgm.get("start_time") is not None:
@@ -1129,7 +1144,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                           show_badge=_show_badge_b,
                                           channel_format=_ch_format_b,
                                           main_zone=ch_config_pb.get("slide_main_zone", "top"),
-                                          sub_zone=ch_config_pb.get("slide_sub_zone", "bottom"))
+                                          sub_zone=ch_config_pb.get("slide_sub_zone", "bottom"),
+                                          elements=_compose_elements,
+                                          free_texts=_compose_freetexts)
             bg_count = sum(1 for bg in bg_results if bg.get("path"))
             _update_step(db, job_id, "slides", "completed",
                          output_data={"files": slide_paths,
@@ -1162,9 +1179,29 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
             try:
                 _ch_cfg_render = json.loads(channel.get("config", "{}")) if channel else {}
 
+                # Composer 전문편집 모드: compose_data.json 파일이 실제 존재할 때만 BGM/SFX 오버라이드
+                if _cd_file_exists:
+                    if _cd_bgm and (_cd_bgm.get("file") or _cd_bgm.get("path")):
+                        _ch_cfg_render["bgm_enabled"] = True
+                        _ch_cfg_render["bgm_file"] = _cd_bgm.get("file") or _cd_bgm["path"].rsplit("/", 1)[-1]
+                        if _cd_bgm.get("volume") is not None:
+                            _ch_cfg_render["bgm_volume"] = _cd_bgm["volume"]
+                        if _cd_bgm.get("start_time") is not None:
+                            _ch_cfg_render["bgm_start"] = _cd_bgm["start_time"]
+                        if _cd_bgm.get("end_time") is not None:
+                            _ch_cfg_render["bgm_end"] = _cd_bgm["end_time"]
+                        if _cd_bgm.get("fade_in") is not None:
+                            _ch_cfg_render["bgm_fade_in"] = _cd_bgm["fade_in"]
+                        if _cd_bgm.get("fade_out") is not None:
+                            _ch_cfg_render["bgm_fade_out"] = _cd_bgm["fade_out"]
+                    # else: Composer에 BGM 없으면 채널 config 기본값 유지
+                    if _cd_sfx and len(_cd_sfx) > 0:
+                        pass  # Composer SFX는 apply_audio_mix에서 처리
+                    # else: Composer에 SFX 없으면 채널 config 기본값 유지
+
                 # 슬라이드간 나래이션 갭
                 _xfade_dur = ch_config_pb.get("crossfade_duration", 0.5) or 0.5
-                _pad_gap = max(0.3, _xfade_dur + 0.1)
+                _pad_gap = _calc_pad_gap(_xfade_dur, _cd.get("slide_transitions") if _cd else None)
                 _timeline_narr = {"slide_durations": slide_durations,
                                   "total_duration": total_duration}
                 _pad_slide_audio(merged_audio, _timeline_narr, gap=_pad_gap)
@@ -1299,10 +1336,16 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 raise
         else:
             # --- TTS 모드 ---
+            # Composer voice_clips 존재 → TTS 전체 스킵
+            _has_voice_clips = bool(_cd.get("voice_clips"))
             # TTS 사용 여부 확인 (채널 config)
             _tts_enabled = ch_config_pb.get("tts_enabled", True)
             _narr_slide_audio = None  # Composer 나레이션 파일 {slide_num: audio_path}
-            if _tts_enabled is False:
+            if _has_voice_clips:
+                _update_step(db, job_id, "tts", "skipped",
+                             output_data={"message": "Composer voice_clips 사용"})
+                print(f"[runner] Composer voice_clips 감지 → TTS 스킵")
+            elif _tts_enabled is False:
                 _update_step(db, job_id, "tts", "skipped",
                              output_data={"message": "TTS 비활성화 (무음 영상)"})
             else:
@@ -1363,7 +1406,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                         gemini_cfg = None
                         if tts_engine == "gemini-tts":
                             gemini_cfg = _build_gemini_tts_cfg(ch_config)
-                            if tts_voice_override:
+                            if tts_voice_override and not tts_voice_override.startswith("ko-KR-"):
                                 gemini_cfg["voice"] = tts_voice_override
                             if gemini_tts_style_override:
                                 gemini_cfg["style"] = gemini_tts_style_override
@@ -1428,7 +1471,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                     sl_gemini_cfg = _build_gemini_tts_cfg(ch_config)
                                     if sl_style:
                                         sl_gemini_cfg["style"] = sl_style
-                                    if sl_voice:
+                                    if sl_voice and not sl_voice.startswith("ko-KR-"):
                                         sl_gemini_cfg["voice"] = sl_voice
                                     sl_sovits_cfg = None
                                 elif sl_engine == "gpt-sovits":
@@ -1487,7 +1530,49 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
             try:
                 _ch_cfg_render = json.loads(channel.get("config", "{}")) if channel else {}
 
-                if _tts_enabled is False:
+                # Composer 전문편집 모드: compose_data.json 파일이 실제 존재할 때만 BGM/SFX 오버라이드
+                if _cd_file_exists:
+                    if _cd_bgm and (_cd_bgm.get("file") or _cd_bgm.get("path")):
+                        _ch_cfg_render["bgm_enabled"] = True
+                        _ch_cfg_render["bgm_file"] = _cd_bgm.get("file") or _cd_bgm["path"].rsplit("/", 1)[-1]
+                        if _cd_bgm.get("volume") is not None:
+                            _ch_cfg_render["bgm_volume"] = _cd_bgm["volume"]
+                        if _cd_bgm.get("start_time") is not None:
+                            _ch_cfg_render["bgm_start"] = _cd_bgm["start_time"]
+                        if _cd_bgm.get("end_time") is not None:
+                            _ch_cfg_render["bgm_end"] = _cd_bgm["end_time"]
+                        if _cd_bgm.get("fade_in") is not None:
+                            _ch_cfg_render["bgm_fade_in"] = _cd_bgm["fade_in"]
+                        if _cd_bgm.get("fade_out") is not None:
+                            _ch_cfg_render["bgm_fade_out"] = _cd_bgm["fade_out"]
+                    # else: Composer에 BGM 없으면 채널 config 기본값 유지
+                    if _cd_sfx and len(_cd_sfx) > 0:
+                        pass  # Composer SFX는 apply_audio_mix에서 처리
+                    # else: Composer에 SFX 없으면 채널 config 기본값 유지
+
+                if _has_voice_clips and _cd.get("slide_durations"):
+                    # --- Composer voice_clips 모드: slide_durations 사용, 무음 세그먼트 ---
+                    _compose_sd = _cd["slide_durations"]
+                    slide_durations = {}
+                    for _sn_str, _dur in _compose_sd.items():
+                        slide_durations[int(_sn_str)] = float(_dur)
+                    total_duration = sum(slide_durations.values())
+                    timeline = {"slide_durations": slide_durations,
+                                "total_duration": total_duration,
+                                "durations": []}
+                    # 무음 오디오 생성 (voice_clips가 나중에 교체)
+                    merged_audio = {}
+                    os.makedirs(dirs["segment"], exist_ok=True)
+                    for _s, _dur in slide_durations.items():
+                        _silent = os.path.join(dirs["segment"], f"silent_{_s}.wav")
+                        subprocess.run([
+                            config.ffmpeg(), "-y",
+                            "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono:d={_dur}",
+                            _silent
+                        ], capture_output=True)
+                        merged_audio[_s] = _silent
+                    print(f"[runner] Composer voice_clips 타임라인: {slide_durations}")
+                elif _tts_enabled is False:
                     # --- TTS 비활성화: 슬라이드별 고정 duration 무음 렌더 ---
                     content_slides = [s for s in slides_data if s.get("bg_type") != "closing"]
                     _default_dur = ch_config_pb.get("slide_duration", 5.0)
@@ -1526,7 +1611,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
 
                     # 슬라이드간 나래이션 갭
                     _xfade_dur = ch_config_pb.get("crossfade_duration", 0.5) or 0.5
-                    _pad_gap = max(0.3, _xfade_dur + 0.1)
+                    _pad_gap = _calc_pad_gap(_xfade_dur, _cd.get("slide_transitions") if _cd else None)
                     _pad_slide_audio(merged_audio, timeline, gap=_pad_gap)
                 else:
                     _nd = _ch_cfg_render.get("narration_delay")
@@ -1555,7 +1640,7 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
 
                     # 슬라이드간 나래이션 갭 (crossfade 겹침 방지용, 최소 crossfade 이상)
                     _xfade_dur = ch_config_pb.get("crossfade_duration", 0.5) or 0.5
-                    _pad_gap = max(0.3, _xfade_dur + 0.1)
+                    _pad_gap = _calc_pad_gap(_xfade_dur, _cd.get("slide_transitions") if _cd else None)
                     _pad_slide_audio(merged_audio, timeline, gap=_pad_gap)
 
                 # motion 힌트 + 슬라이드→bg 매핑 추출 (meta_json → image_prompts)
@@ -1667,17 +1752,18 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                     if os.path.isfile(narr_track_path):
                         _mixed = final_path.replace(".mp4", "_vc.mp4")
                         _narr_vol = (_cd.get("narr_volume", 100) or 100) / 100
+                        # voice_clips로 기존 오디오 교체 (amix 금지 — 원본에 이미 나레이션 포함)
                         cmd = [config.ffmpeg(), "-y",
                                "-i", final_path, "-i", narr_track_path,
                                "-filter_complex",
-                               f"[1:a]volume={_narr_vol:.2f}[narr];[0:a][narr]amix=inputs=2:duration=first[aout]",
-                               "-map", "0:v", "-map", "[aout]",
+                               f"[1:a]volume={_narr_vol:.2f}[narr]",
+                               "-map", "0:v", "-map", "[narr]",
                                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
                                _mixed]
                         subprocess.run(cmd, capture_output=True, timeout=180)
                         if os.path.isfile(_mixed):
                             os.replace(_mixed, final_path)
-                        print(f"[runner] voice_clips 믹싱 완료: {len(_voice_clips)}개 클립")
+                        print(f"[runner] voice_clips 오디오 교체 완료: {len(_voice_clips)}개 클립")
 
                     # subtitle_entries → SRT 번인
                     if _subtitle_entries and _is_subtitle_enabled(_ch_cfg_render, _cd):
@@ -2123,6 +2209,17 @@ def _strip_closing_audio(sentences: list, timeline: dict):
         print(f"[runner] 마지막 슬라이드 클로징 오디오 제거: {removed_dur:.1f}초 감소")
     except Exception as e:
         print(f"[runner] _strip_closing_audio 오류 (무시): {e}")
+
+
+def _calc_pad_gap(global_xfade: float, per_slide_transitions: list | None = None) -> float:
+    """패딩 gap 계산: global xfade와 per-slide transition 중 최대값 + 마진."""
+    max_xd = global_xfade
+    if per_slide_transitions:
+        for t in per_slide_transitions:
+            td = float(t.get("duration", global_xfade))
+            if td > max_xd:
+                max_xd = td
+    return max(0.3, max_xd + 0.3)
 
 
 def _pad_slide_audio(merged_audio: dict, timeline: dict, gap: float = 0.3):
@@ -2766,7 +2863,7 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
 
             # 슬라이드간 나래이션 갭 (crossfade 겹침 방지용)
             _xfade_dur_r = ch_config_fp.get("crossfade_duration", 0.5) or 0.5
-            _pad_gap_r = max(0.3, _xfade_dur_r + 0.1)
+            _pad_gap_r = _calc_pad_gap(_xfade_dur_r)
             _pad_slide_audio(merged_audio, timeline, gap=_pad_gap_r)
 
             # motion 힌트 추출 (image_prompts 변수에서 직접)

@@ -125,7 +125,7 @@ def _normalize_loudness(paths: list[str], target_lufs: float = -16.0):
         try:
             subprocess.run(
                 [ffmpeg, "-y", "-i", p,
-                 "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11",
+                 "-af", f"silenceremove=start_periods=1:start_silence=0.05:start_threshold=-40dB,loudnorm=I={target_lufs}:TP=-1.5:LRA=11",
                  "-ar", "24000", "-ac", "1",
                  tmp],
                 capture_output=True, timeout=30,
@@ -180,6 +180,21 @@ def _generate_google_cloud(sentences: list[dict], audio_dir: str,
     return paths
 
 
+def _build_gemini_prompt(text: str, style: str, idx: int, total: int) -> str:
+    """Gemini TTS 프롬프트 빌드 — 일관된 톤 유지를 위한 컨텍스트 포함."""
+    parts = []
+    # 스타일 지시
+    if style:
+        parts.append(f"[Voice style: {style}]")
+    # 일관성 앵커: 연속 나레이션임을 명시하여 톤 편차 최소화
+    parts.append(
+        f"[Segment {idx}/{total} of a continuous narration. "
+        f"Maintain exactly the same pace, pitch, energy and tone as every other segment.]"
+    )
+    parts.append(text)
+    return "\n".join(parts)
+
+
 def _generate_gemini(sentences: list[dict], audio_dir: str,
                      gemini_cfg: dict) -> list[str]:
     """Gemini TTS API로 음성 생성 (Flash TTS 무료 티어)."""
@@ -196,11 +211,10 @@ def _generate_gemini(sentences: list[dict], audio_dir: str,
 
     client = genai.Client(api_key=api_key)
 
+    total = len(sentences)
     paths = []
     for i, item in enumerate(sentences):
-        text = item["text"]
-        if style:
-            text = f"{style}: {text}"
+        text = _build_gemini_prompt(item["text"], style, i + 1, total)
 
         wav_path = os.path.join(audio_dir, f"audio_{i + 1}.wav")
         mp3_path = os.path.join(audio_dir, f"audio_{i + 1}.mp3")

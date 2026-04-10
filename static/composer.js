@@ -24,6 +24,15 @@ async function initComposer() {
   composeState.sfx_markers = composeState.sfx_markers || [];
   composeState.bgm = composeState.bgm || null;
   composeState.slide_overrides = composeState.slide_overrides || {};
+  // 오버레이 기본 숨김: slide_overrides에 hidden 설정이 없는 슬라이드는 hidden=true
+  if (composerData.slides) {
+    for (const sl of composerData.slides) {
+      if (!composeState.slide_overrides[sl.num]) composeState.slide_overrides[sl.num] = {};
+      if (composeState.slide_overrides[sl.num].hidden === undefined) {
+        composeState.slide_overrides[sl.num].hidden = true;
+      }
+    }
+  }
   composeState.narr_file_map = composeState.narr_file_map || {};
   composeState.style_overrides = composeState.style_overrides || {};
   composeState.subtitle_overrides = composeState.subtitle_overrides || {};
@@ -57,6 +66,17 @@ async function initComposer() {
     composeState.transitions = composeState.transitions || {};
   }
 
+  // slide_durations를 서버 slide_audio 기준으로 항상 동기화
+  _autoUpdateDurations();
+  // voice_clips 위치를 slide_durations 기준으로 재정렬
+  if (composeState.voice_clips && composeState.voice_clips.length > 0) {
+    _recalcClipPositions();
+  }
+
+  // voice_clips 오디오 파일 프리로드 (새로고침 후 재생 지연 방지)
+  _preloadVoiceClips();
+
+  _tlInit();  // Canvas timeline 초기화
   renderTimeline();
   renderTabMedia();
   renderTabSfx();
@@ -66,6 +86,52 @@ async function initComposer() {
   }
   setupSfxDrop();
   setupVoiceClipDrop();
+}
+
+let _preloadedAudios = [];
+function _preloadVoiceClips() {
+  _preloadedAudios.forEach(a => { a.src = ""; });
+  _preloadedAudios = [];
+  (composeState.voice_clips || []).forEach(clip => {
+    if (clip.path) {
+      const a = new Audio();
+      a.preload = "auto";
+      a.src = clip.path;
+      _preloadedAudios.push(a);
+    }
+  });
+}
+
+// ─── 클립/자막 시간 재계산 ───
+
+function _recalcClipPositions() {
+  /** voice_clips와 subtitle_entries의 start_time/end_time을 슬라이드 순서에 맞게 재계산.
+   *  각 슬라이드 내 클립은 기존 순서를 유지하되, 슬라이드 경계에 맞춰 정렬. */
+  const slides = getOrderedSlides();
+  let cumTime = 0;
+  slides.forEach(sl => {
+    const slideDur = getSlideDuration(sl.num);
+    // 이 슬라이드에 속한 클립 (기존 순서 유지)
+    const clips = (composeState.voice_clips || []).filter(c => c.slide_num === sl.num);
+    const subs = (composeState.subtitle_entries || []).filter(e => e.slide_num === sl.num);
+    clips.sort((a, b) => a.start_time - b.start_time);
+    subs.sort((a, b) => a.start_time - b.start_time);
+
+    let clipTime = cumTime;
+    clips.forEach(clip => {
+      clip.start_time = clipTime;
+      const matchSub = subs.find(s => s.slide_num === sl.num && !s._matched);
+      if (matchSub) {
+        matchSub.start_time = clipTime;
+        matchSub.end_time = clipTime + clip.duration;
+        matchSub._matched = true;
+      }
+      clipTime += clip.duration;
+    });
+    cumTime += slideDur;
+  });
+  // cleanup temp flags
+  (composeState.subtitle_entries || []).forEach(s => delete s._matched);
 }
 
 // ─── Migration: narr_file_map / slide_audio → voice_clips + subtitle_entries ───
@@ -85,33 +151,31 @@ function _migrateToVoiceClips() {
     const sentences = sl.sentences || [];
 
     if (audioFiles.length > 0) {
-      // 슬라이드의 모든 오디오 파일 → 개별 voice_clip
       let clipTime = cumTime;
       audioFiles.forEach((af, ai) => {
+        const dur2 = af.duration || 2.0;
         clips.push({
           id: `vc_${sl.num}_${ai}_${Date.now()}`,
           file: af.file,
           path: af.path,
-          start_time: Math.round(clipTime * 100) / 100,
-          duration: af.duration || 2.0,
+          start_time: clipTime,
+          duration: dur2,
           volume: composeState.narr_volume !== undefined ? composeState.narr_volume : 100,
           slide_num: sl.num,
         });
-        // 대응하는 자막
-        const sentIdx = af.sentence_idx !== undefined ? af.sentence_idx : ai;
-        const sent = sentences[sentIdx];
-        if (sent && sent.text) {
+        const subText = af.text || (sentences[ai] && sentences[ai].text) || "";
+        if (subText) {
           subs.push({
             id: `sub_${sl.num}_${ai}_${Date.now()}`,
-            text: sent.text,
-            start_time: Math.round(clipTime * 100) / 100,
-            end_time: Math.round((clipTime + (af.duration || 2.0)) * 100) / 100,
+            text: subText,
+            start_time: clipTime,
+            end_time: clipTime + dur2,
+            slide_num: sl.num,
           });
         }
-        clipTime += af.duration || 2.0;
+        clipTime += dur2;
       });
     } else if (sentences.length > 0) {
-      // 오디오 없지만 문장은 있는 경우 → 자막만
       const sentDur = dur / sentences.length;
       let sentTime = cumTime;
       sentences.forEach((sent, si) => {
@@ -119,8 +183,9 @@ function _migrateToVoiceClips() {
           subs.push({
             id: `sub_${sl.num}_${si}_${Date.now()}`,
             text: sent.text,
-            start_time: Math.round(sentTime * 100) / 100,
-            end_time: Math.round((sentTime + sentDur) * 100) / 100,
+            start_time: sentTime,
+            end_time: sentTime + sentDur,
+            slide_num: sl.num,
           });
         }
         sentTime += sentDur;
@@ -140,6 +205,1222 @@ function _migrateToVoiceClips() {
 }
 
 // ─── Timeline ───
+
+// ══════════════════════════════════════════════════════════
+// ─── TL: Canvas-based Timeline ───
+// ══════════════════════════════════════════════════════════
+
+const TL = {
+  canvas: null, ctx: null, dpr: 1,
+  w: 0, h: 0,               // CSS px
+  needsRedraw: true,
+  hitRegions: [],            // [{type, rect:{x,y,w,h}, data}]
+  thumbCache: {},            // slideNum → Image
+  thumbLoading: new Set(),
+  textWidthCache: {},        // font+text → width
+  // layout
+  rulerH: 22,
+  trackFlex: [5, 1, 1, 1, 1, 1],  // slides, transition, subtitle, narration, sfx, bgm
+  trackY: [],   // computed y offsets
+  trackH: [],   // computed heights
+  // colors
+  BG: '#1a1c24',
+  RULER_BG: '#1e2028',
+  RULER_TEXT: '#6b7280',
+  RULER_LINE: '#3a3d48',
+  SLIDE_BG: '#22242e',
+  SLIDE_BORDER: '#2a2d38',
+  SLIDE_ACTIVE_BORDER: '#6366f1',
+  PLAYHEAD: '#f97316',
+  SEP: '#22242e',
+  TYPE_COLORS: { photo:'#3b82f6', broll:'#8b5cf6', graph:'#f59e0b', logo:'#10b981', closing:'#6b7280' },
+  TYPE_LABELS: { photo:'사진', broll:'B롤', graph:'그래프', logo:'로고', closing:'클로징' },
+  TR_BG: '#1e1e2e', TR_BORDER: '#2a2d38', TR_ACTIVE: '#1e2245', TR_ACTIVE_BORDER: '#4338ca',
+  SFX_BG: 'rgba(99,102,241,0.2)', SFX_BORDER: 'rgba(99,102,241,0.5)', SFX_LABEL: '#818cf8',
+  NARR_BG: 'rgba(20,184,166,0.25)', NARR_BORDER: 'rgba(20,184,166,0.6)', NARR_LABEL: '#5eead4',
+  SUB_BG: 'rgba(96,165,250,0.2)', SUB_BORDER: 'rgba(96,165,250,0.5)', SUB_LABEL: '#93c5fd',
+  BGM_BG: 'rgba(52,211,153,0.2)', BGM_BORDER: 'rgba(52,211,153,0.5)', BGM_LABEL: '#34d399',
+  // drag state
+  dragState: null, // {type, data, startX, startY, origData}
+  hoverRegion: null,
+  // drop highlight
+  dropTrack: null, // 'sfx' | 'narration'
+};
+
+function _tlInit() {
+  TL.canvas = document.getElementById('tl-canvas');
+  if (!TL.canvas) return;
+  TL.ctx = TL.canvas.getContext('2d');
+  TL.dpr = window.devicePixelRatio || 1;
+
+  const ro = new ResizeObserver(() => {
+    _tlResize();
+    TL.needsRedraw = true;
+  });
+  ro.observe(TL.canvas.parentElement);
+  _tlResize();
+
+  // mouse events on canvas
+  TL.canvas.addEventListener('mousedown', _tlOnMouseDown);
+  TL.canvas.addEventListener('mousemove', _tlOnMouseMove);
+  TL.canvas.addEventListener('dblclick', _tlOnDblClick);
+  TL.canvas.addEventListener('contextmenu', _tlOnContextMenu);
+
+  // drag-drop for SFX/narration
+  const overlay = document.getElementById('tl-drop-overlay');
+  const timeline = document.getElementById('timeline');
+  if (timeline) {
+    timeline.addEventListener('dragover', (e) => {
+      if (e.dataTransfer.types.includes('sfx_file') || e.dataTransfer.types.includes('narr_file')) {
+        e.preventDefault();
+        overlay.classList.add('active');
+        TL.dropTrack = e.dataTransfer.types.includes('sfx_file') ? 'sfx' : 'narration';
+        TL.needsRedraw = true;
+      }
+    });
+    timeline.addEventListener('dragleave', (e) => {
+      if (!timeline.contains(e.relatedTarget)) {
+        overlay.classList.remove('active');
+        TL.dropTrack = null;
+        TL.needsRedraw = true;
+      }
+    });
+    timeline.addEventListener('drop', (e) => {
+      overlay.classList.remove('active');
+      TL.dropTrack = null;
+      TL.needsRedraw = true;
+      if (e.dataTransfer.types.includes('sfx_file')) {
+        e.preventDefault();
+        _tlHandleSfxDrop(e);
+      } else if (e.dataTransfer.types.includes('narr_file')) {
+        e.preventDefault();
+        _tlHandleNarrDrop(e);
+      }
+    });
+  }
+
+  _tlRenderLoop();
+}
+
+function _tlResize() {
+  if (!TL.canvas) return;
+  const parent = TL.canvas.parentElement;
+  TL.w = parent.clientWidth;
+  TL.h = parent.clientHeight;
+  TL.canvas.width = Math.round(TL.w * TL.dpr);
+  TL.canvas.height = Math.round(TL.h * TL.dpr);
+  TL.canvas.style.width = TL.w + 'px';
+  TL.canvas.style.height = TL.h + 'px';
+  _tlComputeLayout();
+}
+
+function _tlComputeLayout() {
+  const bodyH = TL.h - TL.rulerH;
+  const totalFlex = TL.trackFlex.reduce((a, b) => a + b, 0);
+  TL.trackY = [];
+  TL.trackH = [];
+  let y = TL.rulerH;
+  for (let i = 0; i < TL.trackFlex.length; i++) {
+    const h = Math.round((TL.trackFlex[i] / totalFlex) * bodyH);
+    TL.trackY.push(y);
+    TL.trackH.push(h);
+    y += h;
+  }
+}
+
+function _tlRenderLoop() {
+  if (TL.needsRedraw || _previewing) {
+    TL.needsRedraw = false;
+    _tlDraw();
+  }
+  requestAnimationFrame(_tlRenderLoop);
+}
+
+// ─── Master Draw ───
+function _tlDraw() {
+  const ctx = TL.ctx;
+  if (!ctx) return;
+  const dpr = TL.dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // clear
+  ctx.fillStyle = TL.BG;
+  ctx.fillRect(0, 0, TL.w, TL.h);
+
+  TL.hitRegions = [];
+
+  _tlDrawRuler(ctx);
+  _tlDrawSeparators(ctx);
+  _tlDrawSlides(ctx);
+  _tlDrawTransitions(ctx);
+  _tlDrawSubtitles(ctx);
+  _tlDrawVoiceClips(ctx);
+  _tlDrawSfx(ctx);
+  _tlDrawBgm(ctx);
+  _tlDrawDropHighlight(ctx);
+  _tlDrawPlayhead(ctx);
+}
+
+// ─── Ruler ───
+function _tlDrawRuler(ctx) {
+  ctx.fillStyle = TL.RULER_BG;
+  ctx.fillRect(0, 0, TL.w, TL.rulerH);
+  // bottom border
+  ctx.fillStyle = TL.SLIDE_BORDER;
+  ctx.fillRect(0, TL.rulerH - 1, TL.w, 1);
+
+  const total = getTotalDuration() || 1;
+  const interval = total <= 10 ? 1 : total <= 30 ? 2 : total <= 60 ? 5 : 10;
+
+  ctx.font = '8px monospace';
+  ctx.fillStyle = TL.RULER_TEXT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let s = 0; s <= total; s += interval) {
+    const x = (s / total) * TL.w;
+    ctx.fillText(_fmtDur(s), x, 4);
+    // tick
+    ctx.fillStyle = TL.RULER_LINE;
+    ctx.fillRect(x, TL.rulerH - 5, 1, 4);
+    ctx.fillStyle = TL.RULER_TEXT;
+  }
+}
+
+// ─── Separators ───
+function _tlDrawSeparators(ctx) {
+  ctx.fillStyle = TL.SEP;
+  for (let i = 1; i < TL.trackY.length; i++) {
+    ctx.fillRect(0, TL.trackY[i], TL.w, 1);
+  }
+}
+
+// ─── Slides Track ───
+function _tlDrawSlides(ctx) {
+  const slides = getOrderedSlides();
+  if (slides.length === 0) return;
+  const totalDur = getTotalDuration() || 1;
+  const y = TL.trackY[0];
+  const h = TL.trackH[0];
+  const pad = 2;
+
+  let cumTime = 0;
+  slides.forEach((sl, idx) => {
+    const dur = getSlideDuration(sl.num);
+    const x = Math.round((cumTime / totalDur) * TL.w);
+    const w = Math.round((dur / totalDur) * TL.w);
+    const blockX = x + 1;
+    const blockY = y + pad;
+    const blockW = Math.max(w - 2, 4);
+    const blockH = h - pad * 2;
+
+    const isActive = idx === selectedSlide;
+
+    // block background
+    ctx.fillStyle = TL.SLIDE_BG;
+    _tlRoundRect(ctx, blockX, blockY, blockW, blockH, 4);
+    ctx.fill();
+
+    // thumbnail
+    const thumb = TL.thumbCache[sl.num];
+    if (thumb && thumb.complete && thumb.naturalWidth > 0) {
+      ctx.save();
+      ctx.beginPath();
+      _tlRoundRect(ctx, blockX, blockY, blockW, blockH, 4);
+      ctx.clip();
+      // cover fit
+      const imgAspect = thumb.naturalWidth / thumb.naturalHeight;
+      const boxAspect = blockW / blockH;
+      let sx = 0, sy = 0, sw = thumb.naturalWidth, sh = thumb.naturalHeight;
+      if (imgAspect > boxAspect) {
+        sw = Math.round(sh * boxAspect);
+        sx = Math.round((thumb.naturalWidth - sw) / 2);
+      } else {
+        sh = Math.round(sw / boxAspect);
+        sy = Math.round((thumb.naturalHeight - sh) / 2);
+      }
+      ctx.globalAlpha = 0.7;
+      ctx.drawImage(thumb, sx, sy, sw, sh, blockX, blockY, blockW, blockH);
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+
+    // border
+    ctx.strokeStyle = isActive ? TL.SLIDE_ACTIVE_BORDER : TL.SLIDE_BORDER;
+    ctx.lineWidth = isActive ? 2 : 1;
+    ctx.beginPath();
+    _tlRoundRect(ctx, blockX, blockY, blockW, blockH, 4);
+    ctx.stroke();
+
+    // type color bar (top 3px)
+    const typeColor = TL.TYPE_COLORS[sl.bg_type] || '#3b82f6';
+    ctx.fillStyle = typeColor;
+    ctx.fillRect(blockX, blockY, blockW, 3);
+
+    // slide number (top-left)
+    if (blockW > 30) {
+      ctx.font = 'bold 9px sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.shadowColor = 'rgba(0,0,0,0.8)';
+      ctx.shadowBlur = 3;
+      ctx.fillText(String(sl.num), blockX + 5, blockY + 6);
+      ctx.shadowBlur = 0;
+
+      // type label
+      const typeLabel = TL.TYPE_LABELS[sl.bg_type] || sl.bg_type;
+      ctx.fillStyle = typeColor;
+      ctx.font = 'bold 7px sans-serif';
+      const numW = _tlMeasureText(ctx, String(sl.num), 'bold 9px sans-serif');
+      ctx.fillText(typeLabel, blockX + 5 + numW + 4, blockY + 7);
+    }
+
+    // narr duration badge
+    const slideAudioFiles = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
+    const narrDur = slideAudioFiles.reduce((s, a) => s + (a.duration || 0), 0);
+    if (narrDur > 0 && blockW > 60) {
+      const badgeText = '\u266B ' + narrDur.toFixed(1) + 's';
+      ctx.font = '8px sans-serif';
+      const bw = _tlMeasureText(ctx, badgeText, '8px sans-serif') + 6;
+      const bx = blockX + 5 + _tlMeasureText(ctx, String(sl.num), 'bold 9px sans-serif') + 4 +
+                 _tlMeasureText(ctx, TL.TYPE_LABELS[sl.bg_type] || sl.bg_type || '', 'bold 7px sans-serif') + 6;
+      ctx.fillStyle = '#064e3b';
+      _tlRoundRect(ctx, bx, blockY + 5, bw, 12, 2);
+      ctx.fill();
+      ctx.fillStyle = '#34d399';
+      ctx.textBaseline = 'top';
+      ctx.fillText(badgeText, bx + 3, blockY + 6);
+    }
+
+    // bottom gradient
+    const grad = ctx.createLinearGradient(0, blockY + blockH - 18, 0, blockY + blockH);
+    grad.addColorStop(0, 'transparent');
+    grad.addColorStop(1, 'rgba(0,0,0,0.85)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    _tlRoundRect(ctx, blockX, blockY + blockH - 18, blockW, 18, 0);
+    ctx.fill();
+
+    // duration (bottom-right)
+    if (blockW > 35) {
+      ctx.font = '8px monospace';
+      ctx.fillStyle = '#9ca3af';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(dur.toFixed(1) + 's', blockX + blockW - 5, blockY + blockH - 3);
+    }
+
+    // motion badge (bottom-left)
+    const hasBg = !!sl.bg_url;
+    const isVideo = hasBg && (sl.bg_url.includes('.mp4') || sl.bg_url.includes('.gif'));
+    if (!isVideo && sl.bg_type !== 'closing' && blockW > 50) {
+      const motion = _getSlideMotion(sl.num);
+      const motionLabel = MOTION_LABELS[motion] || motion;
+      ctx.font = 'bold 7px sans-serif';
+      const mw = _tlMeasureText(ctx, motionLabel, 'bold 7px sans-serif') + 8;
+      ctx.fillStyle = 'rgba(16,185,129,0.15)';
+      _tlRoundRect(ctx, blockX + 4, blockY + blockH - 15, mw, 12, 3);
+      ctx.fill();
+      ctx.fillStyle = '#34d399';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(motionLabel, blockX + 8, blockY + blockH - 9);
+      // hit region for motion badge
+      TL.hitRegions.push({ type: 'motion_badge', rect: { x: blockX + 4, y: blockY + blockH - 15, w: mw, h: 12 }, data: { slideNum: sl.num, idx } });
+    }
+
+    // hit region for slide block
+    TL.hitRegions.push({ type: 'slide', rect: { x: blockX, y: blockY, w: blockW, h: blockH }, data: { slideNum: sl.num, idx, dur } });
+    // hit region for resize (right 12px)
+    TL.hitRegions.push({ type: 'slide_resize', rect: { x: blockX + blockW - 12, y: blockY, w: 12, h: blockH }, data: { slideNum: sl.num, idx } });
+
+    cumTime += dur;
+  });
+}
+
+// ─── Transitions Track ───
+function _tlDrawTransitions(ctx) {
+  const slides = getOrderedSlides();
+  if (slides.length < 2) return;
+  const totalDur = getTotalDuration() || 1;
+  const y = TL.trackY[1];
+  const h = TL.trackH[1];
+  const btnW = 24;
+
+  let cumTime = 0;
+  slides.forEach((sl, idx) => {
+    const dur = getSlideDuration(sl.num);
+    if (idx > 0) {
+      const prevSl = slides[idx - 1];
+      const tr = _getTransition(prevSl.num, sl.num);
+      const hasTr = tr.duration > 0;
+      const x = Math.round((cumTime / totalDur) * TL.w) - btnW / 2;
+      const by = y + 2;
+      const bh = h - 4;
+
+      ctx.fillStyle = hasTr ? TL.TR_ACTIVE : TL.TR_BG;
+      _tlRoundRect(ctx, x, by, btnW, bh, 3);
+      ctx.fill();
+      ctx.strokeStyle = hasTr ? TL.TR_ACTIVE_BORDER : TL.TR_BORDER;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      _tlRoundRect(ctx, x, by, btnW, bh, 3);
+      ctx.stroke();
+
+      if (hasTr) {
+        const label = tr.effect.replace('wipeleft', '\u2190').replace('wiperight', '\u2192')
+          .replace('fade', 'F').replace('dissolve', 'D').replace('none', '-');
+        ctx.font = '7px sans-serif';
+        ctx.fillStyle = '#a5b4fc';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, x + btnW / 2, by + bh / 2);
+      } else {
+        ctx.font = '10px sans-serif';
+        ctx.fillStyle = '#4b5563';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('+', x + btnW / 2, by + bh / 2);
+      }
+
+      TL.hitRegions.push({ type: 'transition', rect: { x, y: by, w: btnW, h: bh }, data: { fromNum: prevSl.num, toNum: sl.num, idx, hasTr } });
+    }
+    cumTime += dur;
+  });
+}
+
+// ─── Subtitles Track ───
+function _tlDrawSubtitles(ctx) {
+  const entries = composeState.subtitle_entries || [];
+  const total = getTotalDuration() || 1;
+  const y = TL.trackY[2];
+  const h = TL.trackH[2];
+  const pad = 2;
+
+  if (entries.length === 0) {
+    ctx.font = '8px sans-serif';
+    ctx.fillStyle = '#4b5563';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('\uC790\uB9C9 \uC5C6\uC74C', TL.w / 2, y + h / 2);
+    return;
+  }
+
+  entries.forEach((entry, ei) => {
+    const x = Math.round((entry.start_time / total) * TL.w);
+    const w = Math.max(Math.round(((entry.end_time - entry.start_time) / total) * TL.w), 8);
+    const by = y + pad;
+    const bh = h - pad * 2;
+
+    ctx.fillStyle = TL.SUB_BG;
+    _tlRoundRect(ctx, x, by, w, bh, 3);
+    ctx.fill();
+    ctx.strokeStyle = TL.SUB_BORDER;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    _tlRoundRect(ctx, x, by, w, bh, 3);
+    ctx.stroke();
+
+    // label
+    if (w > 20) {
+      const truncated = entry.text.length > 15 ? entry.text.slice(0, 15) + '..' : entry.text;
+      ctx.font = 'bold 8px sans-serif';
+      ctx.fillStyle = TL.SUB_LABEL;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x + 4, by, w - 8, bh);
+      ctx.clip();
+      ctx.fillText(truncated, x + 4, by + bh / 2);
+      ctx.restore();
+    }
+
+    // handles
+    const handleW = 5;
+    TL.hitRegions.push({ type: 'sub_handle_l', rect: { x: x, y: by, w: handleW, h: bh }, data: { entry, ei } });
+    TL.hitRegions.push({ type: 'sub_handle_r', rect: { x: x + w - handleW, y: by, w: handleW, h: bh }, data: { entry, ei } });
+    TL.hitRegions.push({ type: 'subtitle', rect: { x, y: by, w, h: bh }, data: { entry, ei } });
+  });
+}
+
+// ─── Voice Clips Track ───
+function _tlDrawVoiceClips(ctx) {
+  const clips = composeState.voice_clips || [];
+  const total = getTotalDuration() || 1;
+  const y = TL.trackY[3];
+  const h = TL.trackH[3];
+  const pad = 2;
+
+  clips.forEach((clip, ci) => {
+    const x = Math.round((clip.start_time / total) * TL.w);
+    const w = Math.max(Math.round((clip.duration / total) * TL.w), 8);
+    const by = y + pad;
+    const bh = h - pad * 2;
+
+    ctx.fillStyle = TL.NARR_BG;
+    _tlRoundRect(ctx, x, by, w, bh, 3);
+    ctx.fill();
+    ctx.strokeStyle = TL.NARR_BORDER;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    _tlRoundRect(ctx, x, by, w, bh, 3);
+    ctx.stroke();
+
+    if (w > 20) {
+      const name = clip.file.replace(/\.[^.]+$/, '');
+      const label = name + ' ' + clip.duration.toFixed(1) + 's';
+      ctx.font = 'bold 8px sans-serif';
+      ctx.fillStyle = TL.NARR_LABEL;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x + 4, by, w - 8, bh);
+      ctx.clip();
+      ctx.fillText('\uD83C\uDFA4 ' + label, x + 4, by + bh / 2);
+      ctx.restore();
+    }
+
+    TL.hitRegions.push({ type: 'voice_clip', rect: { x, y: by, w, h: bh }, data: { clip, ci } });
+  });
+}
+
+// ─── SFX Track ───
+function _tlDrawSfx(ctx) {
+  const markers = composeState.sfx_markers || [];
+  const total = getTotalDuration() || 1;
+  const y = TL.trackY[4];
+  const h = TL.trackH[4];
+  const pad = 2;
+
+  markers.forEach((m, mi) => {
+    const sfxInfo = (composerData.sfx_list || []).find(s => s.file === m.file);
+    const sfxFullDur = sfxInfo ? sfxInfo.duration : 1;
+    const sfxDur = m.duration !== undefined ? m.duration : sfxFullDur;
+    const x = Math.round((m.time / total) * TL.w);
+    const w = Math.max(Math.round((sfxDur / total) * TL.w), 8);
+    const by = y + pad;
+    const bh = h - pad * 2;
+
+    ctx.fillStyle = TL.SFX_BG;
+    _tlRoundRect(ctx, x, by, w, bh, 3);
+    ctx.fill();
+    ctx.strokeStyle = TL.SFX_BORDER;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    _tlRoundRect(ctx, x, by, w, bh, 3);
+    ctx.stroke();
+
+    if (w > 16) {
+      const name = m.file.replace(/\.[^.]+$/, '');
+      ctx.font = 'bold 8px sans-serif';
+      ctx.fillStyle = TL.SFX_LABEL;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x + 2, by, w - 4, bh);
+      ctx.clip();
+      ctx.fillText('\uD83D\uDD0A ' + name, x + 4, by + bh / 2);
+      ctx.restore();
+    }
+
+    // handles + body
+    const handleW = 5;
+    TL.hitRegions.push({ type: 'sfx_handle_l', rect: { x, y: by, w: handleW, h: bh }, data: { marker: m, mi, sfxDur } });
+    TL.hitRegions.push({ type: 'sfx_handle_r', rect: { x: x + w - handleW, y: by, w: handleW, h: bh }, data: { marker: m, mi, sfxDur } });
+    TL.hitRegions.push({ type: 'sfx', rect: { x, y: by, w, h: bh }, data: { marker: m, mi } });
+  });
+}
+
+// ─── BGM Track ───
+function _tlDrawBgm(ctx) {
+  const bgm = composeState.bgm;
+  if (!bgm || !bgm.file) return;
+  const total = getTotalDuration() || 1;
+  const y = TL.trackY[5];
+  const h = TL.trackH[5];
+  const pad = 2;
+
+  const x = Math.round((bgm.start_time / total) * TL.w);
+  const endX = Math.round((bgm.end_time / total) * TL.w);
+  const w = Math.max(endX - x, 8);
+  const by = y + pad;
+  const bh = h - pad * 2;
+
+  ctx.fillStyle = TL.BGM_BG;
+  _tlRoundRect(ctx, x, by, w, bh, 3);
+  ctx.fill();
+
+  // fade in gradient
+  const fi = bgm.fade_in || 0;
+  if (fi > 0) {
+    const fiW = Math.min(Math.round((fi / (bgm.end_time - bgm.start_time)) * w), w / 2);
+    const grad = ctx.createLinearGradient(x, 0, x + fiW, 0);
+    grad.addColorStop(0, 'rgba(26,28,36,0.8)');
+    grad.addColorStop(1, 'transparent');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, by, fiW, bh);
+  }
+
+  // fade out gradient
+  const fo = bgm.fade_out || 0;
+  if (fo > 0) {
+    const foW = Math.min(Math.round((fo / (bgm.end_time - bgm.start_time)) * w), w / 2);
+    const grad = ctx.createLinearGradient(x + w - foW, 0, x + w, 0);
+    grad.addColorStop(0, 'transparent');
+    grad.addColorStop(1, 'rgba(26,28,36,0.8)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x + w - foW, by, foW, bh);
+  }
+
+  ctx.strokeStyle = TL.BGM_BORDER;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  _tlRoundRect(ctx, x, by, w, bh, 3);
+  ctx.stroke();
+
+  // label
+  if (w > 30) {
+    const name = bgm.file.replace(/\.[^.]+$/, '');
+    ctx.font = 'bold 8px sans-serif';
+    ctx.fillStyle = TL.BGM_LABEL;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 4, by, w - 8, bh);
+    ctx.clip();
+    ctx.fillText('\u266B ' + name, x + 6, by + bh / 2);
+    ctx.restore();
+  }
+
+  const handleW = 6;
+  TL.hitRegions.push({ type: 'bgm_handle_l', rect: { x, y: by, w: handleW, h: bh }, data: {} });
+  TL.hitRegions.push({ type: 'bgm_handle_r', rect: { x: x + w - handleW, y: by, w: handleW, h: bh }, data: {} });
+  TL.hitRegions.push({ type: 'bgm', rect: { x, y: by, w, h: bh }, data: {} });
+}
+
+// ─── Drop Highlight ───
+function _tlDrawDropHighlight(ctx) {
+  if (!TL.dropTrack) return;
+  const trackIdx = TL.dropTrack === 'sfx' ? 4 : 3;
+  const y = TL.trackY[trackIdx];
+  const h = TL.trackH[trackIdx];
+  ctx.fillStyle = TL.dropTrack === 'sfx' ? 'rgba(99,102,241,0.08)' : 'rgba(20,184,166,0.08)';
+  ctx.fillRect(0, y, TL.w, h);
+}
+
+// ─── Playhead ───
+function _tlDrawPlayhead(ctx) {
+  const x = Math.round(_playheadPos * TL.w);
+  ctx.fillStyle = TL.PLAYHEAD;
+  ctx.fillRect(x - 1, 0, 2, TL.h);
+
+  // triangle at top
+  ctx.beginPath();
+  ctx.moveTo(x - 6, 0);
+  ctx.lineTo(x + 6, 0);
+  ctx.lineTo(x, 8);
+  ctx.closePath();
+  ctx.fill();
+}
+
+// ─── Thumb preload ───
+function _tlPreloadThumbs() {
+  const slides = composerData?.slides || [];
+  slides.forEach(sl => {
+    if (sl.bg_url && !TL.thumbCache[sl.num] && !TL.thumbLoading.has(sl.num) &&
+        !sl.bg_url.includes('.mp4') && !sl.bg_url.includes('.gif')) {
+      TL.thumbLoading.add(sl.num);
+      const img = new Image();
+      img.onload = () => {
+        TL.thumbCache[sl.num] = img;
+        TL.thumbLoading.delete(sl.num);
+        TL.needsRedraw = true;
+      };
+      img.onerror = () => { TL.thumbLoading.delete(sl.num); };
+      img.src = sl.bg_url;
+    }
+  });
+}
+
+// ─── Hit test ───
+function _tlHitTest(mx, my) {
+  // search in reverse order (last drawn = on top)
+  for (let i = TL.hitRegions.length - 1; i >= 0; i--) {
+    const r = TL.hitRegions[i];
+    const { x, y, w, h } = r.rect;
+    if (mx >= x && mx <= x + w && my >= y && my <= y + h) return r;
+  }
+  return null;
+}
+
+// ─── Mouse Events ───
+function _tlCanvasXY(e) {
+  const rect = TL.canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function _tlOnMouseDown(e) {
+  const { x, y } = _tlCanvasXY(e);
+  const hit = _tlHitTest(x, y);
+
+  // Motion badge click
+  if (hit && hit.type === 'motion_badge') {
+    e.preventDefault(); e.stopPropagation();
+    _showMotionDropdownCanvas(e.clientX, e.clientY, hit.data.slideNum);
+    return;
+  }
+
+  // Transition click
+  if (hit && hit.type === 'transition') {
+    e.preventDefault(); e.stopPropagation();
+    _selectedTrPair = { from: hit.data.fromNum, to: hit.data.toNum };
+    selectSlide(hit.data.idx);
+    switchTab('transition');
+    return;
+  }
+
+  // Slide resize
+  if (hit && hit.type === 'slide_resize') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartSlideResize(e, hit.data.slideNum);
+    return;
+  }
+
+  // Slide select + drag
+  if (hit && hit.type === 'slide') {
+    e.preventDefault(); e.stopPropagation();
+    selectSlide(hit.data.idx);
+    _tlStartSlideDrag(e, hit.data.idx);
+    return;
+  }
+
+  // Subtitle handle left
+  if (hit && hit.type === 'sub_handle_l') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartSubHandleDrag(e, hit.data.entry, 'left');
+    return;
+  }
+  // Subtitle handle right
+  if (hit && hit.type === 'sub_handle_r') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartSubHandleDrag(e, hit.data.entry, 'right');
+    return;
+  }
+  // Subtitle body drag
+  if (hit && hit.type === 'subtitle') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartSubDrag(e, hit.data.entry);
+    return;
+  }
+
+  // Voice clip drag
+  if (hit && hit.type === 'voice_clip') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartVoiceClipDrag(e, hit.data.clip);
+    return;
+  }
+
+  // SFX handle left
+  if (hit && hit.type === 'sfx_handle_l') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartSfxHandleDrag(e, hit.data.marker, 'left', hit.data.sfxDur);
+    return;
+  }
+  // SFX handle right
+  if (hit && hit.type === 'sfx_handle_r') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartSfxHandleDrag(e, hit.data.marker, 'right', hit.data.sfxDur);
+    return;
+  }
+  // SFX body drag
+  if (hit && hit.type === 'sfx') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartSfxDrag(e, hit.data.marker);
+    return;
+  }
+
+  // BGM handle left
+  if (hit && hit.type === 'bgm_handle_l') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartBgmHandleDrag(e, 'left');
+    return;
+  }
+  // BGM handle right
+  if (hit && hit.type === 'bgm_handle_r') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartBgmHandleDrag(e, 'right');
+    return;
+  }
+  // BGM body drag
+  if (hit && hit.type === 'bgm') {
+    e.preventDefault(); e.stopPropagation();
+    _tlStartBgmDrag(e);
+    return;
+  }
+
+  // Playhead click (fall through — click on empty area)
+  _tlStartPlayheadDrag(e);
+}
+
+function _tlOnMouseMove(e) {
+  const { x, y } = _tlCanvasXY(e);
+  const hit = _tlHitTest(x, y);
+
+  if (hit && (hit.type === 'slide_resize' || hit.type === 'sfx_handle_l' || hit.type === 'sfx_handle_r' ||
+              hit.type === 'sub_handle_l' || hit.type === 'sub_handle_r' ||
+              hit.type === 'bgm_handle_l' || hit.type === 'bgm_handle_r')) {
+    TL.canvas.style.cursor = 'ew-resize';
+  } else if (hit && (hit.type === 'slide' || hit.type === 'sfx' || hit.type === 'voice_clip' || hit.type === 'subtitle' || hit.type === 'bgm')) {
+    TL.canvas.style.cursor = 'grab';
+  } else if (hit && (hit.type === 'transition' || hit.type === 'motion_badge')) {
+    TL.canvas.style.cursor = 'pointer';
+  } else {
+    TL.canvas.style.cursor = 'pointer';
+  }
+}
+
+function _tlOnDblClick(e) {
+  const { x, y } = _tlCanvasXY(e);
+  const hit = _tlHitTest(x, y);
+
+  if (hit && hit.type === 'subtitle') {
+    e.stopPropagation();
+    const entry = hit.data.entry;
+    const newText = prompt('\uC790\uB9C9 \uD14D\uC2A4\uD2B8:', entry.text);
+    if (newText !== null && newText.trim()) {
+      entry.text = newText.trim();
+      _dirty = true;
+      TL.needsRedraw = true;
+      if (_activeTab === 'narration') renderTabNarration();
+    }
+    return;
+  }
+
+  if (hit && hit.type === 'voice_clip') {
+    e.stopPropagation();
+    composeState.voice_clips = composeState.voice_clips.filter(c => c.id !== hit.data.clip.id);
+    _dirty = true;
+    TL.needsRedraw = true;
+    if (_activeTab === 'narration') renderTabNarration();
+    return;
+  }
+
+  if (hit && hit.type === 'sfx') {
+    e.stopPropagation();
+    composeState.sfx_markers = composeState.sfx_markers.filter(x => x.id !== hit.data.marker.id);
+    _dirty = true;
+    TL.needsRedraw = true;
+    renderTabSfx();
+    return;
+  }
+
+  if (hit && hit.type === 'bgm') {
+    e.stopPropagation();
+    removeBgm();
+    return;
+  }
+}
+
+function _tlOnContextMenu(e) {
+  const { x, y } = _tlCanvasXY(e);
+  const hit = _tlHitTest(x, y);
+  if (hit && hit.type === 'transition' && hit.data.hasTr) {
+    e.preventDefault();
+    setTransitionPair(hit.data.fromNum, hit.data.toNum, 'effect', 'none');
+    setTransitionPair(hit.data.fromNum, hit.data.toNum, 'duration', 0);
+    TL.needsRedraw = true;
+    if (_activeTab === 'transition') renderTabTransition();
+  }
+}
+
+// ─── Drag helpers ───
+
+function _tlPosFromEvent(e) {
+  const rect = TL.canvas.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (e.clientX - rect.left) / TL.w));
+}
+
+function _tlStartPlayheadDrag(e) {
+  _playheadPos = _tlPosFromEvent(e);
+  _isDraggingPlayhead = true;
+  TL.needsRedraw = true;
+
+  if (_previewing) {
+    const total = getTotalDuration() || 1;
+    _previewStartTime = performance.now() - _playheadPos * total * 1000;
+    _previewAudioPlayed = new Set();
+    _previewSlideIdx = -1;
+    if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
+  } else {
+    _tlSelectSlideAtPlayhead();
+  }
+
+  function onMove(ev) {
+    _playheadPos = _tlPosFromEvent(ev);
+    TL.needsRedraw = true;
+    if (_previewing) {
+      const total = getTotalDuration() || 1;
+      _previewStartTime = performance.now() - _playheadPos * total * 1000;
+      _previewAudioPlayed = new Set();
+      _previewSlideIdx = -1;
+      if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
+    } else {
+      _tlSelectSlideAtPlayhead();
+    }
+  }
+  function onUp() {
+    _isDraggingPlayhead = false;
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _tlSelectSlideAtPlayhead() {
+  const total = getTotalDuration() || 1;
+  const t = _playheadPos * total;
+  _buildSlideTimeMap();
+  for (let i = 0; i < _slideTimeMap.length; i++) {
+    if (t >= _slideTimeMap[i].start && t < _slideTimeMap[i].end) {
+      const slideIdx = composeState.slide_order.indexOf(_slideTimeMap[i].num);
+      if (slideIdx >= 0 && slideIdx !== selectedSlide) selectSlide(slideIdx);
+      break;
+    }
+  }
+}
+
+function _tlStartSlideDrag(e, fromIdx) {
+  const startX = e.clientX;
+  let moved = false;
+  let insertIdx = -1;
+
+  function onMove(ev) {
+    if (Math.abs(ev.clientX - startX) > 8) moved = true;
+    if (!moved) return;
+    document.body.style.cursor = 'grabbing';
+
+    // find insert position
+    const pos = _tlPosFromEvent(ev);
+    const total = getTotalDuration() || 1;
+    const t = pos * total;
+    const slides = getOrderedSlides();
+    let cum = 0;
+    insertIdx = slides.length;
+    for (let i = 0; i < slides.length; i++) {
+      const dur = getSlideDuration(slides[i].num);
+      if (t < cum + dur / 2) { insertIdx = i; break; }
+      cum += dur;
+    }
+    TL.needsRedraw = true;
+  }
+
+  function onUp(ev) {
+    document.body.style.cursor = '';
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    if (!moved) return;
+
+    if (insertIdx >= 0 && insertIdx !== fromIdx) {
+      const order = [...composeState.slide_order];
+      const [item] = order.splice(fromIdx, 1);
+      const toIdx = insertIdx > fromIdx ? insertIdx - 1 : insertIdx;
+      order.splice(toIdx, 0, item);
+      composeState.slide_order = order;
+      _dirty = true;
+      selectedSlide = toIdx;
+      _recalcClipPositions();
+      TL.needsRedraw = true;
+      renderPreview();
+    }
+  }
+
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _tlStartSlideResize(e, slideNum) {
+  const totalDur = getTotalDuration() || 1;
+  const pxPerSec = TL.w / totalDur;
+  const startX = e.clientX;
+  const startDur = getSlideDuration(slideNum);
+  document.body.style.cursor = 'ew-resize';
+
+  const tooltip = document.createElement('div');
+  tooltip.style.cssText = 'position:fixed;padding:2px 6px;background:#1e1e2e;color:#34d399;font-size:11px;border-radius:4px;z-index:9999;pointer-events:none;border:1px solid #374151;';
+  tooltip.textContent = startDur.toFixed(1) + 's';
+  tooltip.style.left = e.clientX + 'px';
+  tooltip.style.top = (e.clientY - 28) + 'px';
+  document.body.appendChild(tooltip);
+
+  function onMove(ev) {
+    const dx = ev.clientX - startX;
+    const dSec = dx / pxPerSec;
+    const newDur = Math.max(1, Math.round((startDur + dSec) * 10) / 10);
+    updateSlideDuration(slideNum, newDur);
+    tooltip.textContent = newDur.toFixed(1) + 's';
+    tooltip.style.left = ev.clientX + 'px';
+    tooltip.style.top = (ev.clientY - 28) + 'px';
+  }
+  function onUp() {
+    document.body.style.cursor = '';
+    tooltip.remove();
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _tlStartSubHandleDrag(e, entry, side) {
+  const total = getTotalDuration() || 1;
+  function onMove(ev) {
+    const pct = _tlPosFromEvent(ev);
+    const newTime = Math.round(pct * total * 10) / 10;
+    if (side === 'left' && newTime < entry.end_time - 0.2) {
+      entry.start_time = newTime;
+      _dirty = true;
+      TL.needsRedraw = true;
+    } else if (side === 'right' && newTime > entry.start_time + 0.2) {
+      entry.end_time = newTime;
+      _dirty = true;
+      TL.needsRedraw = true;
+    }
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _tlStartSubDrag(e, entry) {
+  const total = getTotalDuration() || 1;
+  const startMouseX = e.clientX;
+  const origStart = entry.start_time;
+  const origEnd = entry.end_time;
+  const dur = origEnd - origStart;
+  function onMove(ev) {
+    const dx = ev.clientX - startMouseX;
+    const dSec = (dx / TL.w) * total;
+    let newStart = origStart + dSec;
+    newStart = Math.max(0, Math.min(total - dur, newStart));
+    entry.start_time = Math.round(newStart * 10) / 10;
+    entry.end_time = Math.round((newStart + dur) * 10) / 10;
+    _dirty = true;
+    TL.needsRedraw = true;
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _tlStartVoiceClipDrag(e, clip) {
+  const total = getTotalDuration() || 1;
+  const startMouseX = e.clientX;
+  const origStart = clip.start_time;
+  function onMove(ev) {
+    const dx = ev.clientX - startMouseX;
+    const dSec = (dx / TL.w) * total;
+    let newStart = origStart + dSec;
+    newStart = Math.max(0, Math.min(total - clip.duration, newStart));
+    clip.start_time = Math.round(newStart * 10) / 10;
+    _dirty = true;
+    TL.needsRedraw = true;
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    if (_activeTab === 'narration') renderTabNarration();
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _tlStartSfxHandleDrag(e, marker, side, origDur) {
+  const total = getTotalDuration() || 1;
+  const origTime = marker.time;
+  function onMove(ev) {
+    const pct = _tlPosFromEvent(ev);
+    const newTime = pct * total;
+    if (side === 'left') {
+      if (newTime < origTime + origDur - 0.2) {
+        const delta = newTime - origTime;
+        marker.time = Math.round(newTime * 10) / 10;
+        marker.duration = Math.round(Math.max(0.2, origDur - delta) * 10) / 10;
+        _dirty = true;
+        TL.needsRedraw = true;
+      }
+    } else {
+      const newDur = newTime - marker.time;
+      if (newDur >= 0.2) {
+        marker.duration = Math.round(newDur * 10) / 10;
+        _dirty = true;
+        TL.needsRedraw = true;
+      }
+    }
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    renderTabSfx();
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _tlStartSfxDrag(e, marker) {
+  const total = getTotalDuration() || 1;
+  const startMouseX = e.clientX;
+  const origTime = marker.time;
+  function onMove(ev) {
+    const dx = ev.clientX - startMouseX;
+    const dSec = (dx / TL.w) * total;
+    marker.time = Math.round(Math.max(0, origTime + dSec) * 10) / 10;
+    _dirty = true;
+    TL.needsRedraw = true;
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _tlStartBgmHandleDrag(e, side) {
+  const bgm = composeState.bgm;
+  if (!bgm) return;
+  const total = getTotalDuration() || 1;
+  function onMove(ev) {
+    const pct = _tlPosFromEvent(ev);
+    const t = Math.round(pct * total * 10) / 10;
+    if (side === 'left' && t < bgm.end_time - 0.5) {
+      bgm.start_time = t;
+      _dirty = true;
+      TL.needsRedraw = true;
+    } else if (side === 'right' && t > bgm.start_time + 0.5) {
+      bgm.end_time = t;
+      _dirty = true;
+      TL.needsRedraw = true;
+    }
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    renderTabBgm();
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _tlStartBgmDrag(e) {
+  const bgm = composeState.bgm;
+  if (!bgm) return;
+  const total = getTotalDuration() || 1;
+  const dur = bgm.end_time - bgm.start_time;
+  const startPct = _tlPosFromEvent(e);
+  const origStart = bgm.start_time;
+  function onMove(ev) {
+    const pctNow = _tlPosFromEvent(ev);
+    const delta = (pctNow - startPct) * total;
+    let ns = Math.max(0, Math.min(total - dur, origStart + delta));
+    bgm.start_time = Math.round(ns * 10) / 10;
+    bgm.end_time = Math.round((ns + dur) * 10) / 10;
+    _dirty = true;
+    TL.needsRedraw = true;
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    renderTabBgm();
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+// ─── Drop handlers ───
+function _tlHandleSfxDrop(e) {
+  const file = e.dataTransfer.getData('sfx_file');
+  if (!file) return;
+  const total = getTotalDuration();
+  const pct = _tlPosFromEvent(e);
+  const time = pct * total;
+  composeState.sfx_markers.push({
+    id: 's_' + Date.now(),
+    file,
+    time: Math.round(time * 10) / 10,
+    volume: 0.8,
+  });
+  _dirty = true;
+  TL.needsRedraw = true;
+}
+
+function _tlHandleNarrDrop(e) {
+  const file = e.dataTransfer.getData('narr_file');
+  if (!file) return;
+  const duration = parseFloat(e.dataTransfer.getData('narr_duration')) || 2.0;
+  const url = e.dataTransfer.getData('narr_url') || '';
+  const total = getTotalDuration();
+  const pct = _tlPosFromEvent(e);
+  const time = pct * total;
+  composeState.voice_clips.push({
+    id: 'vc_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+    file,
+    path: url,
+    start_time: Math.round(time * 10) / 10,
+    duration,
+    volume: composeState.narr_volume !== undefined ? composeState.narr_volume : 100,
+  });
+  _dirty = true;
+  TL.needsRedraw = true;
+  if (_activeTab === 'narration') renderTabNarration();
+}
+
+// ─── Motion dropdown (canvas coordinates → absolute DOM popup) ───
+function _showMotionDropdownCanvas(clientX, clientY, slideNum) {
+  // Reuse existing _showMotionDropdown with a virtual element
+  const fakeEl = document.createElement('span');
+  fakeEl.style.cssText = 'position:fixed;left:' + clientX + 'px;top:' + clientY + 'px;width:1px;height:1px;';
+  fakeEl.dataset.slide = slideNum;
+  document.body.appendChild(fakeEl);
+  _showMotionDropdown(fakeEl, slideNum);
+  setTimeout(() => fakeEl.remove(), 100);
+}
+
+// ─── Utility ───
+function _tlRoundRect(ctx, x, y, w, h, r) {
+  if (w < 2 * r) r = w / 2;
+  if (h < 2 * r) r = h / 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function _tlMeasureText(ctx, text, font) {
+  const key = font + '|' + text;
+  if (TL.textWidthCache[key] !== undefined) return TL.textWidthCache[key];
+  ctx.font = font;
+  const w = ctx.measureText(text).width;
+  TL.textWidthCache[key] = w;
+  return w;
+}
+
+// ══════════════════════════════════════════════════════════
+// ─── END TL Canvas ───
+// ══════════════════════════════════════════════════════════
 
 // ─── Motion 추천 (bg_type 기반) ───
 const MOTION_RECOMMEND = {
@@ -292,532 +1573,158 @@ function _showMotionDropdown(badge, slideNum) {
 }
 
 function renderTimeline() {
-  const track = document.getElementById("slide-track");
-  track.innerHTML = "";
+  _tlPreloadThumbs();
+  TL.textWidthCache = {};  // invalidate on data change
+  TL.needsRedraw = true;
+}
 
-  const slides = getOrderedSlides();
-  const totalDurAll = getTotalDuration() || 1;
+// ─── Slide Timeline (legacy stubs — now Canvas-based) ───
+// _startSlideDragMove, _startSlideResize → handled in TL canvas event system
 
-  slides.forEach((sl, idx) => {
-    const dur = getSlideDuration(sl.num);
-    const hasBg = !!sl.bg_url;
+// renderTransitionTrack — now Canvas-based (TL._tlDrawTransitions)
+function renderTransitionTrack() { TL.needsRedraw = true; }
 
-    // ── 슬라이드 블록 ──
-    const block = document.createElement("div");
-    block.className = `slide-block ${idx === selectedSlide ? 'active' : ''}`;
-    block.dataset.idx = idx;
-    block.dataset.slideNum = sl.num;
-    const pct = (dur / totalDurAll) * 100;
-    block.style.width = `${pct}%`;
-    block.style.minWidth = "50px";
-    block.style.flexShrink = "0";
-    block.style.flexGrow = "0";
+// ─── Preview Transition Animation ───
+let _transitionClone = null;
 
-    // 프레임 스트립
-    let framesHtml = "";
-    if (hasBg && !sl.bg_url.includes(".mp4") && !sl.bg_url.includes(".gif")) {
-      framesHtml = `<div class="slide-frames" style="background-image:url('${sl.bg_url}');"></div>`;
-    } else if (hasBg) {
-      framesHtml = `<div class="slide-frames"><video src="${sl.bg_url}" muted playsinline style="height:100%;opacity:0.7;"></video></div>`;
+function _applyPreviewTransition(effect, duration, newSlideIdx) {
+  const cc = document.getElementById("canvas-container");
+  const sp = document.getElementById("slide-preview");
+  if (!cc || !sp) { selectedSlide = newSlideIdx; renderPreview(); return; }
+
+  // 기존 전환 정리
+  if (_transitionClone) { _transitionClone.remove(); _transitionClone = null; }
+
+  // 이전 슬라이드 복제
+  const oldCanvas = sp.querySelector(".preview-canvas");
+  if (!oldCanvas) { selectedSlide = newSlideIdx; renderPreview(); return; }
+
+  _transitionClone = oldCanvas.cloneNode(true);
+  Object.assign(_transitionClone.style, {
+    position: "absolute", top: "0", left: "0",
+    width: "100%", height: "100%",
+    zIndex: "60", pointerEvents: "none"
+  });
+
+  // 새 슬라이드 렌더
+  selectedSlide = newSlideIdx;
+  renderPreview();
+
+  // 이전 슬라이드를 위에 겹침
+  cc.appendChild(_transitionClone);
+  const newCanvas = sp.querySelector(".preview-canvas");
+
+  const startTime = performance.now();
+  const ms = Math.max(100, (duration || 0.5) * 1000);
+  const animFn = _getPreviewTransitionFn(effect);
+
+  function tick() {
+    if (!_transitionClone) return;
+    const p = Math.min((performance.now() - startTime) / ms, 1);
+    const ep = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;  // easeInOutQuad
+    animFn(_transitionClone, newCanvas, ep);
+    if (p < 1) {
+      requestAnimationFrame(tick);
     } else {
-      framesHtml = `<div class="slide-frames slide-frames-empty"></div>`;
+      _transitionClone.remove();
+      _transitionClone = null;
+      if (newCanvas) { newCanvas.style.transform = ""; newCanvas.style.opacity = ""; newCanvas.style.clipPath = ""; newCanvas.style.filter = ""; }
     }
-
-    // bg_type 컬러 바
-    const typeColor = {photo:"#3b82f6",broll:"#8b5cf6",graph:"#f59e0b",logo:"#10b981",closing:"#6b7280"}[sl.bg_type] || "#3b82f6";
-    const typeLabel = {photo:"사진",broll:"B롤",graph:"그래프",logo:"로고",closing:"클로징"}[sl.bg_type] || sl.bg_type;
-
-    // 모션 뱃지
-    const motion = _getSlideMotion(sl.num);
-    const motionLabel = MOTION_LABELS[motion] || motion;
-    const isVideo = hasBg && (sl.bg_url.includes(".mp4") || sl.bg_url.includes(".gif"));
-    const motionBadgeHtml = !isVideo && sl.bg_type !== "closing"
-      ? `<span class="slide-motion-badge" data-slide="${sl.num}" onclick="event.stopPropagation(); _showMotionDropdown(this, ${sl.num})">${motionLabel}</span>`
-      : "";
-
-    // 나레이션 오디오 duration
-    const slideAudioFiles = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
-    const narrDur = slideAudioFiles.reduce((s, a) => s + (a.duration || 0), 0);
-    const narrBadgeHtml = narrDur > 0
-      ? `<span style="font-size:8px;color:#34d399;background:#064e3b;padding:0 3px;border-radius:2px;">&#9835; ${narrDur.toFixed(1)}s</span>`
-      : "";
-
-    block.innerHTML = `
-      <div class="slide-type-bar" style="background:${typeColor};"></div>
-      ${framesHtml}
-      <div class="slide-block-top">
-        <span class="slide-block-num">${sl.num}</span>
-        ${narrBadgeHtml}
-        <span class="slide-block-type" style="color:${typeColor};">${typeLabel}</span>
-      </div>
-      <div class="slide-block-label">
-        ${motionBadgeHtml}
-        <span class="slide-block-dur">${dur.toFixed(1)}s</span>
-      </div>
-    `;
-
-    block.addEventListener("mousemove", (e) => {
-      const r = block.getBoundingClientRect();
-      const near = (r.right - e.clientX) < 20;
-      block.style.cursor = near ? "ew-resize" : "grab";
-      block.classList.toggle("resize-hover", near);
-    });
-    block.addEventListener("mouseleave", () => {
-      block.classList.remove("resize-hover");
-    });
-    block.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-
-      const rect = block.getBoundingClientRect();
-      const nearRight = (rect.right - e.clientX) < 20;
-
-      if (nearRight) {
-        // 오른쪽 가장자리: 리사이즈
-        _startSlideResize(e, sl.num);
-      } else {
-        // 그 외: 선택 + 드래그 이동
-        selectSlide(idx);
-        _startSlideDragMove(e, idx, block);
-      }
-    });
-
-    track.appendChild(block);
-  });
-
-  renderTransitionTrack();
-  renderSfxMarkers();
-  renderBgmTrack();
-  renderSubtitleTrack();
-  renderVoiceClipTrack();
-  renderRuler();
-  updatePlayhead();
-}
-
-// ─── Slide Timeline Resize ───
-
-function _startSlideDragMove(e, fromIdx, blockEl) {
-  const startX = e.clientX;
-  let moved = false;
-
-  function _findTarget(ev) {
-    // 자기 자신을 숨기고 아래 요소 찾기
-    blockEl.style.pointerEvents = "none";
-    const el = document.elementFromPoint(ev.clientX, ev.clientY);
-    blockEl.style.pointerEvents = "";
-    return el?.closest?.(".slide-block");
   }
-
-  function onMove(ev) {
-    if (Math.abs(ev.clientX - startX) > 8) moved = true;
-    if (!moved) return;
-    document.body.style.cursor = "grabbing";
-    blockEl.style.opacity = "0.4";
-    blockEl.style.zIndex = "20";
-
-    document.querySelectorAll(".slide-block").forEach(b => b.classList.remove("drag-over"));
-    const target = _findTarget(ev);
-    if (target && target !== blockEl) target.classList.add("drag-over");
-  }
-
-  function onUp(ev) {
-    document.body.style.cursor = "";
-    blockEl.style.opacity = "";
-    blockEl.style.zIndex = "";
-    document.removeEventListener("mousemove", onMove);
-    document.removeEventListener("mouseup", onUp);
-    document.querySelectorAll(".slide-block").forEach(b => b.classList.remove("drag-over"));
-
-    if (!moved) return;
-
-    const target = _findTarget(ev);
-    if (!target || target === blockEl) return;
-    const toIdx = parseInt(target.dataset.idx);
-    if (isNaN(toIdx) || toIdx === fromIdx) return;
-
-    const order = [...composeState.slide_order];
-    const [item] = order.splice(fromIdx, 1);
-    order.splice(toIdx, 0, item);
-    composeState.slide_order = order;
-    _dirty = true;
-    selectedSlide = toIdx;
-    renderTimeline();
-    renderPreview();
-  }
-
-  document.addEventListener("mousemove", onMove);
-  document.addEventListener("mouseup", onUp);
+  requestAnimationFrame(tick);
 }
 
-function _startSlideResize(e, slideNum) {
-  const trackArea = document.getElementById("timeline-tracks");
-  if (!trackArea) return;
-  const trackRect = trackArea.getBoundingClientRect();
-  const totalDur = getTotalDuration() || 1;
-  const pxPerSec = trackRect.width / totalDur;
-  const startX = e.clientX;
-  const startDur = getSlideDuration(slideNum);
-
-  // 드래그 중 커서 + 실시간 duration 표시
-  document.body.style.cursor = "ew-resize";
-  const tooltip = document.createElement("div");
-  tooltip.style.cssText = "position:fixed;padding:2px 6px;background:#1e1e2e;color:#34d399;font-size:11px;border-radius:4px;z-index:9999;pointer-events:none;border:1px solid #374151;";
-  tooltip.textContent = `${startDur.toFixed(1)}s`;
-  tooltip.style.left = e.clientX + "px";
-  tooltip.style.top = (e.clientY - 28) + "px";
-  document.body.appendChild(tooltip);
-
-  function onMove(ev) {
-    const dx = ev.clientX - startX;
-    const dSec = dx / pxPerSec;
-    const newDur = Math.max(1, Math.round((startDur + dSec) * 10) / 10);
-    updateSlideDuration(slideNum, newDur);
-    tooltip.textContent = `${newDur.toFixed(1)}s`;
-    tooltip.style.left = ev.clientX + "px";
-    tooltip.style.top = (ev.clientY - 28) + "px";
-  }
-
-  function onUp() {
-    document.body.style.cursor = "";
-    tooltip.remove();
-    document.removeEventListener("mousemove", onMove);
-    document.removeEventListener("mouseup", onUp);
-  }
-
-  document.addEventListener("mousemove", onMove);
-  document.addEventListener("mouseup", onUp);
+function _cleanupTransitionClone() {
+  if (_transitionClone) { _transitionClone.remove(); _transitionClone = null; }
 }
 
-function _getSlideOverlapPx(slides, idx) {
-  return 0; // 캡컷 스타일: 슬라이드 오버랩 없음
+function _getPreviewTransitionFn(effect) {
+  const _fade = (o, n, p) => { o.style.opacity = 1 - p; };
+  const M = {
+    // 페이드
+    fade: _fade, dissolve: _fade, fadefast: _fade, fadeslow: _fade, fadegrays: _fade,
+    fadeblack: (o, n, p) => {
+      if (p < 0.5) { o.style.filter = `brightness(${1 - p * 2})`; }
+      else { o.style.opacity = 0; if (n) n.style.opacity = (p - 0.5) * 2; }
+    },
+    fadewhite: (o, n, p) => {
+      if (p < 0.5) { o.style.filter = `brightness(${1 + p * 6})`; }
+      else { o.style.opacity = 0; if (n) n.style.opacity = (p - 0.5) * 2; }
+    },
+    // 와이프
+    wipeleft: (o, n, p) => { o.style.clipPath = `inset(0 ${p * 100}% 0 0)`; },
+    wiperight: (o, n, p) => { o.style.clipPath = `inset(0 0 0 ${p * 100}%)`; },
+    wipeup: (o, n, p) => { o.style.clipPath = `inset(0 0 ${p * 100}% 0)`; },
+    wipedown: (o, n, p) => { o.style.clipPath = `inset(${p * 100}% 0 0 0)`; },
+    wipetl: (o, n, p) => { o.style.clipPath = `polygon(${p*100}% 0,100% 0,100% 100%,0 100%,0 ${p*100}%)`; },
+    wipetr: (o, n, p) => { o.style.clipPath = `polygon(0 0,${100-p*100}% 0,100% ${p*100}%,100% 100%,0 100%)`; },
+    wipebl: (o, n, p) => { o.style.clipPath = `polygon(0 0,100% 0,100% ${100-p*100}%,${p*100}% 100%,0 100%)`; },
+    wipebr: (o, n, p) => { o.style.clipPath = `polygon(0 0,100% 0,100% ${100-p*100}%,${100-p*100}% 100%,0 100%)`; },
+    // 슬라이드
+    slideleft: (o, n, p) => { o.style.transform = `translateX(${-p*100}%)`; if (n) n.style.transform = `translateX(${(1-p)*100}%)`; },
+    slideright: (o, n, p) => { o.style.transform = `translateX(${p*100}%)`; if (n) n.style.transform = `translateX(${-(1-p)*100}%)`; },
+    slideup: (o, n, p) => { o.style.transform = `translateY(${-p*100}%)`; if (n) n.style.transform = `translateY(${(1-p)*100}%)`; },
+    slidedown: (o, n, p) => { o.style.transform = `translateY(${p*100}%)`; if (n) n.style.transform = `translateY(${-(1-p)*100}%)`; },
+    smoothleft: (o, n, p) => { o.style.transform = `translateX(${-p*100}%)`; if (n) n.style.transform = `translateX(${(1-p)*100}%)`; },
+    smoothright: (o, n, p) => { o.style.transform = `translateX(${p*100}%)`; if (n) n.style.transform = `translateX(${-(1-p)*100}%)`; },
+    smoothup: (o, n, p) => { o.style.transform = `translateY(${-p*100}%)`; if (n) n.style.transform = `translateY(${(1-p)*100}%)`; },
+    smoothdown: (o, n, p) => { o.style.transform = `translateY(${p*100}%)`; if (n) n.style.transform = `translateY(${-(1-p)*100}%)`; },
+    // 커버
+    coverleft: (o, n, p) => { if (n) n.style.transform = `translateX(${(1-p)*100}%)`; },
+    coverright: (o, n, p) => { if (n) n.style.transform = `translateX(${-(1-p)*100}%)`; },
+    coverup: (o, n, p) => { if (n) n.style.transform = `translateY(${(1-p)*100}%)`; },
+    coverdown: (o, n, p) => { if (n) n.style.transform = `translateY(${-(1-p)*100}%)`; },
+    // 리빌
+    revealleft: (o, n, p) => { o.style.transform = `translateX(${-p*100}%)`; },
+    revealright: (o, n, p) => { o.style.transform = `translateX(${p*100}%)`; },
+    revealup: (o, n, p) => { o.style.transform = `translateY(${-p*100}%)`; },
+    revealdown: (o, n, p) => { o.style.transform = `translateY(${p*100}%)`; },
+    // 원형
+    circleopen: (o, n, p) => { o.style.clipPath = `circle(${(1-p)*75}% at 50% 50%)`; },
+    circleclose: (o, n, p) => { o.style.clipPath = `circle(${(1-p)*75}% at 50% 50%)`; },
+    circlecrop: (o, n, p) => { o.style.clipPath = `circle(${(1-p)*75}% at 50% 50%)`; },
+    radial: (o, n, p) => { o.style.clipPath = `circle(${(1-p)*75}% at 50% 50%)`; },
+    // 도형
+    rectcrop: (o, n, p) => { const i = p * 50; o.style.clipPath = `inset(${i}% ${i}% ${i}% ${i}%)`; },
+    horzclose: (o, n, p) => { o.style.clipPath = `inset(0 ${p*50}%)`; },
+    horzopen: (o, n, p) => { o.style.clipPath = `inset(0 ${(1-p)*50}%)`; },
+    vertclose: (o, n, p) => { o.style.clipPath = `inset(${p*50}% 0)`; },
+    vertopen: (o, n, p) => { o.style.clipPath = `inset(${(1-p)*50}% 0)`; },
+    // 줌/압축
+    zoomin: (o, n, p) => { o.style.transform = `scale(${1+p*0.5})`; o.style.opacity = 1 - p; },
+    squeezeh: (o, n, p) => { o.style.transform = `scaleX(${1-p})`; },
+    squeezev: (o, n, p) => { o.style.transform = `scaleY(${1-p})`; },
+    // 대각선
+    diagtl: (o, n, p) => { o.style.clipPath = `polygon(${p*200}% 0,100% 0,100% 100%,0 100%,0 ${p*200}%)`; },
+    diagtr: (o, n, p) => { o.style.clipPath = `polygon(0 0,${100-p*200}% 0,100% ${p*200}%,100% 100%,0 100%)`; },
+    diagbl: (o, n, p) => { o.style.clipPath = `polygon(0 0,100% 0,100% ${100-p*200}%,${p*200}% 100%,0 100%)`; },
+    diagbr: (o, n, p) => { o.style.clipPath = `polygon(0 0,100% 0,100% ${100-p*200}%,${100-p*200}% 100%,0 100%)`; },
+    // 슬라이스 (와이프 근사)
+    hlslice: (o, n, p) => { o.style.clipPath = `inset(0 ${p*100}% 0 0)`; },
+    hrslice: (o, n, p) => { o.style.clipPath = `inset(0 0 0 ${p*100}%)`; },
+    vuslice: (o, n, p) => { o.style.clipPath = `inset(${p*100}% 0 0 0)`; },
+    vdslice: (o, n, p) => { o.style.clipPath = `inset(0 0 ${p*100}% 0)`; },
+    pixelize: _fade, distance: _fade,
+  };
+  return M[effect] || _fade;
 }
 
-function renderTransitionTrack() {
-  const track = document.getElementById("timeline-transition");
-  if (!track) return;
-  track.innerHTML = "";
-  track.style.position = "relative";
-
-  const slides = getOrderedSlides();
-  const totalDur = getTotalDuration() || 1;
-
-  // 각 슬라이드 경계에 전환 블록 배치 (absolute positioning)
-  let cumTime = 0;
-  slides.forEach((sl, idx) => {
-    const dur = getSlideDuration(sl.num);
-
-    if (idx > 0) {
-      const prevSl = slides[idx - 1];
-      const tr = _getTransition(prevSl.num, sl.num);
-      const hasTr = tr.duration > 0;
-      const label = hasTr ? tr.effect.replace('wipeleft','←와이프').replace('wiperight','→와이프')
-        .replace('fade','페이드').replace('dissolve','디졸브').replace('none','없음') : '';
-
-      // 슬라이드 경계 위치 (%)
-      const pos = (cumTime / totalDur) * 100;
-
-      const btn = document.createElement("div");
-      btn.className = `comp-tr-block ${hasTr ? 'has-tr' : ''}`;
-      btn.style.cssText = `position:absolute;left:${pos}%;transform:translateX(-50%);top:2px;bottom:2px;`;
-      btn.innerHTML = hasTr
-        ? `<span style="font-size:8px;color:#a5b4fc;white-space:nowrap;">${label}</span>`
-        : `<span style="font-size:10px;color:#4b5563;">+</span>`;
-      btn.title = hasTr ? `${tr.effect} ${tr.duration}s (우클릭: 삭제)` : '클릭: 전환 추가';
-      btn.addEventListener("click", () => {
-        _selectedTrPair = { from: prevSl.num, to: sl.num };
-        switchTab('transition');
-      });
-      btn.addEventListener("contextmenu", (e) => {
-        e.preventDefault();
-        if (hasTr) {
-          setTransitionPair(prevSl.num, sl.num, "effect", "none");
-          setTransitionPair(prevSl.num, sl.num, "duration", 0);
-          renderTimeline();
-          if (_activeTab === 'transition') renderTabTransition();
-        }
-      });
-      track.appendChild(btn);
-    }
-    cumTime += dur;
-  });
-}
-
-// ─── 공통 트랙 위치 계산 ───
-function _calcTrackLayout() {
-  const slides = getOrderedSlides();
-  const totalDur = getTotalDuration() || 1;
-  const trBtnCount = Math.max(0, slides.length - 1);
-  const items = [];
-  let cumTime = 0;
-  slides.forEach((sl, idx) => {
-    const slideDur = getSlideDuration(sl.num);
-    const audioFiles = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
-    const narrDur = audioFiles.reduce((s, a) => s + (a.duration || 0), 0);
-    items.push({ sl, idx, slideDur, narrDur, startTime: cumTime });
-    cumTime += slideDur;
-  });
-  return { items, totalDur, trBtnCount };
-}
-
-function _timeToPct(time, totalDur) {
-  return (time / totalDur) * 100;
-}
-
-function renderSubtitleTrack() {
-  const container = document.getElementById("subtitle-entries-container");
-  if (!container) return;
-  container.innerHTML = "";
-
-  const entries = composeState.subtitle_entries || [];
-  const total = getTotalDuration() || 1;
-  const trackArea = document.getElementById("timeline-tracks");
-
-  if (entries.length === 0) {
-    container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:8px;color:#4b5563;">자막 없음</div>`;
-    return;
-  }
-
-  entries.forEach(entry => {
-    const leftPct = (entry.start_time / total) * 100;
-    const widthPct = ((entry.end_time - entry.start_time) / total) * 100;
-    const truncated = entry.text.length > 20 ? entry.text.slice(0, 20) + "..." : entry.text;
-
-    const el = document.createElement("div");
-    el.className = "subtitle-entry";
-    el.style.left = `${leftPct}%`;
-    el.style.width = `${Math.max(widthPct, 1)}%`;
-    el.title = `${entry.text}\n${entry.start_time.toFixed(1)}s - ${entry.end_time.toFixed(1)}s`;
-    el.innerHTML = `
-      <div class="sub-handle sub-handle-l"></div>
-      <span class="subtitle-entry-label">${_esc(truncated)}</span>
-      <div class="sub-handle sub-handle-r"></div>
-    `;
-
-    // 좌측 핸들: start_time 조절
-    el.querySelector(".sub-handle-l").addEventListener("mousedown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const rect = trackArea.getBoundingClientRect();
-      function onMove(e2) {
-        const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
-        const newTime = pct * total;
-        if (newTime < entry.end_time - 0.2) {
-          entry.start_time = Math.round(newTime * 10) / 10;
-          _dirty = true;
-          renderSubtitleTrack();
-        }
-      }
-      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
-      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
-    });
-
-    // 우측 핸들: end_time 조절
-    el.querySelector(".sub-handle-r").addEventListener("mousedown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const rect = trackArea.getBoundingClientRect();
-      function onMove(e2) {
-        const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
-        const newTime = pct * total;
-        if (newTime > entry.start_time + 0.2) {
-          entry.end_time = Math.round(newTime * 10) / 10;
-          _dirty = true;
-          renderSubtitleTrack();
-        }
-      }
-      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
-      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
-    });
-
-    // 중앙 드래그: 이동
-    el.addEventListener("mousedown", (e) => {
-      if (e.target.classList.contains("sub-handle")) return;
-      e.preventDefault(); e.stopPropagation();
-      const rect = trackArea.getBoundingClientRect();
-      const startMouseX = e.clientX;
-      const origStart = entry.start_time;
-      const origEnd = entry.end_time;
-      const dur = origEnd - origStart;
-      function onMove(e2) {
-        const dx = e2.clientX - startMouseX;
-        const dSec = (dx / rect.width) * total;
-        let newStart = origStart + dSec;
-        newStart = Math.max(0, Math.min(total - dur, newStart));
-        entry.start_time = Math.round(newStart * 10) / 10;
-        entry.end_time = Math.round((newStart + dur) * 10) / 10;
-        _dirty = true;
-        el.style.left = `${(entry.start_time / total) * 100}%`;
-      }
-      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
-      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
-    });
-
-    // 더블클릭: 텍스트 편집
-    el.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      const newText = prompt("자막 텍스트:", entry.text);
-      if (newText !== null && newText.trim()) {
-        entry.text = newText.trim();
-        _dirty = true;
-        renderSubtitleTrack();
-        if (_activeTab === 'narration') renderTabNarration();
-      }
-    });
-
-    container.appendChild(el);
-  });
-}
-
-function renderVoiceClipTrack() {
-  const container = document.getElementById("voice-clip-markers");
-  if (!container) return;
-  container.innerHTML = "";
-
-  const clips = composeState.voice_clips || [];
-  const total = getTotalDuration() || 1;
-  const trackArea = document.getElementById("timeline-tracks");
-
-  clips.forEach(clip => {
-    const leftPct = (clip.start_time / total) * 100;
-    const widthPct = (clip.duration / total) * 100;
-    const name = clip.file.replace(/\.[^.]+$/, '');
-
-    const el = document.createElement("div");
-    el.className = "voice-clip";
-    el.style.left = `${leftPct}%`;
-    el.style.width = `${Math.max(widthPct, 1.5)}%`;
-    el.title = `${clip.file} @ ${clip.start_time.toFixed(1)}s (${clip.duration.toFixed(1)}s)`;
-    el.innerHTML = `
-      <span class="voice-clip-icon">&#127908;</span>
-      <span class="voice-clip-label">${_esc(name)} ${clip.duration.toFixed(1)}s</span>
-    `;
-
-    // 드래그 이동만 (핸들 없음 — 길이 고정)
-    el.addEventListener("mousedown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const rect = trackArea.getBoundingClientRect();
-      const startMouseX = e.clientX;
-      const origStart = clip.start_time;
-      function onMove(e2) {
-        const dx = e2.clientX - startMouseX;
-        const dSec = (dx / rect.width) * total;
-        let newStart = origStart + dSec;
-        newStart = Math.max(0, Math.min(total - clip.duration, newStart));
-        clip.start_time = Math.round(newStart * 10) / 10;
-        _dirty = true;
-        el.style.left = `${(clip.start_time / total) * 100}%`;
-      }
-      function onUp() {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        renderVoiceClipTrack();
-        if (_activeTab === 'narration') renderTabNarration();
-      }
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    });
-
-    // 더블클릭: 삭제
-    el.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      composeState.voice_clips = composeState.voice_clips.filter(c => c.id !== clip.id);
-      _dirty = true;
-      renderVoiceClipTrack();
-      if (_activeTab === 'narration') renderTabNarration();
-    });
-
-    container.appendChild(el);
-  });
-}
-
-function renderRuler() {
-  const ruler = document.getElementById("timeline-ruler");
-  if (!ruler) return;
-  const total = getTotalDuration() || 1;
-  const interval = total <= 10 ? 1 : total <= 30 ? 2 : total <= 60 ? 5 : 10;
-  let html = "";
-  for (let s = 0; s <= total; s += interval) {
-    const pct = (s / total) * 100;
-    html += `<span class="ruler-mark" style="left:${pct}%;">${_fmtDur(s)}</span>`;
-  }
-  ruler.innerHTML = html;
-}
+// renderSubtitleTrack, renderVoiceClipTrack, renderRuler — now Canvas-based
+function renderSubtitleTrack() { TL.needsRedraw = true; }
+function renderVoiceClipTrack() { TL.needsRedraw = true; }
+function renderRuler() { TL.needsRedraw = true; }
 
 let _playheadPos = 0;
 let _isDraggingPlayhead = false;
 
-function _timeToPlayheadPx(timeFraction) {
-  const trackArea = document.getElementById("timeline-tracks");
-  if (!trackArea) return 0;
-  return timeFraction * trackArea.clientWidth;
-}
-
-function updatePlayhead() {
-  const ph = document.getElementById("timeline-playhead");
-  if (!ph) return;
-  const px = _timeToPlayheadPx(_playheadPos);
-  ph.style.left = px + "px";
-}
-
-function onTimelineMouseDown(e) {
-  const trackArea = document.getElementById("timeline-tracks");
-  if (!trackArea) return;
-  const rect = trackArea.getBoundingClientRect();
-
-  function posFromEvent(ev) {
-    return Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
-  }
-
-  _playheadPos = posFromEvent(e);
-  updatePlayhead();
-  _isDraggingPlayhead = true;
-
-  // 재생 중이면 해당 시간으로 이동
-  if (_previewing) {
-    const total = getTotalDuration() || 1;
-    _previewStartTime = performance.now() - _playheadPos * total * 1000;
-    _previewAudioPlayed = new Set();
-    _previewSlideIdx = -1;
-    if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
-  }
-
-  function onMove(ev) {
-    _playheadPos = posFromEvent(ev);
-    updatePlayhead();
-    if (_previewing) {
-      const total = getTotalDuration() || 1;
-      _previewStartTime = performance.now() - _playheadPos * total * 1000;
-      _previewAudioPlayed = new Set();
-      _previewSlideIdx = -1;
-      if (_playingAudio) { _playingAudio.pause(); _playingAudio = null; }
-    }
-    // 비 재생 중이면 해당 슬라이드 선택
-    if (!_previewing) {
-      const total = getTotalDuration() || 1;
-      const t = _playheadPos * total;
-      _buildSlideTimeMap();
-      for (let i = 0; i < _slideTimeMap.length; i++) {
-        if (t >= _slideTimeMap[i].start && t < _slideTimeMap[i].end) {
-          const slideIdx = composeState.slide_order.indexOf(_slideTimeMap[i].num);
-          if (slideIdx >= 0 && slideIdx !== selectedSlide) selectSlide(slideIdx);
-          break;
-        }
-      }
-    }
-  }
-
-  function onUp() {
-    _isDraggingPlayhead = false;
-    document.removeEventListener("mousemove", onMove);
-    document.removeEventListener("mouseup", onUp);
-  }
-
-  document.addEventListener("mousemove", onMove);
-  document.addEventListener("mouseup", onUp);
-}
+// updatePlayhead — now Canvas-based (TL._tlDrawPlayhead)
+function updatePlayhead() { TL.needsRedraw = true; }
+// onTimelineMouseDown — now Canvas-based (TL._tlOnMouseDown)
+function onTimelineMouseDown(e) { /* no-op: Canvas handles events directly */ }
 
 function selectSlide(idx) {
   selectedSlide = idx;
-  document.querySelectorAll(".slide-block").forEach((el, i) => {
-    el.classList.toggle("active", i === idx);
-  });
+  TL.needsRedraw = true;
   // 미디어 탭 하이라이트 갱신
   document.querySelectorAll(".media-item").forEach((el, i) => {
     el.classList.toggle("active", i === idx);
@@ -830,9 +1737,19 @@ function selectSlide(idx) {
 
 // ─── Preview (Visual Overlay Editor) ───
 
-const CANVAS_W = 225, CANVAS_H = 400;
+let CANVAS_W = 225, CANVAS_H = 400;
 const REAL_W = 1080, REAL_H = 1920;
-const SCALE = CANVAS_W / REAL_W;  // ~0.208
+let SCALE = CANVAS_W / REAL_W;  // 동적 갱신됨
+
+/** 실제 캔버스 DOM 크기 기준으로 SCALE 재계산 */
+function _updateScale() {
+  const el = document.getElementById("canvas-container");
+  if (el && el.offsetWidth > 0) {
+    CANVAS_W = el.offsetWidth;
+    CANVAS_H = el.offsetHeight;
+    SCALE = CANVAS_W / REAL_W;
+  }
+}
 
 function getOverride(slideNum) {
   return composeState.slide_overrides[slideNum] || {};
@@ -845,6 +1762,7 @@ function setOverride(slideNum, key, val) {
 }
 
 function renderPreview() {
+  _updateScale();  // 실제 캔버스 크기 기반 SCALE 갱신
   const container = document.getElementById("slide-preview");
   const sl = getSelectedSlide();
   if (!sl) {
@@ -871,7 +1789,7 @@ function renderPreview() {
   // 배경
   let bgHtml = "";
   if (sl.bg_url) {
-    if (isZonedLayout && bgDisplayMode === "zone") {
+    if (isZonedLayout && bgDisplayMode === "zone" && !isHidden) {
       // 이미지 영역만 표시, 텍스트 영역은 그라디언트
       let imgZoneTop, imgZoneHeight, textZones;
       if (slideLayout === "center") {
@@ -895,11 +1813,16 @@ function renderPreview() {
       bgHtml = `${textZones}
         <div style="position:absolute;top:${imgZoneTop}%;left:0;right:0;height:${imgZoneHeight}%;overflow:hidden;">${imgTag}</div>`;
     } else {
-      // full 또는 fullscreen
+      // full 또는 fullscreen — 이미지 크기/위치 조정 적용
+      const _imgScale = (ovr.imgScale || 100) / 100;
+      const _imgX = ovr.imgX !== undefined ? ovr.imgX : 50;
+      const _imgY = ovr.imgY !== undefined ? ovr.imgY : 50;
+      const _imgFit = ovr.imgFit || 'cover';
+      const imgStyle = `width:100%;height:100%;object-fit:${_imgFit};object-position:${_imgX}% ${_imgY}%;transform:scale(${_imgScale});position:absolute;inset:0;`;
       if (sl.bg_url.includes(".mp4") || sl.bg_url.includes(".gif")) {
-        bgHtml = `<video src="${sl.bg_url}" muted autoplay loop playsinline class="preview-bg"></video>`;
+        bgHtml = `<video src="${sl.bg_url}" muted autoplay loop playsinline style="${imgStyle}"></video>`;
       } else {
-        bgHtml = `<img src="${sl.bg_url}" class="preview-bg" draggable="false">`;
+        bgHtml = `<img src="${sl.bg_url}" draggable="false" style="${imgStyle}">`;
       }
     }
   }
@@ -919,9 +1842,7 @@ function renderPreview() {
     // Zoned 레이아웃: 메인 상단, 서브 하단 분리 배치
     useZoned = true;
     const botZonePct = zoneRatio[2] / zoneTotal;
-    // 고정 상수 기반 (DOM 타이밍 영향 제거)
-    const realCanvasH = CANVAS_H;
-    const realCanvasW = CANVAS_W;
+    // 동적 캔버스 크기 기반
     const scaleY = CANVAS_H / REAL_H;
     const scaleX = CANVAS_W / REAL_W;
 
@@ -931,15 +1852,15 @@ function renderPreview() {
     // 서브 텍스트: 수동 위치(subX/subY) 우선
     subPosX = (ovr.subX !== undefined ? ovr.subX : REAL_W / 2) * scaleX;
 
-    const topZoneEndPx = realCanvasH * topZonePct;
-    const midZoneEndPx = realCanvasH * (topZonePct + midZonePct);
+    const topZoneEndPx = CANVAS_H * topZonePct;
+    const midZoneEndPx = CANVAS_H * (topZonePct + midZonePct);
 
     if (slideLayout === "center") {
       posY = ovr.y !== undefined ? ovr.y * scaleY : topZoneEndPx * 0.5;
       subPosY = ovr.subY !== undefined ? ovr.subY * scaleY : midZoneEndPx;
     } else if (slideLayout === "top") {
       const botStart = midZoneEndPx;
-      const botH = realCanvasH * botZonePct;
+      const botH = CANVAS_H * botZonePct;
       posY = ovr.y !== undefined ? ovr.y * scaleY : botStart + botH * 0.3;
       subPosY = ovr.subY !== undefined ? ovr.subY * scaleY : botStart + botH * 0.65;
     } else { // bottom
@@ -952,7 +1873,13 @@ function renderPreview() {
     posY = (ovr.y !== undefined ? ovr.y : REAL_H / 2) * SCALE;
   }
 
-  const overlayOpacity = isHidden ? 0.2 : 1;
+  // 오버레이 숨김이면 렌더링 자체를 건너뜀
+  let overlayHtml = '';
+  if (isHidden) {
+    // overlayHtml은 빈 문자열 → 프리뷰에 오버레이 없음
+  } else {
+
+  const overlayOpacity = 1;
   const maxW = (ovr.maxWidth || 1000) * SCALE;
   const mainColor = ovr.mainColor || '#ffffff';
   const subColor = ovr.subColor || '#d1d5db';
@@ -961,26 +1888,25 @@ function renderPreview() {
   const bgOpacity = ovr.bgOpacity !== undefined ? ovr.bgOpacity / 100 : _cfgTextBg / 10;
 
   const ovrRot = ovr.rotation || 0;
-  const resizeHandles = !isHidden ? `
+  const resizeHandles = `
         <div class="el-rotate" onmousedown="startOverlayRotate(event)">↻</div>
         <div class="el-resize el-r-tl" onmousedown="startOverlayResize(event, 'tl')"></div>
         <div class="el-resize el-r-tr" onmousedown="startOverlayResize(event, 'tr')"></div>
         <div class="el-resize el-r-bl" onmousedown="startOverlayResize(event, 'bl')"></div>
         <div class="el-resize el-r-br" onmousedown="startOverlayResize(event, 'br')"></div>
-  ` : '';
+  `;
 
-  let overlayHtml;
   if (useZoned && subText) {
     // Zoned 레이아웃: 메인/서브 분리 배치
     overlayHtml = `
-      <div id="text-overlay-drag" class="comp-element-box ${isHidden ? 'overlay-hidden' : ''}"
-           style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif; z-index:20; transform:translate(-50%,-50%) rotate(${ovrRot}deg); text-align:center; padding:8px 12px;"
+      <div id="text-overlay-drag" class="comp-element-box"
+           style="left:${posX}px; top:${posY}px; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif; z-index:20; transform:translate(-50%,-50%) rotate(${ovrRot}deg); text-align:center; padding:8px 12px;"
            onmousedown="startOverlayDrag(event)">
         <div class="overlay-main" style="font-size:${mainSize}px; color:${mainColor};">${mainText}</div>
         ${resizeHandles}
       </div>
-      <div id="sub-overlay-drag" class="comp-element-box ${isHidden ? 'overlay-hidden' : ''}"
-           style="left:${subPosX}px; top:${subPosY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity * 0.7}); font-family:'${fontFamily}',sans-serif; z-index:19; transform:translate(-50%,0); text-align:center; padding:6px 10px;"
+      <div id="sub-overlay-drag" class="comp-element-box"
+           style="left:${subPosX}px; top:${subPosY}px; width:${maxW}px; background:rgba(5,8,20,${bgOpacity * 0.7}); font-family:'${fontFamily}',sans-serif; z-index:19; transform:translate(-50%,0); text-align:center; padding:6px 10px;"
            onmousedown="startSubOverlayDrag(event)">
         <div class="overlay-sub" style="font-size:${subSize}px; color:${subColor};">${subText}</div>
       </div>
@@ -988,8 +1914,8 @@ function renderPreview() {
   } else {
     // full 레이아웃 또는 서브 텍스트 없음: 기존 동작
     overlayHtml = `
-      <div id="text-overlay-drag" class="comp-element-box ${isHidden ? 'overlay-hidden' : ''}"
-           style="left:${posX}px; top:${posY}px; opacity:${overlayOpacity}; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif; z-index:20; transform:translate(-50%,-50%) rotate(${ovrRot}deg); text-align:center;"
+      <div id="text-overlay-drag" class="comp-element-box"
+           style="left:${posX}px; top:${posY}px; width:${maxW}px; background:rgba(5,8,20,${bgOpacity}); font-family:'${fontFamily}',sans-serif; z-index:20; transform:translate(-50%,-50%) rotate(${ovrRot}deg); text-align:center;"
            onmousedown="startOverlayDrag(event)">
         <div class="overlay-main" style="font-size:${mainSize}px; color:${mainColor};">${mainText}</div>
         ${subText ? `<div class="overlay-sub" style="font-size:${subSize}px; color:${subColor};">${subText}</div>` : ""}
@@ -997,6 +1923,7 @@ function renderPreview() {
       </div>
     `;
   }
+  } // else (isHidden) 끝
 
   // 자유 텍스트 (회전 + 4코너 리사이즈)
   const freeTexts = (composeState.freeTexts || []).filter(ft => ft.slideNum === sl.num);
@@ -1010,7 +1937,7 @@ function renderPreview() {
     const ftRot = ft.rotation || 0;
     freeTextHtml += `<div class="comp-element-box" data-ft-idx="${ftIdx}"
       style="left:${ftX}px;top:${ftY}px;font-size:${ftSize}px;color:${ft.color || '#ffffff'};font-family:'${ftFont}',sans-serif;transform:translate(-50%,-50%) rotate(${ftRot}deg);"
-      onmousedown="startFreeTextDrag(event, ${ftIdx})">${_esc(ft.text)}
+      onmousedown="startFreeTextDrag(event, ${ftIdx})">${_esc(ft.text).replace(/\n/g, '<br>')}
       <div class="el-rotate" onmousedown="startElementRotate(event, 'freeText', ${ftIdx})">↻</div>
       <div class="el-resize el-r-tl" onmousedown="startFreeTextResize(event, ${ftIdx}, 'tl')"></div>
       <div class="el-resize el-r-tr" onmousedown="startFreeTextResize(event, ${ftIdx}, 'tr')"></div>
@@ -1033,19 +1960,31 @@ function renderPreview() {
     let inner = "";
     if (elem.type === "bubble") {
       const bSvg = BUBBLE_SVGS[elem.bubbleIdx]?.svg || '';
-      const fillSvg = bSvg.replace(/fill="white"/g, `fill="${elem.fillColor || '#ffffff'}"`);
-      inner = `<svg viewBox="0 0 100 95" width="100%" height="100%" style="position:absolute;inset:0;">${fillSvg}</svg>`;
+      let styledSvg = bSvg.replace(/fill="white"/g, `fill="${elem.fillColor || '#ffffff'}"`);
+      if (elem.strokeColor) {
+        styledSvg = styledSvg.replace(/stroke="none"/g, `stroke="${elem.strokeColor}" stroke-width="${elem.strokeWidth || 2}"`);
+        // stroke 속성이 없는 요소에도 추가
+        styledSvg = styledSvg.replace(/(<(?:path|rect|ellipse|polygon|circle)\b)(?![^>]*\bstroke=)/g, `$1 stroke="${elem.strokeColor}" stroke-width="${elem.strokeWidth || 2}"`);
+      }
+      inner = `<svg viewBox="0 0 100 95" width="100%" height="100%" style="position:absolute;inset:0;">${styledSvg}</svg>`;
       if (elem.text) {
-        inner += `<div style="position:absolute;inset:10%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:${(elem.textSize||36)*SCALE}px;color:${elem.textColor||'#000'};font-weight:700;word-break:keep-all;line-height:1.2;z-index:2;">${_esc(elem.text)}</div>`;
+        const flipTxt = elem.flipX ? "transform:scaleX(-1);" : "";
+        inner += `<div style="position:absolute;inset:10%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:${(elem.textSize||36)*SCALE}px;color:${elem.textColor||'#000'};font-weight:700;word-break:keep-all;line-height:1.2;z-index:2;${flipTxt}">${_esc(elem.text).replace(/\n/g, '<br>')}</div>`;
       }
     } else if (elem.type === "image") {
       inner = `<img src="${elem.dataUrl}" style="width:100%;height:100%;object-fit:contain;" draggable="false">`;
+    } else if (elem.type === "emotion") {
+      const eSvg = EMOTION_SVGS[elem.emotionIdx]?.svg || '';
+      inner = `<svg viewBox="0 0 100 100" width="100%" height="100%" style="position:absolute;inset:0;">${eSvg}</svg>`;
     }
 
+    const eFlipX = elem.flipX ? " scaleX(-1)" : "";
+    const eEmoCls = elem.emotion ? ` em-${elem.emotion}` : "";
     elemHtml += `<div class="comp-element-box" data-el-idx="${eIdx}"
-      style="left:${eX}px;top:${eY}px;width:${eW}px;height:${eH}px;transform:translate(-50%,-50%) rotate(${eRot}deg);"
+      style="left:${eX}px;top:${eY}px;width:${eW}px;height:${eH}px;transform:translate(-50%,-50%) rotate(${eRot}deg)${eFlipX};"
       onmousedown="startElementDrag(event, ${eIdx})">
-      ${inner}
+      <div class="el-emotion-inner${eEmoCls}">${inner}</div>
+      <div class="el-flip" onmousedown="event.stopPropagation(); toggleElementFlip(${eIdx})" title="좌우 반전">⇔</div>
       <div class="el-rotate" onmousedown="startElementRotate(event, 'element', ${eIdx})">↻</div>
       <div class="el-resize el-r-tl" onmousedown="startElementResize(event, ${eIdx}, 'tl')"></div>
       <div class="el-resize el-r-tr" onmousedown="startElementResize(event, ${eIdx}, 'tr')"></div>
@@ -1069,17 +2008,19 @@ function renderPreview() {
     `;
   }
 
-  // 자막 오버레이 (채널 설정 기반)
+  // 자막 오버레이 (Composer subtitle_overrides 우선 → 채널설정 폴백)
   let subtitleHtml = "";
-  const subEnabled = chCfg.subtitle_enabled;
+  const _so2 = composeState.subtitle_overrides || {};
+  const _sg2 = (k, d) => _so2[k] !== undefined ? _so2[k] : (chCfg[k] !== undefined ? chCfg[k] : d);
+  const subEnabled = _sg2('subtitle_enabled', false);
   if (subEnabled) {
     // 자막 설정은 픽셀(px) 단위 — 미리보기 캔버스 비율로 축소
-    const _subRaw = chCfg.subtitle_font_size || 48;
+    const _subRaw = _sg2('subtitle_font_size', 48);
     const subFontSize = Math.max(8, Math.round(_subRaw * SCALE));
-    const subFont = chCfg.subtitle_font || "Noto Sans KR";
-    const subOutline = chCfg.subtitle_outline || 3;
-    const subAlign = chCfg.subtitle_alignment || 2;
-    const _subMarginRaw = chCfg.subtitle_margin_v || 100;
+    const subFont = _sg2('subtitle_font', 'Noto Sans KR');
+    const subOutline = _sg2('subtitle_outline', 3);
+    const subAlign = _sg2('subtitle_alignment', 2);
+    const _subMarginRaw = _sg2('subtitle_margin_v', 100);
     const subMarginV = Math.max(4, Math.round(_subMarginRaw * SCALE));
     // alignment: 2=하단중앙, 8=상단중앙, 5=중앙
     let subPos = `bottom:${subMarginV}px;`;
@@ -1100,7 +2041,6 @@ function renderPreview() {
       ${overlayHtml}
       ${subtitleHtml}
       <div class="preview-slide-num">${sl.num}/${composerData.slides.length}</div>
-      ${isHidden ? '<div class="preview-hidden-badge">오버레이 숨김</div>' : ''}
     </div>
   `;
 
@@ -1332,18 +2272,18 @@ function renderProps() {
 
 // ─── Slide Duration ───
 
-// TTS 생성 후 슬라이드 duration을 오디오 총 길이에 맞춰 자동 갱신
+// 슬라이드 duration 초기화: 저장된 값이 없는 슬라이드만 오디오 길이로 설정
 function _autoUpdateDurations() {
   if (!composerData.slide_audio) return;
+  if (!composeState.slide_durations) composeState.slide_durations = {};
   for (const num of composeState.slide_order) {
+    // 이미 저장된 duration이 있으면 보존 (사용자가 조정한 값 유지)
+    if (composeState.slide_durations[num]) continue;
     const audios = composerData.slide_audio[num];
     if (!audios || audios.length === 0) continue;
     const totalAudioDur = audios.reduce((sum, a) => sum + (a.duration || 0), 0);
     if (totalAudioDur > 0) {
-      // 오디오 길이 + 0.3초 여유
-      const newDur = Math.round(totalAudioDur * 10) / 10;
-      if (!composeState.slide_durations) composeState.slide_durations = {};
-      composeState.slide_durations[num] = newDur;
+      composeState.slide_durations[num] = totalAudioDur;
       _dirty = true;
     }
   }
@@ -1361,6 +2301,7 @@ function updateSlideDuration(slideNum, dur) {
   if (!composeState.slide_durations) composeState.slide_durations = {};
   composeState.slide_durations[slideNum] = Math.max(1, dur);
   _dirty = true;
+  _recalcClipPositions();
   renderTimeline();
   renderProps();
 }
@@ -1522,7 +2463,7 @@ async function assignNarrToSlide(slideNum, filename) {
       // duration 자동 반영
       if (data.duration && data.duration > 0) {
         if (!composeState.slide_durations) composeState.slide_durations = {};
-        composeState.slide_durations[slideNum] = Math.round(data.duration * 10) / 10;
+        composeState.slide_durations[slideNum] = data.duration;
         _dirty = true;
       }
       // narr_file_map 저장
@@ -1550,6 +2491,76 @@ async function unassignNarr(slideNum) {
   renderTabNarration();
 }
 
+async function splitNarrationToAll(filename) {
+  if (!filename) return;
+  const status = document.getElementById("narr-pool-status");
+  if (status) status.textContent = `전체 분할 중...`;
+
+  try {
+    const r = await fetch(`/api/jobs/${JOB_ID}/composer/split-narration`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_file: filename }),
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) {
+      if (status) status.textContent = `분할 실패: ${data.detail || data.error || "알 수 없는 오류"}`;
+      return;
+    }
+
+    await refreshData();
+
+    // 기존 voice_clips / subtitle_entries 전체 제거 (새로 분할한 오디오로 교체)
+    composeState.voice_clips = [];
+    composeState.subtitle_entries = [];
+    if (!composeState.slide_durations) composeState.slide_durations = {};
+
+    // 분할 결과로 duration 업데이트 + voice_clips/subtitle_entries 재구성
+    let cumTime = 0;
+    const slides = getOrderedSlides();
+    slides.forEach(sl => {
+      const splitInfo = (data.slides || []).find(s => s.slide_num === sl.num);
+      if (splitInfo) {
+        composeState.slide_durations[sl.num] = splitInfo.duration;
+
+        // voice_clip 배치
+        composeState.voice_clips.push({
+          id: `vc_${sl.num}_split_${Date.now()}`,
+          file: splitInfo.file,
+          path: `/api/jobs/${JOB_ID}/audio/${splitInfo.file}`,
+          start_time: cumTime,
+          duration: splitInfo.duration,
+          volume: composeState.narr_volume !== undefined ? composeState.narr_volume : 100,
+          slide_num: sl.num,
+        });
+
+        // subtitle_entries 배치 (슬라이드의 전체 문장 텍스트를 하나의 자막으로)
+        const allText = (sl.sentences || []).map(s => s.text).filter(Boolean).join(" ");
+        if (allText) {
+          composeState.subtitle_entries.push({
+            id: `sub_${sl.num}_split_${Date.now()}`,
+            text: allText,
+            start_time: cumTime,
+            end_time: cumTime + splitInfo.duration,
+            slide_num: sl.num,
+          });
+        }
+
+        cumTime += splitInfo.duration;
+      } else {
+        cumTime += getSlideDuration(sl.num);
+      }
+    });
+
+    _dirty = true;
+    renderTimeline();
+    renderTabNarration();
+    if (status) status.textContent = `전체 분할 완료 — ${data.slides.length}개 슬라이드`;
+  } catch (e) {
+    if (status) status.textContent = `오류: ${e.message}`;
+  }
+}
+
 function _updateSentence(slideNum, sentIdx, newText) {
   const sl = composerData.slides.find(s => s.num === slideNum);
   if (!sl || !sl.sentences || !sl.sentences[sentIdx]) return;
@@ -1572,7 +2583,7 @@ function syncDurationsToAudio() {
     if (!audios || audios.length === 0) continue;
     const totalAudioDur = audios.reduce((sum, a) => sum + (a.duration || 0), 0);
     if (totalAudioDur > 0) {
-      composeState.slide_durations[num] = Math.round(totalAudioDur * 10) / 10;
+      composeState.slide_durations[num] = totalAudioDur;
       count++;
     }
   }
@@ -1669,6 +2680,7 @@ function stopAllAudio() {
     _previewTimer = null;
   }
   _previewing = false;
+  _cleanupTransitionClone();
   _hideSubtitle();
   const pb = document.getElementById("btn-play") || document.getElementById("btn-play-slide");
   if (pb) pb.innerHTML = "&#9654;";
@@ -1797,10 +2809,37 @@ async function playAllSlides() {
     }
   }
 
+  // 오디오 프리로드 대기 (최대 2초, 이미 캐시되어 있으면 즉시)
+  const statusEl2 = document.getElementById("audio-status");
+  const clips = composeState.voice_clips || [];
+  const notReady = clips.filter(c => c.path && !_preloadedAudios.some(a => a.src.endsWith(c.path.split('/').pop()) && a.readyState >= 3));
+  if (notReady.length > 0) {
+    if (statusEl2) statusEl2.textContent = "오디오 로딩 중...";
+    _preloadVoiceClips();
+    await new Promise(resolve => {
+      let resolved = false;
+      const check = () => {
+        const ready = _preloadedAudios.every(a => a.readyState >= 3);
+        if (ready && !resolved) { resolved = true; resolve(); }
+      };
+      _preloadedAudios.forEach(a => {
+        a.addEventListener("canplaythrough", check);
+        a.addEventListener("error", check);
+      });
+      setTimeout(() => { if (!resolved) { resolved = true; resolve(); } }, 2000);
+      check();
+    });
+    if (statusEl2) statusEl2.textContent = "";
+  }
+
+  // 현재 플레이헤드 위치에서 이어서 재생
+  const total = getTotalDuration() || 1;
+  const resumeTime = (_playheadPos > 0 && _playheadPos < 1) ? _playheadPos * total : 0;
+
   stopAllAudio();
   _previewing = true;
-  _previewStartTime = performance.now();
-  _previewSlideIdx = 0;
+  _previewStartTime = performance.now() - resumeTime * 1000;
+  _previewSlideIdx = -1;
   _previewAudioPlayed = new Set();
   _voiceClipFired = new Set();
 
@@ -1810,17 +2849,10 @@ async function playAllSlides() {
   _sfxFired = new Set();
   _buildSlideTimeMap();
 
-  // 첫 슬라이드 표시
-  if (_slideTimeMap.length > 0) {
-    const firstMap = _slideTimeMap[0];
-    const slideOrderIdx = composeState.slide_order.indexOf(firstMap.num);
-    if (slideOrderIdx >= 0) { selectedSlide = slideOrderIdx; renderPreview(); }
-  }
+  // 현재 위치의 voice_clips 즉시 트리거 (사용자 제스처 컨텍스트)
+  _triggerVoiceClips(resumeTime);
 
-  // elapsed=0인 voice_clips 즉시 재생 (사용자 제스처 컨텍스트)
-  _triggerVoiceClips(0);
-
-  _syncBgm(0);
+  _syncBgm(resumeTime);
   _previewTick();
 }
 
@@ -1941,12 +2973,29 @@ function _triggerSfx(elapsed) {
 function _triggerVoiceClips(elapsed) {
   (composeState.voice_clips || []).forEach(clip => {
     if (_voiceClipFired.has(clip.id)) return;
-    if (elapsed >= clip.start_time && elapsed < clip.start_time + 0.3) {
+    // 클립 시작 시간이 지났고, 아직 끝나지 않은 클립만 트리거
+    if (elapsed >= clip.start_time && elapsed < clip.start_time + (clip.duration || 2.0)) {
       _voiceClipFired.add(clip.id);
       if (clip.path) {
         const a = new Audio(clip.path);
         const vol = (clip.volume !== undefined ? clip.volume : (composeState.narr_volume !== undefined ? composeState.narr_volume : 100)) / 100;
         a.volume = vol;
+        // 실제 오디오 duration으로 클립 duration 보정 (MP3 duration 불일치 대응)
+        a.addEventListener("loadedmetadata", () => {
+          if (a.duration && Math.abs(a.duration - clip.duration) > 0.1) {
+            const diff = a.duration - clip.duration;
+            clip.duration = a.duration;
+            // slide_durations도 동기화 (누적 드리프트 방지)
+            if (clip.slide_num && composeState.slide_durations && composeState.slide_durations[clip.slide_num]) {
+              composeState.slide_durations[clip.slide_num] += diff;
+            }
+            _recalcClipPositions();
+            renderVoiceClipTrack();
+          }
+        });
+        // 이미 시작 시간이 지났으면 해당 위치부터 재생
+        const offset = elapsed - clip.start_time;
+        if (offset > 0.1) a.currentTime = offset;
         a.play().catch(() => {});
         _voiceClipAudios.push(a);
       }
@@ -1982,24 +3031,29 @@ function _previewTick() {
       if (i === _slideTimeMap.length - 1) curSlideIdx = i;
     }
 
-    // 슬라이드 전환 시 미리보기 갱신 + 오디오 재생
+    // 슬라이드 전환 시 미리보기 갱신 + 전환효과
     if (curSlideIdx !== _previewSlideIdx) {
+      const prevIdx = _previewSlideIdx;
       _previewSlideIdx = curSlideIdx;
       const map = _slideTimeMap[curSlideIdx];
       if (map) {
         const slideOrderIdx = composeState.slide_order.indexOf(map.num);
         if (slideOrderIdx >= 0) {
-          selectedSlide = slideOrderIdx;
-          document.querySelectorAll(".slide-block").forEach((el, i) => el.classList.toggle("active", i === slideOrderIdx));
-          renderPreview();
+          const prevMap = prevIdx >= 0 ? _slideTimeMap[prevIdx] : null;
+          const tr = prevMap ? _getTransition(prevMap.num, map.num) : null;
+          if (tr && tr.effect && tr.effect !== 'none' && tr.duration > 0) {
+            _applyPreviewTransition(tr.effect, tr.duration, slideOrderIdx);
+          } else {
+            selectedSlide = slideOrderIdx;
+            renderPreview();
+          }
         }
-
       }
     }
 
     // 플레이헤드 위치 (퍼센트)
     _playheadPos = elapsed / total;
-    updatePlayhead();
+    TL.needsRedraw = true;
 
     // BGM + SFX + Voice Clips 동기화
     _syncBgm(elapsed);
@@ -2065,7 +3119,6 @@ function switchTab(tab) {
   if (tab === 'elements') renderTabElements();
   if (tab === 'motion') renderTabMotion();
   if (tab === 'transition') renderTabTransition();
-  if (tab === 'layout') renderTabLayout();
 }
 
 // ─── Tab: Media ───
@@ -2100,7 +3153,47 @@ function renderTabMedia() {
   html += `<div class="media-upload-btn" onclick="document.getElementById('bg-upload-input-tab').click()">+ 이미지 업로드</div>`;
   html += `</div>`;
   html += `<input type="file" accept="image/*,video/mp4" id="bg-upload-input-tab" class="hidden" onchange="uploadCurrentSlideBg(this)">`;
+
+  // ── 선택된 슬라이드 이미지 조정 ──
+  const sl = getSelectedSlide();
+  if (sl && sl.bg_url) {
+    const ovr = getOverride(sl.num);
+    const imgScale = ovr.imgScale || 100;
+    const imgX = ovr.imgX || 50;
+    const imgY = ovr.imgY || 50;
+    const imgFit = ovr.imgFit || 'cover';
+
+    html += `<div class="ctrl-section" style="margin-top:10px;padding-top:8px;border-top:1px solid #2a2d38;">
+      <div class="comp-tab-subtitle">이미지 조정 <span style="color:#6b7280;font-weight:400;">S${sl.num}</span></div>
+      <div style="display:flex;gap:4px;margin-bottom:6px;">
+        ${['cover', 'contain', 'fill'].map(f =>
+          `<button onclick="updateImgOverride(${sl.num}, 'imgFit', '${f}')"
+            style="flex:1;padding:3px;font-size:9px;border:1px solid ${imgFit === f ? '#6366f1' : '#3a3d48'};background:${imgFit === f ? '#2d2f6b' : '#22242e'};color:${imgFit === f ? '#a5b4fc' : '#9ca3af'};border-radius:4px;cursor:pointer;">${f === 'cover' ? '채우기' : f === 'contain' ? '맞추기' : '늘이기'}</button>`
+        ).join('')}
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">크기</span>
+        <input type="range" min="50" max="200" step="5" value="${imgScale}"
+          style="flex:1;accent-color:#6366f1;" oninput="updateImgOverride(${sl.num}, 'imgScale', +this.value); this.nextElementSibling.textContent=this.value+'%'">
+        <span style="font-size:9px;color:#9ca3af;width:30px;text-align:right;">${imgScale}%</span>
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">X 위치</span>
+        <input type="range" min="0" max="100" step="1" value="${imgX}"
+          style="flex:1;accent-color:#6366f1;" oninput="updateImgOverride(${sl.num}, 'imgX', +this.value)">
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">Y 위치</span>
+        <input type="range" min="0" max="100" step="1" value="${imgY}"
+          style="flex:1;accent-color:#6366f1;" oninput="updateImgOverride(${sl.num}, 'imgY', +this.value)">
+      </div>
+    </div>`;
+  }
+
   el.innerHTML = html;
+}
+
+function updateImgOverride(slideNum, key, val) {
+  setOverride(slideNum, key, val);
+  renderPreview();
+  renderTabMedia();
 }
 
 function removeSlide(idx) {
@@ -2108,6 +3201,7 @@ function removeSlide(idx) {
   composeState.slide_order.splice(idx, 1);
   _dirty = true;
   if (selectedSlide >= composeState.slide_order.length) selectedSlide = composeState.slide_order.length - 1;
+  _recalcClipPositions();
   renderTimeline();
   renderTabMedia();
   renderPreview();
@@ -2227,6 +3321,22 @@ function renderTabBgm() {
   el.innerHTML = html;
 }
 
+// ─── 감정 표현 요소 SVG ───
+const EMOTION_SVGS = [
+  { name:"빙글빙글", anim:"em-halo", svg:`<circle cx="50" cy="50" r="40" fill="none" stroke="#333" stroke-width="1.8"/><circle cx="50" cy="50" r="32" fill="none" stroke="#555" stroke-width="1.4"/><g><path d="M50,4 L52,8 L56,10 L52,12 L50,16 L48,12 L44,10 L48,8Z" fill="#fff" stroke="#333" stroke-width="0.8"/><path d="M90,44 L88,48 L90,52 L86,50 L82,52 L84,48 L82,44 L86,46Z" fill="#FFD700" stroke="#333" stroke-width="0.8"/><path d="M50,84 L52,88 L56,90 L52,92 L50,96 L48,92 L44,90 L48,88Z" fill="#fff" stroke="#333" stroke-width="0.8"/><path d="M10,44 L12,48 L10,52 L14,50 L18,52 L16,48 L18,44 L14,46Z" fill="#4FC3F7" stroke="#333" stroke-width="0.8"/><animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="1.8s" repeatCount="indefinite"/></g><g><path d="M50,12 L52,16 L56,18 L52,20 L50,24 L48,20 L44,18 L48,16Z" fill="#66BB6A" stroke="#333" stroke-width="0.8"/><path d="M82,44 L80,48 L82,52 L78,50 L74,52 L76,48 L74,44 L78,46Z" fill="#fff" stroke="#333" stroke-width="0.8"/><path d="M50,76 L52,80 L56,82 L52,84 L50,88 L48,84 L44,82 L48,80Z" fill="#FF7043" stroke="#333" stroke-width="0.8"/><path d="M18,44 L20,48 L18,52 L22,50 L26,52 L24,48 L26,44 L22,46Z" fill="#AB47BC" stroke="#333" stroke-width="0.8"/><animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="2.6s" repeatCount="indefinite"/></g>` },
+  { name:"반짝반짝", anim:"em-pulse", svg:`<polygon points="50,5 58,38 95,38 65,58 75,92 50,70 25,92 35,58 5,38 42,38" fill="#FFD700" opacity="0.9"/><polygon points="50,25 54,43 72,43 57,53 62,70 50,60 38,70 43,53 28,43 46,43" fill="#FFF3B0"/>` },
+  { name:"한숨", anim:"em-float", svg:`<ellipse cx="30" cy="50" rx="22" ry="14" fill="#B0C4DE" opacity="0.7"/><ellipse cx="60" cy="35" rx="18" ry="11" fill="#B0C4DE" opacity="0.5"/><ellipse cx="80" cy="55" rx="14" ry="9" fill="#B0C4DE" opacity="0.4"/><path d="M15,50 Q5,40 20,35" fill="none" stroke="#B0C4DE" stroke-width="3" stroke-linecap="round" opacity="0.6"/>` },
+  { name:"하트", anim:"em-float", svg:`<path d="M50,85 C20,65 5,45 5,30 A20,20,0,0,1,50,25 A20,20,0,0,1,95,30 C95,45 80,65 50,85Z" fill="#FF4D6D"/>` },
+  { name:"분노", anim:"em-shake", svg:`<g fill="#FF3333"><path d="M25,20 L50,30 L40,5 L50,30 L75,20 L50,30 L50,30Z" opacity="0.9"/><path d="M75,80 L50,70 L60,95 L50,70 L25,80 L50,70Z" opacity="0.9"/><path d="M20,75 L30,50 L5,60 L30,50 L20,25 L30,50Z" opacity="0.7"/><path d="M80,25 L70,50 L95,40 L70,50 L80,75 L70,50Z" opacity="0.7"/></g>` },
+  { name:"당황", anim:"em-bounce", svg:`<path d="M40,15 Q42,50 35,85" fill="none" stroke="#4FC3F7" stroke-width="5" stroke-linecap="round" opacity="0.8"/><ellipse cx="37" cy="90" rx="5" ry="4" fill="#4FC3F7" opacity="0.6"/><path d="M65,25 Q67,55 62,75" fill="none" stroke="#4FC3F7" stroke-width="4" stroke-linecap="round" opacity="0.6"/><ellipse cx="61" cy="80" rx="4" ry="3" fill="#4FC3F7" opacity="0.4"/>` },
+  { name:"물음표", anim:"em-wobble", svg:`<text x="50" y="72" text-anchor="middle" font-size="70" font-weight="900" fill="#FFB300" stroke="#E65100" stroke-width="2">?</text>` },
+  { name:"느낌표", anim:"em-bounce", svg:`<text x="50" y="72" text-anchor="middle" font-size="70" font-weight="900" fill="#FF5252" stroke="#B71C1C" stroke-width="2">!</text>` },
+  { name:"음표", anim:"em-float", svg:`<text x="28" y="60" font-size="50" fill="#AB47BC">♪</text><text x="58" y="45" font-size="38" fill="#AB47BC" opacity="0.7">♫</text>` },
+  { name:"전구", anim:"em-pulse", svg:`<ellipse cx="50" cy="40" rx="24" ry="26" fill="#FFEE58" stroke="#FBC02D" stroke-width="2"/><rect x="40" y="64" width="20" height="8" rx="2" fill="#FBC02D"/><rect x="42" y="72" width="16" height="4" rx="2" fill="#F9A825"/><line x1="50" y1="10" x2="50" y2="2" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/><line x1="78" y1="20" x2="84" y2="14" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/><line x1="22" y1="20" x2="16" y2="14" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/><line x1="85" y1="42" x2="92" y2="42" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/><line x1="15" y1="42" x2="8" y2="42" stroke="#FBC02D" stroke-width="3" stroke-linecap="round"/>` },
+  { name:"졸림", anim:"em-float", svg:`<text x="20" y="55" font-size="30" font-weight="900" fill="#78909C" opacity="0.5">z</text><text x="42" y="40" font-size="40" font-weight="900" fill="#78909C" opacity="0.7">z</text><text x="65" y="25" font-size="50" font-weight="900" fill="#78909C" opacity="0.9">Z</text>` },
+  { name:"폭발", anim:"em-tada", svg:`<polygon points="50,2 62,30 95,15 72,42 98,58 68,60 75,92 50,72 25,92 32,60 2,58 28,42 5,15 38,30" fill="#FF9800" stroke="#E65100" stroke-width="1.5"/><circle cx="50" cy="50" r="15" fill="#FFEB3B"/>` },
+];
+
 // ─── Tab: Elements (요소 — 말풍선/이미지) ───
 
 const BUBBLE_SVGS = [
@@ -2262,10 +3372,51 @@ function renderTabElements() {
     html += `<div class="comp-tab-subtitle" style="margin-top:12px;">배치된 요소 (${elems.length})</div>`;
     elems.forEach(elem => {
       const eIdx = composeState.elements.indexOf(elem);
-      html += `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #22242e;">
-        <svg viewBox="0 0 100 95" width="24" height="24" style="flex-shrink:0;"><rect width="100" height="95" rx="4" fill="#2a2d38"/>${BUBBLE_SVGS[elem.bubbleIdx]?.svg || ''}</svg>
-        <span style="flex:1;font-size:9px;color:#d1d5db;">${elem.name || '말풍선'}</span>
-        <button onclick="removeElement(${eIdx})" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:14px;">&times;</button>
+      const flipStyle = elem.flipX ? "transform:scaleX(-1);" : "";
+      const isBubble = elem.type === "bubble";
+      const isEmotion = elem.type === "emotion";
+      const thumbVb = isEmotion ? "0 0 100 100" : "0 0 100 95";
+      const thumbSvg = isEmotion
+        ? (EMOTION_SVGS[elem.emotionIdx]?.svg || '')
+        : (BUBBLE_SVGS[elem.bubbleIdx]?.svg || '');
+      html += `<div style="padding:4px 0;border-bottom:1px solid #22242e;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <svg viewBox="${thumbVb}" width="24" height="24" style="flex-shrink:0;${flipStyle}"><rect width="100" height="100" rx="4" fill="#2a2d38"/>${thumbSvg}</svg>
+          <span style="flex:1;font-size:9px;color:#d1d5db;">${elem.name || '말풍선'}</span>
+          <button onclick="toggleElementFlip(${eIdx})" title="좌우 반전" style="background:none;border:none;color:${elem.flipX ? '#60a5fa' : '#6b7280'};cursor:pointer;font-size:12px;">⇔</button>
+          <button onclick="removeElement(${eIdx})" style="background:none;border:none;color:#f87171;cursor:pointer;font-size:14px;">&times;</button>
+        </div>
+        ${isBubble ? `<div style="display:flex;align-items:center;gap:6px;margin-top:4px;padding-left:4px;">
+          <div style="display:flex;align-items:center;gap:2px;flex:1;">
+            <span style="font-size:8px;color:#6b7280;white-space:nowrap;">배경</span>
+            <input type="color" value="${elem.fillColor || '#ffffff'}" style="width:20px;height:18px;border:none;background:none;cursor:pointer;padding:0;"
+                   onchange="updateElementProp(${eIdx}, 'fillColor', this.value)">
+          </div>
+          <div style="display:flex;align-items:center;gap:2px;flex:1;">
+            <span style="font-size:8px;color:#6b7280;white-space:nowrap;">테두리</span>
+            <input type="color" value="${elem.strokeColor || '#000000'}" style="width:20px;height:18px;border:none;background:none;cursor:pointer;padding:0;"
+                   onchange="updateElementProp(${eIdx}, 'strokeColor', this.value)">
+            <input type="number" class="ctrl-input" value="${elem.strokeWidth || 2}" min="0" max="10" step="0.5"
+                   style="width:36px;font-size:9px;padding:1px 2px;" title="두께"
+                   onchange="updateElementProp(${eIdx}, 'strokeWidth', +this.value)">
+          </div>
+          <button onclick="updateElementProp(${eIdx}, 'strokeColor', '')" title="테두리 제거"
+                  style="background:none;border:none;color:${elem.strokeColor ? '#60a5fa' : '#3a3d48'};cursor:pointer;font-size:10px;">✕</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:3px;padding-left:4px;">
+          <div style="display:flex;align-items:center;gap:2px;flex:1;">
+            <span style="font-size:8px;color:#6b7280;white-space:nowrap;">텍스트</span>
+            <textarea class="ctrl-input" rows="2" style="flex:1;font-size:9px;padding:1px 4px;resize:vertical;min-height:22px;"
+                   oninput="updateElementProp(${eIdx}, 'text', this.value)">${_esc(elem.text || '')}</textarea>
+          </div>
+          <div style="display:flex;align-items:center;gap:2px;">
+            <input type="color" value="${elem.textColor || '#000000'}" style="width:20px;height:18px;border:none;background:none;cursor:pointer;padding:0;"
+                   onchange="updateElementProp(${eIdx}, 'textColor', this.value)">
+            <input type="number" class="ctrl-input" value="${elem.textSize || 36}" min="12" max="120" step="2"
+                   style="width:36px;font-size:9px;padding:1px 2px;" title="글자 크기"
+                   onchange="updateElementProp(${eIdx}, 'textSize', +this.value)">
+          </div>
+        </div>` : ''}
       </div>`;
     });
   }
@@ -2274,6 +3425,17 @@ function renderTabElements() {
   html += `<div class="comp-tab-subtitle" style="margin-top:12px;">이미지 요소</div>`;
   html += `<input type="file" accept="image/*" id="element-img-upload" class="hidden" onchange="addImageElement(this)">`;
   html += `<button onclick="document.getElementById('element-img-upload').click()" style="width:100%;padding:6px;background:#2a2d38;color:#9ca3af;border:1px dashed #3a3d48;border-radius:6px;font-size:10px;cursor:pointer;">+ 이미지 추가</button>`;
+
+  // 감정 표현 요소
+  html += `<div class="comp-tab-subtitle" style="margin-top:12px;">감정 표현</div>`;
+  html += `<div class="elements-grid">`;
+  EMOTION_SVGS.forEach((e, i) => {
+    html += `<div class="element-item" onclick="addEmotionElement(${i})" title="${e.name}">
+      <svg viewBox="0 0 100 100" width="100%" height="100%">${e.svg}</svg>
+      <div style="position:absolute;bottom:2px;left:0;right:0;text-align:center;font-size:7px;color:#9ca3af;">${e.name}</div>
+    </div>`;
+  });
+  html += `</div>`;
 
   el.innerHTML = html;
 }
@@ -2288,7 +3450,7 @@ function addBubbleElement(bubbleIdx) {
     slideNum: sl.num,
     bubbleIdx,
     name: BUBBLE_SVGS[bubbleIdx]?.name || "말풍선",
-    x: 540, y: 500,
+    x: 540, y: 960,
     width: 400, height: 300,
     rotation: 0,
     text: "",
@@ -2299,6 +3461,55 @@ function addBubbleElement(bubbleIdx) {
   _dirty = true;
   renderPreview();
   renderTabElements();
+}
+
+function addEmotionElement(emotionIdx) {
+  const sl = getSelectedSlide();
+  if (!sl) return;
+  if (!composeState.elements) composeState.elements = [];
+  const emo = EMOTION_SVGS[emotionIdx];
+  composeState.elements.push({
+    id: `el_${Date.now()}`,
+    type: "emotion",
+    slideNum: sl.num,
+    emotionIdx,
+    name: emo?.name || "감정",
+    emotion: emo?.anim?.replace("em-", "") || "",
+    x: 540, y: 400,
+    width: 200, height: 200,
+    rotation: 0,
+  });
+  _dirty = true;
+  renderPreview();
+  renderTabElements();
+}
+
+function toggleElementFlip(idx) {
+  const elem = (composeState.elements || [])[idx];
+  if (!elem) return;
+  elem.flipX = !elem.flipX;
+  _dirty = true;
+  renderPreview();
+  renderTabElements();
+}
+
+function updateElementEmotion(idx, val) {
+  const elem = (composeState.elements || [])[idx];
+  if (!elem) return;
+  elem.emotion = val || "";
+  _dirty = true;
+  renderPreview();
+  renderTabElements();
+}
+
+function updateElementProp(idx, key, val) {
+  const elem = (composeState.elements || [])[idx];
+  if (!elem) return;
+  elem[key] = val;
+  _dirty = true;
+  renderPreview();
+  // 텍스트 입력 중 패널 재렌더링하면 포커스 날아감 → text/textSize/textColor만 미리보기만 갱신
+  if (!["text"].includes(key)) renderTabElements();
 }
 
 function addImageElement(input) {
@@ -2344,99 +3555,7 @@ function renderTabText() {
   const sl = getSelectedSlide();
   if (!sl) { el.innerHTML = `<div class="text-xs text-gray-600" style="padding:20px;">슬라이드를 선택하세요</div>`; return; }
 
-  const ovr = getOverride(sl.num);
-  const isHidden = ovr.hidden === true;
-  const ovrMain = ovr.main !== undefined ? ovr.main : (sl.main || "").replace(/<[^>]*>/g, "");
-  const ovrSub = ovr.sub !== undefined ? ovr.sub : (sl.sub || "").replace(/<[^>]*>/g, "");
-  const _chCfg = composerData.channel_config || {};
-  const _cfgMain = _chCfg.slide_main_text_size || 100;
-  const _cfgSub = _chCfg.sub_text_size || 52;
-
-  let html = `<div class="comp-tab-title">오버레이 편집 <span style="color:#6b7280;font-weight:400;">슬라이드 ${sl.num}</span></div>`;
-  html += `<div class="ctrl-section">
-    <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;">
-      <input type="checkbox" ${isHidden ? '' : 'checked'} onchange="toggleOverlay(${sl.num}, !this.checked)"
-             style="accent-color:#6366f1;width:14px;height:14px;">
-      <span style="font-size:11px;color:#d1d5db;">오버레이 표시</span>
-    </label>
-  </div>`;
-
-  html += `<div style="${isHidden ? 'opacity:0.3;pointer-events:none;' : ''}">`;
-  // 제목/부제: richMain/richSub에 HTML(색상 span 포함) 저장, 없으면 plain text
-  const richMain = ovr.richMain || _esc(ovrMain);
-  const richSub = ovr.richSub || _esc(ovrSub);
-  html += `<div class="ctrl-section">
-    <div style="font-size:9px;color:#6b7280;margin-bottom:4px;">텍스트 선택 후 서식 적용</div>
-    <div class="rich-toolbar" style="display:flex;gap:4px;margin-bottom:6px;align-items:center;flex-wrap:wrap;">
-      <div style="display:flex;gap:2px;">
-        ${['#ffffff','#ffd700','#ff6b35','#ff4444','#4fc3f7','#66bb6a','#c084fc'].map(c =>
-          `<div onmousedown="event.preventDefault()" onclick="applyTextColor('${c}')" style="width:16px;height:16px;border-radius:2px;background:${c};cursor:pointer;border:1px solid #444;" title="${c}"></div>`
-        ).join('')}
-        <input type="color" id="custom-text-color" style="width:16px;height:16px;border:none;background:none;cursor:pointer;padding:0;" onmousedown="event.preventDefault()" onchange="applyTextColor(this.value)" title="커스텀">
-        <div onmousedown="event.preventDefault()" onclick="removeTextStyle()" style="width:16px;height:16px;border-radius:2px;background:linear-gradient(135deg,#333 45%,#f44 50%,#333 55%);cursor:pointer;border:1px solid #444;" title="서식 초기화"></div>
-      </div>
-      <span style="color:#3a3d48;">|</span>
-      <select id="rich-font-sel" onmousedown="event.preventDefault()" onchange="applyTextFont(this.value)" style="font-size:9px;background:#2a2d38;color:#ccc;border:1px solid #3a3d48;border-radius:3px;padding:1px 2px;max-width:90px;">
-        <option value="">폰트</option>
-        ${['Noto Sans KR','Black Han Sans','Jua','Do Hyeon','Gothic A1','Nanum Gothic','Gaegu'].map(f =>
-          `<option value="${f}">${f}</option>`
-        ).join('')}
-      </select>
-      <select id="rich-size-sel" onmousedown="event.preventDefault()" onchange="applyTextSize(this.value)" style="font-size:9px;background:#2a2d38;color:#ccc;border:1px solid #3a3d48;border-radius:3px;padding:1px 2px;width:42px;">
-        <option value="">크기</option>
-        ${[60,70,80,90,100,110,120,140,160].map(s => `<option value="${s}%">${s}%</option>`).join('')}
-      </select>
-      <span onmousedown="event.preventDefault()" onclick="applyTextBold()" style="cursor:pointer;font-weight:900;color:#ccc;font-size:12px;padding:0 3px;" title="굵게">B</span>
-    </div>
-    <div style="font-size:9px;color:#f59e0b;margin-bottom:2px;">제목</div>
-    <div id="rich-main-edit" class="rich-text-edit" contenteditable="true"
-         data-slide="${sl.num}" data-field="main"
-         oninput="onRichTextInput(${sl.num}, 'main')">${richMain}</div>
-    <div style="font-size:9px;color:#60a5fa;margin-top:6px;margin-bottom:2px;">부제</div>
-    <div id="rich-sub-edit" class="rich-text-edit" contenteditable="true"
-         data-slide="${sl.num}" data-field="sub"
-         oninput="onRichTextInput(${sl.num}, 'sub')">${richSub}</div>
-  </div>`;
-
-  html += `<div class="ctrl-section">
-    <div class="comp-tab-subtitle">크기 / 위치</div>
-    <div class="ctrl-grid-2">
-      <div class="ctrl-row"><span class="ctrl-label">제목</span><input class="ctrl-input" type="number" value="${ovr.mainSize || _cfgMain}" min="20" max="200" step="4" onchange="updateOverride(${sl.num}, 'mainSize', +this.value)"></div>
-      <div class="ctrl-row"><span class="ctrl-label">부제</span><input class="ctrl-input" type="number" value="${ovr.subSize || _cfgSub}" min="16" max="120" step="4" onchange="updateOverride(${sl.num}, 'subSize', +this.value)"></div>
-      <div class="ctrl-row"><span class="ctrl-label">너비</span><input class="ctrl-input" type="number" value="${ovr.maxWidth || 1000}" min="200" max="1080" step="20" onchange="updateOverride(${sl.num}, 'maxWidth', +this.value)"></div>
-      <div class="ctrl-row"><span class="ctrl-label">X</span><input class="ctrl-input" type="number" value="${ovr.x !== undefined ? ovr.x : 540}" min="0" max="1080" onchange="updateOverride(${sl.num}, 'x', +this.value)"></div>
-      <div class="ctrl-row"><span class="ctrl-label">Y</span><input class="ctrl-input" type="number" value="${ovr.y !== undefined ? ovr.y : 960}" min="0" max="1920" onchange="updateOverride(${sl.num}, 'y', +this.value)"></div>
-    </div>
-  </div>`;
-
-  html += `<div class="ctrl-section">
-    <div class="comp-tab-subtitle">스타일</div>
-    <div class="ctrl-grid-2">
-      <div class="ctrl-row"><span class="ctrl-label">제목색</span>
-        <input type="color" value="${ovr.mainColor || '#ffffff'}" style="width:28px;height:20px;border:none;background:none;cursor:pointer;padding:0;" onchange="updateOverride(${sl.num}, 'mainColor', this.value)">
-      </div>
-      <div class="ctrl-row"><span class="ctrl-label">부제색</span>
-        <input type="color" value="${ovr.subColor || '#d1d5db'}" style="width:28px;height:20px;border:none;background:none;cursor:pointer;padding:0;" onchange="updateOverride(${sl.num}, 'subColor', this.value)">
-      </div>
-    </div>
-    <div class="ctrl-row"><span class="ctrl-label">폰트</span>
-      <select class="ctrl-input" style="font-size:10px;" onchange="updateOverride(${sl.num}, 'fontFamily', this.value)">
-        ${['Noto Sans KR','Black Han Sans','Jua','Do Hyeon','Gothic A1','Nanum Gothic','Nanum Myeongjo','Gaegu'].map(f =>
-          `<option value="${f}" ${(ovr.fontFamily || 'Noto Sans KR') === f ? 'selected' : ''}>${f}</option>`
-        ).join('')}
-      </select>
-    </div>
-    <div class="ctrl-row"><span class="ctrl-label">배경</span>
-      <input type="range" min="0" max="100" step="5" value="${ovr.bgOpacity !== undefined ? ovr.bgOpacity : (_chCfg.slide_text_bg !== undefined ? _chCfg.slide_text_bg * 10 : 40)}"
-             oninput="updateOverride(${sl.num}, 'bgOpacity', +this.value); this.nextElementSibling.textContent=this.value+'%';"
-             style="flex:1;accent-color:#6366f1;">
-      <span style="font-size:9px;color:#6b7280;width:28px;text-align:right;">${ovr.bgOpacity !== undefined ? ovr.bgOpacity : (_chCfg.slide_text_bg !== undefined ? _chCfg.slide_text_bg * 10 : 40)}%</span>
-    </div>
-  </div>`;
-  html += `<button onclick="resetOverride(${sl.num})" style="width:100%;padding:5px;background:#2a2d38;color:#9ca3af;border:none;border-radius:5px;font-size:10px;cursor:pointer;">초기화</button>`;
-  html += `</div>`;
-
-  // 텍스트 컬러: 새 방식 (리치 텍스트)으로 대체됨 — 위 contenteditable 섹션에서 처리
+  let html = `<div class="comp-tab-title">텍스트 <span style="color:#6b7280;font-weight:400;">슬라이드 ${sl.num}</span></div>`;
 
   // ── 자유 텍스트 ──
   const freeTexts = (composeState.freeTexts || []).filter(ft => ft.slideNum === sl.num);
@@ -2445,8 +3564,8 @@ function renderTabText() {
   freeTexts.forEach((ft, fi) => {
     const ftIdx = (composeState.freeTexts || []).indexOf(ft);
     html += `<div style="background:#22242e;border-radius:6px;padding:6px;margin-bottom:6px;">
-      <div class="ctrl-row"><span class="ctrl-label">텍스트</span>
-        <input class="ctrl-input" value="${_esc(ft.text)}" onchange="updateFreeText(${ftIdx}, 'text', this.value)">
+      <div class="ctrl-row" style="flex-direction:column;align-items:stretch;"><span class="ctrl-label">텍스트</span>
+        <textarea class="ctrl-input" rows="2" style="resize:vertical;min-height:28px;" oninput="updateFreeText(${ftIdx}, 'text', this.value)">${_esc(ft.text)}</textarea>
       </div>
       <div class="ctrl-grid-2">
         <div class="ctrl-row"><span class="ctrl-label">크기</span>
@@ -2475,134 +3594,6 @@ function renderTabText() {
   el.innerHTML = html;
 }
 
-function renderTabLayout() {
-  const el = document.getElementById("tab-layout");
-  if (!el) return;
-
-  const _cfg = composerData.channel_config || {};
-  const _so = composeState.style_overrides || {};
-  const _get = (k, d) => _so[k] !== undefined ? _so[k] : (_cfg[k] !== undefined ? _cfg[k] : d);
-
-  const _layout = _get('slide_layout', 'full');
-  const _bgMode = _get('bg_display_mode', 'zone');
-  const _zoneRatio = _get('slide_zone_ratio', '3:4:3');
-  const _mainSize = _get('slide_main_text_size', 100);
-  const _subTextSize = _get('sub_text_size', 56);
-  const _textBg = _get('slide_text_bg', 4);
-  const _accentColor = _get('slide_accent_color', '#ff6b35');
-  const _hlColor = _get('slide_hl_color', '#ffd700');
-  const _gradient = _get('slide_bg_gradient', '#0b0e1a,#141b2d,#1a2238');
-
-  let html = `<div class="comp-tab-title">레이아웃</div>
-  <div class="ctrl-section">
-    <div class="ctrl-grid-2">
-      <div class="ctrl-row"><span class="ctrl-label">레이아웃</span>
-        <select class="ctrl-input" style="font-size:10px;" onchange="_updateStyleCfg('slide_layout', this.value)">
-          ${['full','center','top','bottom'].map(v => `<option value="${v}" ${v===_layout?'selected':''}>${{full:'전체',center:'가운데',top:'상단',bottom:'하단'}[v]}</option>`).join('')}
-        </select>
-      </div>
-      <div class="ctrl-row"><span class="ctrl-label">배경</span>
-        <select class="ctrl-input" style="font-size:10px;" onchange="_updateStyleCfg('bg_display_mode', this.value)">
-          <option value="zone" ${_bgMode==='zone'?'selected':''}>영역만</option>
-          <option value="fullscreen" ${_bgMode==='fullscreen'?'selected':''}>전체</option>
-        </select>
-      </div>
-    </div>
-    <div class="ctrl-row" style="margin-top:4px;"><span class="ctrl-label">영역 비율</span>
-      <input class="ctrl-input" value="${_zoneRatio}" style="font-size:10px;" onchange="_updateStyleCfg('slide_zone_ratio', this.value)">
-    </div>
-    <div class="ctrl-row" style="margin-top:4px;"><span class="ctrl-label">배경 불투명도</span>
-      <input type="range" min="0" max="10" value="${_textBg}" style="flex:1;accent-color:#f97316;"
-        oninput="_updateStyleCfg('slide_text_bg', +this.value); this.nextElementSibling.textContent=this.value;">
-      <span style="font-size:9px;color:#9ca3af;width:16px;text-align:right;">${_textBg}</span>
-    </div>
-    <div class="ctrl-grid-2" style="margin-top:4px;">
-      <div class="ctrl-row"><span class="ctrl-label">메인 텍스트</span>
-        <input class="ctrl-input" type="number" value="${_mainSize}" min="40" max="150" step="5"
-          onchange="_updateStyleCfg('slide_main_text_size', +this.value)">
-      </div>
-      <div class="ctrl-row"><span class="ctrl-label">서브 텍스트</span>
-        <input class="ctrl-input" type="number" value="${_subTextSize}" min="20" max="100" step="4"
-          onchange="_updateStyleCfg('sub_text_size', +this.value)">
-      </div>
-    </div>
-    <div class="ctrl-grid-2" style="margin-top:4px;">
-      <div class="ctrl-row"><span class="ctrl-label">강조 색상</span>
-        <input type="color" value="${_accentColor}" style="width:24px;height:20px;border:none;cursor:pointer;padding:0;"
-          onchange="_updateStyleCfg('slide_accent_color', this.value)">
-        <span style="font-size:8px;color:#6b7280;">${_accentColor}</span>
-      </div>
-      <div class="ctrl-row"><span class="ctrl-label">하이라이트</span>
-        <input type="color" value="${_hlColor}" style="width:24px;height:20px;border:none;cursor:pointer;padding:0;"
-          onchange="_updateStyleCfg('slide_hl_color', this.value)">
-        <span style="font-size:8px;color:#6b7280;">${_hlColor}</span>
-      </div>
-    </div>
-    <div class="ctrl-row" style="margin-top:4px;"><span class="ctrl-label">그라디언트</span>
-      <input class="ctrl-input" value="${_gradient}" style="font-size:9px;" onchange="_updateStyleCfg('slide_bg_gradient', this.value)">
-    </div>
-  </div>`;
-
-  // ── 자막 ──
-  const subOn = _get('subtitle_enabled', false);
-  const subSize = _get('subtitle_font_size', 48);
-  const subOutline = _get('subtitle_outline', 3);
-  const subMargin = _get('subtitle_margin_v', 100);
-  const subFont = _get('subtitle_font', 'Noto Sans KR');
-  const subAlign = _get('subtitle_alignment', 2);
-
-  html += `<div class="comp-tab-title" style="margin-top:12px;">자막</div>
-  <div class="ctrl-section">
-    <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;cursor:pointer;">
-      <input type="checkbox" ${subOn ? 'checked' : ''} onchange="_updateSubtitleCfg('subtitle_enabled', this.checked)"
-             style="accent-color:#6366f1;width:14px;height:14px;">
-      <span style="font-size:11px;color:#d1d5db;">자막 표시</span>
-    </label>
-    <div style="${subOn ? '' : 'opacity:0.3;pointer-events:none;'}">
-      <div class="ctrl-row"><span class="ctrl-label">폰트</span>
-        <select class="ctrl-input" style="font-size:10px;" onchange="_updateSubtitleCfg('subtitle_font', this.value)">
-          ${['Noto Sans KR','Malgun Gothic','맑은 고딕','Arial','NanumGothic','NanumSquare'].map(f =>
-            `<option value="${f}" ${f === subFont ? 'selected' : ''}>${f}</option>`
-          ).join('')}
-        </select>
-      </div>
-      <div class="ctrl-row"><span class="ctrl-label">위치</span>
-        <select class="ctrl-input" style="font-size:10px;" onchange="_updateSubtitleCfg('subtitle_alignment', +this.value)">
-          <option value="2" ${subAlign===2?'selected':''}>하단</option>
-          <option value="8" ${subAlign===8?'selected':''}>상단</option>
-          <option value="5" ${subAlign===5?'selected':''}>중앙</option>
-        </select>
-      </div>
-      <div class="ctrl-row"><span class="ctrl-label">크기</span>
-        <input type="range" min="24" max="120" value="${subSize}" step="2" style="flex:1;accent-color:#6366f1;"
-          oninput="_updateSubtitleCfg('subtitle_font_size', +this.value); this.nextElementSibling.textContent=this.value+'px';">
-        <span style="font-size:9px;color:#9ca3af;width:35px;text-align:right;">${subSize}px</span>
-      </div>
-      <div class="ctrl-row"><span class="ctrl-label">테두리</span>
-        <input type="range" min="0" max="6" value="${subOutline}" style="flex:1;accent-color:#6366f1;"
-          oninput="_updateSubtitleCfg('subtitle_outline', +this.value); this.nextElementSibling.textContent=this.value;">
-        <span style="font-size:9px;color:#9ca3af;width:20px;text-align:right;">${subOutline}</span>
-      </div>
-      <div class="ctrl-row"><span class="ctrl-label">여백</span>
-        <input type="range" min="20" max="500" value="${subMargin}" step="10" style="flex:1;accent-color:#6366f1;"
-          oninput="_updateSubtitleCfg('subtitle_margin_v', +this.value); this.nextElementSibling.textContent=this.value+'px';">
-        <span style="font-size:9px;color:#9ca3af;width:35px;text-align:right;">${subMargin}px</span>
-      </div>
-    </div>
-  </div>`;
-
-  el.innerHTML = html;
-}
-
-function _updateStyleCfg(key, value) {
-  if (!composerData.channel_config) composerData.channel_config = {};
-  composerData.channel_config[key] = value;
-  if (!composeState.style_overrides) composeState.style_overrides = {};
-  composeState.style_overrides[key] = value;
-  _dirty = true;
-  renderPreview();
-  renderTabText();
-}
 
 function _updateSubtitleCfg(key, value) {
   if (!composerData.channel_config) composerData.channel_config = {};
@@ -2612,6 +3603,7 @@ function _updateSubtitleCfg(key, value) {
   _dirty = true;
   renderPreview();
   renderSubtitleTrack();
+  if (key === 'subtitle_enabled') renderTabNarration();
 }
 
 // ─── Tab: Motion (배경 모션) ───
@@ -2714,36 +3706,54 @@ async function renderTabTransition() {
 
   const tr = _getTransition(_selectedTrPair.from, _selectedTrPair.to);
 
-  // 전환 쌍 선택 리스트
-  let html = `<div class="comp-tab-subtitle" style="margin-bottom:6px;">전환 구간 선택</div>`;
-  html += `<div class="tr-pair-list">`;
-  for (let i = 0; i < slides.length - 1; i++) {
-    const f = slides[i].num, t = slides[i + 1].num;
-    const pairTr = _getTransition(f, t);
-    const active = _selectedTrPair.from === f && _selectedTrPair.to === t;
-    const lbl = _transitionList.find(x => x.id === pairTr.effect)?.label || pairTr.effect;
-    html += `<button class="tr-pair-btn ${active ? 'active' : ''}"
-      onclick="_selectedTrPair={from:${f},to:${t}}; renderTabTransition();">
-      <span>${f} → ${t}</span><span style="opacity:0.6;">${lbl} ${pairTr.duration}s</span>
-    </button>`;
-  }
-  html += `</div>`;
+  // 구간 네비게이션 (◀ 1→2 ▶)
+  const curPairIdx = slides.findIndex((s, i) => i < slides.length - 1
+    && s.num === _selectedTrPair.from && slides[i + 1].num === _selectedTrPair.to);
+  const totalPairs = slides.length - 1;
+  const pairLabel = `${_selectedTrPair.from} → ${_selectedTrPair.to}`;
+  let html = `<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:8px;">
+    <button onclick="_navTrPair(-1)" style="background:none;border:none;color:${curPairIdx > 0 ? '#a5b4fc' : '#3a3d48'};font-size:16px;cursor:pointer;padding:2px 6px;"
+      ${curPairIdx <= 0 ? 'disabled' : ''}>◀</button>
+    <span style="font-size:12px;font-weight:700;color:#e5e7eb;">${pairLabel}</span>
+    <span style="font-size:9px;color:#6b7280;">(${curPairIdx + 1}/${totalPairs})</span>
+    <button onclick="_navTrPair(1)" style="background:none;border:none;color:${curPairIdx < totalPairs - 1 ? '#a5b4fc' : '#3a3d48'};font-size:16px;cursor:pointer;padding:2px 6px;"
+      ${curPairIdx >= totalPairs - 1 ? 'disabled' : ''}>▶</button>
+  </div>`;
 
-  // 미리보기 영상
-  html += `<video id="transition-preview-video" class="w-full rounded my-2" style="max-height:90px;background:#000;" loop muted playsinline></video>`;
+  // 미리보기 영상 (크게)
+  html += `<video id="transition-preview-video" class="w-full rounded" style="max-height:200px;aspect-ratio:9/16;object-fit:contain;background:#000;margin-bottom:8px;" loop muted playsinline></video>`;
 
-  // 효과 그리드
-  html += `<div class="comp-tab-subtitle" style="margin:6px 0 4px;">효과</div>`;
-  html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;margin-bottom:8px;">`;
+  // 효과 카테고리별 그리드
+  const cats = [];
+  const catMap = {};
   _transitionList.forEach(t => {
-    const isActive = t.id === tr.effect;
-    html += `<button onclick="selectTransition('${t.id}')"
-      class="text-left px-2 py-1 rounded text-xs transition-all ${isActive ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}"
-      style="border:1px solid ${isActive ? '#6366f1' : '#333'};">
-      <div class="font-medium" style="font-size:10px;">${t.label}</div>
-    </button>`;
+    const c = t.cat || "기타";
+    if (!catMap[c]) { catMap[c] = []; cats.push(c); }
+    catMap[c].push(t);
   });
-  html += `</div>`;
+  cats.forEach(cat => {
+    const items = catMap[cat];
+    const hasActive = items.some(t => t.id === tr.effect);
+    const collapsed = hasActive ? '' : 'collapsed';
+    html += `<div class="tr-cat-section ${collapsed}" style="margin-bottom:6px;">
+      <button onclick="this.parentElement.classList.toggle('collapsed')"
+        class="tr-cat-header" style="display:flex;align-items:center;gap:4px;width:100%;background:none;border:none;cursor:pointer;padding:3px 0;">
+        <span style="font-size:8px;color:#6b7280;transition:transform 0.15s;" class="tr-cat-arrow">▼</span>
+        <span style="font-size:10px;font-weight:700;color:${hasActive ? '#a5b4fc' : '#9ca3af'};">${cat}</span>
+        <span style="font-size:8px;color:#4b5563;">(${items.length})</span>
+      </button>
+      <div class="tr-cat-body" style="display:grid;grid-template-columns:1fr 1fr;gap:3px;margin-top:3px;">`;
+    items.forEach(t => {
+      const isActive = t.id === tr.effect;
+      html += `<button onclick="selectTransition('${t.id}')"
+        class="text-left px-2 py-1 rounded text-xs transition-all ${isActive ? 'bg-indigo-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}"
+        style="border:1px solid ${isActive ? '#6366f1' : '#333'};"
+        title="${t.desc}">
+        <div class="font-medium" style="font-size:10px;">${t.label}</div>
+      </button>`;
+    });
+    html += `</div></div>`;
+  });
 
   // duration
   html += `<div class="ctrl-section">
@@ -2765,6 +3775,17 @@ async function renderTabTransition() {
 
   el.innerHTML = html;
   _playTransitionPreview(tr.effect, tr.duration);
+}
+
+function _navTrPair(dir) {
+  const slides = getOrderedSlides();
+  if (slides.length < 2) return;
+  const curIdx = slides.findIndex((s, i) => i < slides.length - 1
+    && s.num === _selectedTrPair.from && slides[i + 1].num === _selectedTrPair.to);
+  const newIdx = Math.max(0, Math.min(slides.length - 2, curIdx + dir));
+  _selectedTrPair = { from: slides[newIdx].num, to: slides[newIdx + 1].num };
+  selectSlide(newIdx + 1);
+  renderTabTransition();
 }
 
 function selectTransition(effect) {
@@ -2853,6 +3874,7 @@ function renderTabNarration() {
         <button onclick="event.stopPropagation(); previewAudio('${f.url}', this)" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:10px;padding:0 2px;">&#9654;</button>
         <span style="flex:1;color:${inUse ? '#5eead4' : '#d1d5db'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_esc(f.filename)}">${_esc(f.filename)}</span>
         <span style="color:#6b7280;white-space:nowrap;">${f.duration.toFixed(1)}s</span>
+        <button onclick="event.stopPropagation(); splitNarrationToAll('${_esc(f.filename)}')" style="background:none;border:none;color:#f59e0b;cursor:pointer;font-size:10px;padding:0 2px;" title="전체 슬라이드에 분할 배치">&#9998;</button>
         <button onclick="event.stopPropagation(); deleteNarrFile('${_esc(f.filename)}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px;padding:0 2px;" title="삭제">&times;</button>
       </div>`;
     });
@@ -2862,29 +3884,32 @@ function renderTabNarration() {
   html += `<div id="narr-pool-status" style="font-size:9px;color:#6b7280;margin-top:2px;margin-bottom:8px;"></div>`;
 
   // ── 배치된 음성 클립 ──
-  html += `<div class="comp-tab-subtitle">배치된 클립 (${clips.length}개)</div>`;
-  if (clips.length > 0) {
-    clips.sort((a, b) => a.start_time - b.start_time).forEach((clip, ci) => {
-      const name = clip.file.replace(/\.[^.]+$/, '');
-      html += `<div style="display:flex;align-items:center;gap:4px;padding:3px 4px;background:#0d2a2a;border-radius:4px;margin-bottom:2px;font-size:10px;">
-        <button onclick="previewAudio('${clip.path}', this)" style="background:none;border:none;color:#5eead4;cursor:pointer;font-size:10px;padding:0 2px;">&#9654;</button>
-        <span style="flex:1;color:#5eead4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_esc(name)}</span>
-        <span style="color:#6b7280;white-space:nowrap;">${clip.start_time.toFixed(1)}s</span>
-        <span style="color:#5eead4;white-space:nowrap;">${clip.duration.toFixed(1)}s</span>
-        <button onclick="_removeVoiceClip('${clip.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px;padding:0 2px;" title="삭제">&times;</button>
-      </div>`;
-    });
-  } else {
-    html += `<div style="font-size:10px;color:#6b7280;padding:4px;">음성 클립 없음 — TTS 생성 또는 파일 풀에서 드래그</div>`;
-  }
-
   // ── 자막 항목 ──
-  html += `<div class="comp-tab-subtitle" style="margin-top:8px;">자막 (${subs.length}개)</div>`;
+  // slide_audio에서 sentence_idx 매핑 구성
+  const _sentIdxMap = {};  // text → sentence_idx
+  if (composerData.slide_audio) {
+    Object.values(composerData.slide_audio).flat().forEach(af => {
+      if (af.text && af.sentence_idx !== undefined) _sentIdxMap[af.text] = af.sentence_idx;
+    });
+  }
+  // voice_clips 수 표시
+  const _clipCount = clips.length;
+  const _audioLabel = _clipCount > 0 ? `<span style="color:#34d399;font-size:9px;margin-left:4px;">&#9835; ${_clipCount}개 클립</span>` : `<span style="color:#f59e0b;font-size:9px;margin-left:4px;">클립 없음</span>`;
+  html += `<div class="comp-tab-subtitle" style="margin-top:8px;">자막 (${subs.length}개)${_audioLabel}</div>`;
   if (subs.length > 0) {
     subs.sort((a, b) => a.start_time - b.start_time).forEach((sub, si) => {
-      const truncated = sub.text.length > 30 ? sub.text.slice(0, 30) + "..." : sub.text;
+      const sentIdx = _sentIdxMap[sub.text] !== undefined ? _sentIdxMap[sub.text] : -1;
+      // TTS 존재 여부: voice_clip 매칭 또는 slide_audio 매칭
+      const _hasClip = clips.some(c => c.slide_num === sub.slide_num &&
+        c.start_time < sub.end_time && (c.start_time + c.duration) > sub.start_time);
+      const _hasAudio = sentIdx >= 0 || _hasClip;
+      const _dotColor = _hasAudio ? '#34d399' : '#f59e0b';
+      const _dotTitle = _hasAudio ? 'TTS 있음' : 'TTS 없음';
       html += `<div style="display:flex;align-items:center;gap:4px;padding:3px 4px;background:#1e2a45;border-radius:4px;margin-bottom:2px;font-size:10px;">
-        <span style="flex:1;color:#93c5fd;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${_esc(sub.text)}">${_esc(truncated)}</span>
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${_dotColor};flex-shrink:0;" title="${_dotTitle}"></span>
+        <input type="text" value="${_esc(sub.text)}" style="flex:1;background:#141b2d;border:1px solid #2d3748;border-radius:3px;color:#93c5fd;font-size:10px;padding:2px 4px;"
+          onchange="_editSubtitleText('${sub.id}', this.value)">
+        ${sentIdx >= 0 ? `<button onclick="_regenSingleTTS(${sentIdx}, '${sub.id}')" style="background:none;border:none;color:#34d399;cursor:pointer;font-size:10px;padding:0 2px;" title="이 문장 TTS 재생성">&#9654;</button>` : ''}
         <button onclick="_removeSubtitleEntry('${sub.id}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px;padding:0 2px;" title="삭제">&times;</button>
       </div>`;
     });
@@ -2906,6 +3931,14 @@ function renderTabNarration() {
     <div class="ctrl-row" id="voice-row" style="margin-top:4px;"><span class="ctrl-label">음성</span>
       <select id="tts-voice" class="ctrl-input" style="font-size:10px;"></select>
     </div>
+    <div class="ctrl-row" style="margin-top:4px;"><span class="ctrl-label">속도</span>
+      <input type="range" id="tts-rate" min="-50" max="100" step="10" value="${chCfg.tts_rate ? parseInt(chCfg.tts_rate) : 0}"
+        style="flex:1;accent-color:#34d399;" oninput="this.nextElementSibling.textContent=(this.value>0?'+':'')+this.value+'%'">
+      <span style="font-size:9px;color:#9ca3af;width:34px;text-align:right;">${chCfg.tts_rate || '+0%'}</span>
+    </div>
+    <div id="tts-style-row" class="ctrl-row" style="margin-top:4px;${curEngine === 'gemini-tts' ? '' : 'display:none;'}"><span class="ctrl-label">스타일</span>
+      <input id="tts-style" class="ctrl-input" style="font-size:10px;" value="${_esc(chCfg.gemini_tts_style || '')}" placeholder="음성 스타일 (Gemini TTS)">
+    </div>
     <div class="ctrl-row" style="margin-top:4px;"><span class="ctrl-label">볼륨</span>
       <input type="range" min="0" max="100" value="${(composeState.narr_volume !== undefined ? composeState.narr_volume : 100)}"
         style="flex:1;accent-color:#34d399;" oninput="updateNarrVolume(+this.value)" title="나레이션 볼륨">
@@ -2919,6 +3952,56 @@ function renderTabNarration() {
     </div>
   </div>`;
   html += `<div id="tts-status" style="font-size:9px;color:#6b7280;margin-top:4px;"></div>`;
+
+  // ── 자막 설정 ──
+  const _so = composeState.subtitle_overrides || {};
+  const _sget = (k, d) => _so[k] !== undefined ? _so[k] : (chCfg[k] !== undefined ? chCfg[k] : d);
+  const subOn = _sget('subtitle_enabled', false);
+  const subSize = _sget('subtitle_font_size', 48);
+  const subOutline = _sget('subtitle_outline', 3);
+  const subMargin = _sget('subtitle_margin_v', 100);
+  const subFont = _sget('subtitle_font', 'Noto Sans KR');
+  const subAlign = _sget('subtitle_alignment', 2);
+
+  html += `<div class="comp-tab-subtitle" style="margin-top:10px;">자막 설정</div>
+  <div class="ctrl-section">
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:6px;cursor:pointer;">
+      <input type="checkbox" ${subOn ? 'checked' : ''} onchange="_updateSubtitleCfg('subtitle_enabled', this.checked)"
+             style="accent-color:#6366f1;width:14px;height:14px;">
+      <span style="font-size:11px;color:#d1d5db;">자막 표시</span>
+    </label>
+    <div style="${subOn ? '' : 'opacity:0.3;pointer-events:none;'}">
+      <div class="ctrl-row"><span class="ctrl-label">폰트</span>
+        <select class="ctrl-input" style="font-size:10px;" onchange="_updateSubtitleCfg('subtitle_font', this.value)">
+          ${['Noto Sans KR','Malgun Gothic','맑은 고딕','Arial','NanumGothic','NanumSquare'].map(f =>
+            `<option value="${f}" ${f === subFont ? 'selected' : ''}>${f}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">위치</span>
+        <select class="ctrl-input" style="font-size:10px;" onchange="_updateSubtitleCfg('subtitle_alignment', +this.value)">
+          <option value="2" ${subAlign===2?'selected':''}>하단</option>
+          <option value="8" ${subAlign===8?'selected':''}>상단</option>
+          <option value="5" ${subAlign===5?'selected':''}>중앙</option>
+        </select>
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">크기</span>
+        <input type="range" min="24" max="120" value="${subSize}" step="2" style="flex:1;accent-color:#6366f1;"
+          oninput="_updateSubtitleCfg('subtitle_font_size', +this.value); this.nextElementSibling.textContent=this.value+'px';">
+        <span style="font-size:9px;color:#9ca3af;width:35px;text-align:right;">${subSize}px</span>
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">테두리</span>
+        <input type="range" min="0" max="6" value="${subOutline}" style="flex:1;accent-color:#6366f1;"
+          oninput="_updateSubtitleCfg('subtitle_outline', +this.value); this.nextElementSibling.textContent=this.value;">
+        <span style="font-size:9px;color:#9ca3af;width:20px;text-align:right;">${subOutline}</span>
+      </div>
+      <div class="ctrl-row"><span class="ctrl-label">여백</span>
+        <input type="range" min="20" max="500" value="${subMargin}" step="10" style="flex:1;accent-color:#6366f1;"
+          oninput="_updateSubtitleCfg('subtitle_margin_v', +this.value); this.nextElementSibling.textContent=this.value+'px';">
+        <span style="font-size:9px;color:#9ca3af;width:35px;text-align:right;">${subMargin}px</span>
+      </div>
+    </div>
+  </div>`;
 
   el.innerHTML = html;
   _updateVoiceSelect();
@@ -2940,6 +4023,17 @@ function _removeSubtitleEntry(entryId) {
   renderTabNarration();
 }
 
+// 자막 텍스트 편집
+function _editSubtitleText(entryId, newText) {
+  const entry = (composeState.subtitle_entries || []).find(e => e.id === entryId);
+  if (entry) {
+    entry.text = newText;
+    _dirty = true;
+    renderSubtitleTrack();
+    renderPreview();
+  }
+}
+
 // 자막 추가
 function _addSubtitleEntry() {
   const total = getTotalDuration() || 10;
@@ -2956,6 +4050,68 @@ function _addSubtitleEntry() {
   renderTabNarration();
 }
 
+// 개별 문장 TTS 재생성
+async function _regenSingleTTS(sentenceIdx, subId) {
+  const status = document.getElementById("tts-status");
+  if (status) status.textContent = `문장 ${sentenceIdx + 1} TTS 생성 중...`;
+
+  const engine = document.getElementById("tts-engine")?.value || "edge-tts";
+  const voice = document.getElementById("tts-voice")?.value || "";
+  const rateVal = document.getElementById("tts-rate")?.value || "0";
+  const styleVal = document.getElementById("tts-style")?.value || "";
+
+  try {
+    const body = { tts_engine: engine, tts_voice: voice, tts_rate: +rateVal, sentence_idx: sentenceIdx };
+    if (engine === "gemini-tts" && styleVal) body.gemini_tts_style = styleVal;
+    const r = await fetch(`/api/jobs/${JOB_ID}/composer/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (data.ok) {
+      await refreshData();
+      // 해당 자막의 voice_clip 찾아서 duration 업데이트
+      const allSentences = (composerData.slides || []).flatMap(s => s.sentences || []);
+      const sent = allSentences[sentenceIdx];
+      if (sent) {
+        // slide_audio에서 새 duration 가져오기
+        const slideNum = sent.slide || 1;
+        const audioFiles = composerData.slide_audio ? composerData.slide_audio[slideNum] || [] : [];
+        const af = audioFiles.find(a => a.sentence_idx === sentenceIdx);
+        if (af) {
+          // voice_clip 업데이트
+          const clip = (composeState.voice_clips || []).find(c =>
+            c.file === `audio_${sentenceIdx + 1}.mp3` || c.file === `audio_${sentenceIdx + 1}.wav`);
+          if (clip) {
+            clip.duration = af.duration;
+            clip.path = af.path;
+          }
+          // subtitle_entry 업데이트
+          const sub = (composeState.subtitle_entries || []).find(e => e.id === subId);
+          if (sub) {
+            sub.end_time = sub.start_time + af.duration;
+          }
+          // 슬라이드 duration 재계산
+          const slideDur = audioFiles.reduce((s, a) => s + (a.duration || 0), 0);
+          if (!composeState.slide_durations) composeState.slide_durations = {};
+          composeState.slide_durations[slideNum] = slideDur;
+          // duration 변경 시 후속 클립/자막 위치 재계산
+          _recalcClipPositions();
+        }
+      }
+      _dirty = true;
+      renderTimeline();
+      renderTabNarration();
+      if (status) status.textContent = `문장 ${sentenceIdx + 1} 재생성 완료`;
+    } else {
+      if (status) status.textContent = `실패: ${data.error}`;
+    }
+  } catch (e) {
+    if (status) status.textContent = `오류: ${e.message}`;
+  }
+}
+
 // TTS 생성 후 voice_clips + subtitle_entries로 자동 배치
 async function _generateTTSAndAddClips(slideNum) {
   const btn = slideNum > 0 ? document.getElementById("btn-gen-tts") : document.getElementById("btn-gen-all-tts");
@@ -2965,9 +4121,12 @@ async function _generateTTSAndAddClips(slideNum) {
 
   const engine = document.getElementById("tts-engine")?.value || "edge-tts";
   const voice = document.getElementById("tts-voice")?.value || "";
+  const rateVal = document.getElementById("tts-rate")?.value || "0";
+  const styleVal = document.getElementById("tts-style")?.value || "";
 
   try {
-    const body = { tts_engine: engine, tts_voice: voice };
+    const body = { tts_engine: engine, tts_voice: voice, tts_rate: +rateVal };
+    if (engine === "gemini-tts" && styleVal) body.gemini_tts_style = styleVal;
     if (slideNum > 0) body.slide_num = slideNum;
     const r = await fetch(`/api/jobs/${JOB_ID}/composer/tts`, {
       method: "POST",
@@ -2979,56 +4138,77 @@ async function _generateTTSAndAddClips(slideNum) {
       if (status) status.textContent = `생성 완료 (${data.count}개 문장) — 클립 배치 중...`;
       await refreshData();
 
-      // 기존 voice_clips에서 해당 슬라이드 클립 제거 (재생성)
+      // 대상 슬라이드 결정
       const targetSlides = slideNum > 0 ? [slideNum] : composeState.slide_order;
+
+      // 1) 기존 클립/자막에서 대상 슬라이드 제거 (slide_num 없는 것도 제거)
       composeState.voice_clips = (composeState.voice_clips || []).filter(
-        c => !targetSlides.includes(c.slide_num)
+        c => c.slide_num && !targetSlides.includes(c.slide_num)
       );
       composeState.subtitle_entries = (composeState.subtitle_entries || []).filter(
-        e => !targetSlides.includes(e.slide_num)
+        e => e.slide_num && !targetSlides.includes(e.slide_num)
       );
 
-      // 새로 생성된 오디오를 voice_clips + subtitle_entries로 변환
+      // 2) 슬라이드 duration을 slide_audio 기준으로 정확히 설정 (반올림 없이)
+      if (!composeState.slide_durations) composeState.slide_durations = {};
+      composeState.slide_order.forEach(sn => {
+        const audioFiles = composerData.slide_audio ? composerData.slide_audio[sn] || [] : [];
+        if (audioFiles.length > 0) {
+          // 클립 duration 합과 정확히 일치하도록 반올림 없이 저장
+          composeState.slide_durations[sn] = audioFiles.reduce((s, a) => s + (a.duration || 0), 0);
+        }
+      });
+
+      // 3) voice_clips + subtitle_entries 배치 + cumTime을 slide_durations와 동일하게 산출
       let cumTime = 0;
       const slides = getOrderedSlides();
       slides.forEach(sl => {
-        const dur = getSlideDuration(sl.num);
+        const slideDur = getSlideDuration(sl.num);
         if (targetSlides.includes(sl.num)) {
           const audioFiles = composerData.slide_audio ? composerData.slide_audio[sl.num] || [] : [];
           const sentences = sl.sentences || [];
           let clipTime = cumTime;
           audioFiles.forEach((af, ai) => {
+            const dur = af.duration || 2.0;
             composeState.voice_clips.push({
               id: `vc_${sl.num}_${ai}_${Date.now()}`,
               file: af.file,
               path: af.path,
-              start_time: Math.round(clipTime * 100) / 100,
-              duration: af.duration || 2.0,
+              start_time: clipTime,
+              duration: dur,
               volume: composeState.narr_volume !== undefined ? composeState.narr_volume : 100,
               slide_num: sl.num,
             });
-            const sentIdx = af.sentence_idx !== undefined ? af.sentence_idx : ai;
-            const sent = sentences[sentIdx];
-            if (sent && sent.text) {
+            const subText = af.text || (sentences[ai] && sentences[ai].text) || "";
+            if (subText) {
               composeState.subtitle_entries.push({
                 id: `sub_${sl.num}_${ai}_${Date.now()}`,
-                text: sent.text,
-                start_time: Math.round(clipTime * 100) / 100,
-                end_time: Math.round((clipTime + (af.duration || 2.0)) * 100) / 100,
+                text: subText,
+                start_time: clipTime,
+                end_time: clipTime + dur,
                 slide_num: sl.num,
               });
             }
-            clipTime += af.duration || 2.0;
+            clipTime += dur;
           });
-          // 슬라이드 duration 업데이트
-          if (audioFiles.length > 0) {
-            const totalAudioDur = audioFiles.reduce((s, a) => s + (a.duration || 0), 0);
-            if (!composeState.slide_durations) composeState.slide_durations = {};
-            composeState.slide_durations[sl.num] = Math.round(totalAudioDur * 10) / 10;
+        } else {
+          // 대상이 아닌 슬라이드의 기존 클립/자막을 cumTime 기준으로 정렬
+          const clips = composeState.voice_clips.filter(c => c.slide_num === sl.num);
+          const subs = composeState.subtitle_entries.filter(e => e.slide_num === sl.num);
+          if (clips.length > 0) {
+            const firstStart = clips.reduce((m, c) => Math.min(m, c.start_time), Infinity);
+            const offset = cumTime - firstStart;
+            clips.forEach(c => { c.start_time += offset; });
+            subs.forEach(e => { e.start_time += offset; e.end_time += offset; });
           }
         }
-        cumTime += getSlideDuration(sl.num);
+        cumTime += slideDur;
       });
+
+      // 디버그: 클립 배치 확인
+      console.log("[TTS] clip placement:", composeState.voice_clips.map(c =>
+        `slide${c.slide_num} @${c.start_time}s dur=${c.duration.toFixed(2)}s`));
+      console.log("[TTS] slide_durations:", JSON.stringify(composeState.slide_durations));
 
       _dirty = true;
       renderTimeline();
@@ -3072,6 +4252,10 @@ function _updateVoiceSelect() {
   const serverVoices = composerData.tts_voices || {};
   const voices = serverVoices[engine] || _FALLBACK_VOICES[engine] || {};
   const chCfg = composerData.channel_config || {};
+
+  // Gemini TTS일 때만 스타일 입력 표시
+  const styleRow = document.getElementById("tts-style-row");
+  if (styleRow) styleRow.style.display = engine === "gemini-tts" ? "" : "none";
 
   // GPT-SoVITS → 참조 음성 목록 로드
   if (engine === "gpt-sovits") {
@@ -3154,188 +4338,13 @@ function onNarrDragStart(e, filename, duration, url) {
   e.dataTransfer.setData("narr_url", url);
 }
 
-function setupVoiceClipDrop() {
-  const narrTrack = document.getElementById("timeline-narration");
-  const timeline = document.getElementById("timeline");
+// setupVoiceClipDrop, setupSfxDrop — now Canvas-based (_tlInit handles drag-drop)
+function setupVoiceClipDrop() { /* handled by _tlInit */ }
+function setupSfxDrop() { /* handled by _tlInit */ }
 
-  function handleDrop(e) {
-    e.preventDefault();
-    narrTrack.classList.remove("voice-drag-hover");
-    const file = e.dataTransfer.getData("narr_file");
-    if (!file) return;
-    const duration = parseFloat(e.dataTransfer.getData("narr_duration")) || 2.0;
-    const url = e.dataTransfer.getData("narr_url") || "";
-
-    const total = getTotalDuration();
-    const rect = narrTrack.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const time = pct * total;
-
-    composeState.voice_clips.push({
-      id: `vc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      file,
-      path: url,
-      start_time: Math.round(time * 10) / 10,
-      duration,
-      volume: composeState.narr_volume !== undefined ? composeState.narr_volume : 100,
-    });
-    _dirty = true;
-    renderVoiceClipTrack();
-    if (_activeTab === 'narration') renderTabNarration();
-  }
-
-  timeline.addEventListener("dragover", e => {
-    if (e.dataTransfer.types.includes("narr_file")) {
-      e.preventDefault();
-      narrTrack.classList.add("voice-drag-hover");
-    }
-  });
-  timeline.addEventListener("dragleave", e => {
-    if (!timeline.contains(e.relatedTarget)) {
-      narrTrack.classList.remove("voice-drag-hover");
-    }
-  });
-  timeline.addEventListener("drop", e => {
-    if (e.dataTransfer.types.includes("narr_file")) {
-      handleDrop(e);
-    }
-  });
-}
-
-function setupSfxDrop() {
-  const sfxTrack = document.getElementById("timeline-sfx");
-  const timeline = document.getElementById("timeline");
-
-  function handleDrop(e) {
-    e.preventDefault();
-    sfxTrack.classList.remove("sfx-drag-hover");
-    const file = e.dataTransfer.getData("sfx_file");
-    if (!file) return;
-
-    const total = getTotalDuration();
-    const rect = sfxTrack.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const time = pct * total;
-
-    composeState.sfx_markers.push({
-      id: `s_${Date.now()}`,
-      file,
-      time: Math.round(time * 10) / 10,
-      volume: 0.8,
-    });
-    _dirty = true;
-    renderSfxMarkers();
-  }
-
-  timeline.addEventListener("dragover", e => {
-    if (e.dataTransfer.types.includes("sfx_file")) {
-      e.preventDefault();
-      sfxTrack.classList.add("sfx-drag-hover");
-    }
-  });
-  timeline.addEventListener("dragleave", e => {
-    if (!timeline.contains(e.relatedTarget)) {
-      sfxTrack.classList.remove("sfx-drag-hover");
-    }
-  });
-  timeline.addEventListener("drop", handleDrop);
-}
-
-function renderSfxMarkers() {
-  const container = document.getElementById("sfx-markers");
-  const total = getTotalDuration() || 1;
-  container.innerHTML = "";
-
-  composeState.sfx_markers.forEach(m => {
-    const sfxInfo = (composerData.sfx_list || []).find(s => s.file === m.file);
-    const sfxFullDur = sfxInfo ? sfxInfo.duration : 1;
-    // 커스텀 duration 지원 (기본: 원본 길이)
-    const sfxDur = m.duration !== undefined ? m.duration : sfxFullDur;
-    const pct = (m.time / total) * 100;
-    const widthPct = (sfxDur / total) * 100;
-    const name = m.file.replace(/\.[^.]+$/, '');
-
-    const el = document.createElement("div");
-    el.className = "sfx-marker";
-    el.style.left = `${pct}%`;
-    el.style.width = `${Math.max(widthPct, 2)}%`;
-    el.title = `${m.file} @ ${m.time.toFixed(1)}s (${sfxDur.toFixed(1)}s)`;
-    el.innerHTML = `
-      <div class="sfx-handle sfx-handle-l"></div>
-      <span class="sfx-marker-icon">&#128264;</span>
-      <span class="sfx-marker-label">${name}</span>
-      <div class="sfx-handle sfx-handle-r"></div>
-    `;
-
-    const trackArea = document.getElementById("timeline-tracks");
-
-    // 좌측 핸들 → 시작 시점 조절
-    el.querySelector(".sfx-handle-l").addEventListener("mousedown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const rect = trackArea.getBoundingClientRect();
-      const origTime = m.time;
-      const origDur = sfxDur;
-      function onMove(e2) {
-        const newPct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
-        const newTime = newPct * total;
-        if (newTime < origTime + origDur - 0.2) {
-          const delta = newTime - origTime;
-          m.time = Math.round(newTime * 10) / 10;
-          m.duration = Math.round(Math.max(0.2, origDur - delta) * 10) / 10;
-          _dirty = true;
-          renderSfxMarkers();
-        }
-      }
-      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabSfx(); }
-      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
-    });
-
-    // 우측 핸들 → 길이 조절
-    el.querySelector(".sfx-handle-r").addEventListener("mousedown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const rect = trackArea.getBoundingClientRect();
-      function onMove(e2) {
-        const endPct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
-        const endTime = endPct * total;
-        const newDur = endTime - m.time;
-        if (newDur >= 0.2) {
-          m.duration = Math.round(newDur * 10) / 10;
-          _dirty = true;
-          renderSfxMarkers();
-        }
-      }
-      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabSfx(); }
-      document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
-    });
-
-    // 중앙 드래그 이동
-    el.addEventListener("mousedown", (e) => {
-      if (e.target.classList.contains("sfx-handle")) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = trackArea.getBoundingClientRect();
-      function onMove(e2) {
-        const pctNew = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
-        m.time = Math.round(pctNew * total * 10) / 10;
-        el.style.left = `${(m.time / total) * 100}%`;
-        _dirty = true;
-      }
-      function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    });
-
-    // 더블클릭 삭제
-    el.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      composeState.sfx_markers = composeState.sfx_markers.filter(x => x.id !== m.id);
-      _dirty = true;
-      renderSfxMarkers();
-    });
-
-    container.appendChild(el);
-  });
-}
+// renderSfxMarkers, renderBgmTrack — now Canvas-based
+function renderSfxMarkers() { TL.needsRedraw = true; }
+function renderBgmTrack() { TL.needsRedraw = true; }
 
 // ─── BGM ───
 
@@ -3350,7 +4359,7 @@ function applyBgm(file, path, duration) {
     fade_out: 2.0,
   };
   _dirty = true;
-  renderBgmTrack();
+  TL.needsRedraw = true;
   renderTabBgm();
   renderProps();
 }
@@ -3358,7 +4367,7 @@ function applyBgm(file, path, duration) {
 function removeBgm() {
   composeState.bgm = null;
   _dirty = true;
-  renderBgmTrack();
+  TL.needsRedraw = true;
   renderTabBgm();
   renderProps();
 }
@@ -3367,92 +4376,7 @@ function updateBgmProp(key, val) {
   if (!composeState.bgm) return;
   composeState.bgm[key] = val;
   _dirty = true;
-  renderBgmTrack();
-}
-
-function renderBgmTrack() {
-  const container = document.getElementById("bgm-bar-container");
-  if (!container) return;
-  container.innerHTML = "";
-
-  const bgm = composeState.bgm;
-  if (!bgm) return;
-
-  const total = getTotalDuration() || 1;
-  const leftPct = (bgm.start_time / total) * 100;
-  const widthPct = ((bgm.end_time - bgm.start_time) / total) * 100;
-  const name = bgm.file.replace(/\.[^.]+$/, '');
-  const fadeInPct = ((bgm.fade_in || 0) / (bgm.end_time - bgm.start_time || 1)) * 100;
-  const fadeOutPct = ((bgm.fade_out || 0) / (bgm.end_time - bgm.start_time || 1)) * 100;
-
-  const bar = document.createElement("div");
-  bar.className = "bgm-bar";
-  bar.style.left = `${leftPct}%`;
-  bar.style.width = `${Math.max(widthPct, 1)}%`;
-  bar.innerHTML = `
-    <div class="bgm-fade bgm-fade-in" style="width:${Math.min(fadeInPct, 50)}%"></div>
-    <div class="bgm-fade bgm-fade-out" style="width:${Math.min(fadeOutPct, 50)}%"></div>
-    <div class="bgm-handle bgm-handle-l"></div>
-    <span class="bgm-bar-label">${name}</span>
-    <div class="bgm-handle bgm-handle-r"></div>
-  `;
-
-  const trackArea = document.getElementById("timeline-tracks");
-
-  // 바 전체 드래그 이동
-  bar.addEventListener("mousedown", (e) => {
-    if (e.target.classList.contains("bgm-handle")) return;
-    e.preventDefault(); e.stopPropagation();
-    const rect = trackArea.getBoundingClientRect();
-    const dur = bgm.end_time - bgm.start_time;
-    const startPct = (e.clientX - rect.left) / rect.width;
-    const origStart = bgm.start_time;
-    function onMove(e2) {
-      const pctNow = (e2.clientX - rect.left) / rect.width;
-      const delta = (pctNow - startPct) * total;
-      let ns = Math.max(0, Math.min(total - dur, origStart + delta));
-      bgm.start_time = Math.round(ns * 10) / 10;
-      bgm.end_time = Math.round((ns + dur) * 10) / 10;
-      _dirty = true;
-      renderBgmTrack();
-    }
-    function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabBgm(); }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  });
-
-  // 좌측 핸들 → start_time
-  bar.querySelector(".bgm-handle-l").addEventListener("mousedown", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    const rect = trackArea.getBoundingClientRect();
-    function onMove(e2) {
-      const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
-      const t = pct * total;
-      if (t < bgm.end_time - 0.5) { bgm.start_time = Math.round(t * 10) / 10; _dirty = true; renderBgmTrack(); }
-    }
-    function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabBgm(); }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  });
-
-  // 우측 핸들 → end_time
-  bar.querySelector(".bgm-handle-r").addEventListener("mousedown", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    const rect = trackArea.getBoundingClientRect();
-    function onMove(e2) {
-      const pct = Math.max(0, Math.min(1, (e2.clientX - rect.left) / rect.width));
-      const t = pct * total;
-      if (t > bgm.start_time + 0.5) { bgm.end_time = Math.round(t * 10) / 10; _dirty = true; renderBgmTrack(); }
-    }
-    function onUp() { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); renderTabBgm(); }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  });
-
-  // 더블클릭 삭제
-  bar.addEventListener("dblclick", (e) => { e.stopPropagation(); removeBgm(); });
-
-  container.appendChild(bar);
+  TL.needsRedraw = true;
 }
 
 // ─── Save & Render ───
@@ -3506,10 +4430,11 @@ async function startRender() {
 
   const status = document.getElementById("audio-status");
 
-  // 나레이션 파일이 배치되어 있으면 TTS 설정을 보내지 않음 (기존 오디오 보존)
-  const hasNarrFiles = composerData.slide_audio && Object.values(composerData.slide_audio).some(a => a && a.length > 0);
+  // 오디오가 이미 존재하면 TTS override를 보내지 않음 (기존 오디오 보존)
+  // Composer에서 TTS 생성/업로드된 오디오가 있으면 재생성 방지
+  const hasAudio = _checkAllHaveAudio();
   const bodyData = {};
-  if (!hasNarrFiles) {
+  if (!hasAudio) {
     bodyData.tts_engine = document.getElementById("tts-engine")?.value || "edge-tts";
   }
 
@@ -3983,7 +4908,7 @@ function resetOverride(slideNum) {
 // ─── Data Refresh ───
 
 async function refreshData() {
-  const r = await fetch(`/api/jobs/${JOB_ID}/composer`);
+  const r = await fetch(`/api/jobs/${JOB_ID}/composer?_t=${Date.now()}`);
   composerData = await r.json();
 }
 
@@ -4021,4 +4946,5 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ─── Init ───
+window.addEventListener("resize", () => { _updateScale(); renderPreview(); });
 initComposer();

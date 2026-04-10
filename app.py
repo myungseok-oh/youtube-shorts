@@ -2241,8 +2241,10 @@ async def api_resume_job(job_id: str, request: Request):
     job = db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
     if not job:
         raise HTTPException(404, "Job not found")
-    if job["status"] != "waiting_slides":
-        raise HTTPException(400, f"Job status is '{job['status']}', expected 'waiting_slides'")
+    # waiting_slides / completed / failed 에서 렌더링 허용 (Composer 재렌더링 지원)
+    _allowed = ("waiting_slides", "completed", "failed")
+    if job["status"] not in _allowed:
+        raise HTTPException(400, f"Job status is '{job['status']}', expected one of {_allowed}")
 
     # TTS 설정 (팝업에서 선택 — 엔진/음성/속도/GPT-SoVITS)
     tts_voice = ""
@@ -3005,7 +3007,7 @@ from pipeline.editor import (
 from pipeline.composer import (
     get_composer_data, get_slide_audio_files, load_compose_data, save_compose_data,
     list_narration_files, save_narration_files, delete_narration_file,
-    assign_narration_to_slide,
+    assign_narration_to_slide, split_and_assign_narration,
 )
 
 
@@ -3193,11 +3195,16 @@ async def api_composer_tts(job_id: str, request: Request):
     sentences = script.get("sentences", [])
     body = await request.json()
     slide_num = body.get("slide_num")  # None이면 전체
+    sentence_idx = body.get("sentence_idx")  # 개별 문장 인덱스 (0-based)
     tts_engine = body.get("tts_engine", "edge-tts")
     tts_voice = body.get("tts_voice", "")  # UI에서 선택한 음성
+    tts_rate_override = body.get("tts_rate")  # UI 속도 슬라이더 값
+    gemini_style_override = body.get("gemini_tts_style", "")  # UI 스타일 입력
 
     # 대상 문장 필터링
-    if slide_num:
+    if sentence_idx is not None:
+        target_sents = [sentences[sentence_idx]] if sentence_idx < len(sentences) else []
+    elif slide_num:
         target_sents = [s for s in sentences if s.get("slide") == slide_num]
     else:
         target_sents = sentences
@@ -3225,13 +3232,17 @@ async def api_composer_tts(job_id: str, request: Request):
                     voice = ch_cfg.get("tts_voice", "ko-KR-SunHiNeural")
             rate = ch_cfg.get("tts_rate")
 
+    # UI에서 속도 직접 지정한 경우 우선 적용
+    if tts_rate_override is not None:
+        rate = tts_rate_override
+
     # Gemini TTS 설정
     gemini_cfg = None
     if tts_engine == "gemini-tts":
         gemini_cfg = {
             "api_key": ch_cfg.get("gemini_api_key", "") if ch_id else "",
             "voice": tts_voice or ch_cfg.get("gemini_tts_voice", "Kore") if ch_id else "Kore",
-            "style": ch_cfg.get("gemini_tts_style", "") if ch_id else "",
+            "style": gemini_style_override or (ch_cfg.get("gemini_tts_style", "") if ch_id else ""),
         }
         if not voice:
             voice = gemini_cfg["voice"]
@@ -3246,12 +3257,15 @@ async def api_composer_tts(job_id: str, request: Request):
                 "ref_text": ch_cfg.get("sovits_ref_text", "") if ch_id else "",
             }
 
-    # 특정 슬라이드만 생성 시: 해당 문장의 인덱스에 맞는 오디오만 생성
-    if slide_num:
-        # 해당 슬라이드 문장들의 전체 인덱스 찾기
+    # 기존 오디오 삭제 (대상 범위)
+    if sentence_idx is not None:
+        for ext in ("mp3", "wav"):
+            old = os.path.join(audio_dir, f"audio_{sentence_idx+1}.{ext}")
+            if os.path.exists(old):
+                os.remove(old)
+    elif slide_num:
         for i, sen in enumerate(sentences):
             if sen.get("slide") == slide_num:
-                # 기존 오디오 삭제
                 for ext in ("mp3", "wav"):
                     old = os.path.join(audio_dir, f"audio_{i+1}.{ext}")
                     if os.path.exists(old):
@@ -3260,7 +3274,24 @@ async def api_composer_tts(job_id: str, request: Request):
     try:
         import tempfile
 
-        if slide_num:
+        if sentence_idx is not None:
+            # 개별 문장: 임시 디렉토리에 생성 후 올바른 인덱스로 이동
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                result = await asyncio.to_thread(
+                    generate_audio,
+                    [sentences[sentence_idx]],
+                    tmp_dir,
+                    voice=voice,
+                    rate=rate,
+                    sovits_cfg=sovits_cfg,
+                    gemini_cfg=gemini_cfg,
+                )
+                if result:
+                    ext = os.path.splitext(result[0])[1]
+                    dst = os.path.join(audio_dir, f"audio_{sentence_idx + 1}{ext}")
+                    shutil.copy2(result[0], dst)
+            count = 1
+        elif slide_num:
             # 특정 슬라이드: 임시 디렉토리에 생성 후 올바른 인덱스로 이동
             target_indices = [i for i, s in enumerate(sentences)
                               if s.get("slide") == slide_num]
@@ -3276,7 +3307,6 @@ async def api_composer_tts(job_id: str, request: Request):
                     sovits_cfg=sovits_cfg,
                     gemini_cfg=gemini_cfg,
                 )
-                # 생성된 파일을 올바른 인덱스로 이동
                 for j, src in enumerate(result):
                     if j < len(target_indices):
                         real_idx = target_indices[j]
@@ -3299,6 +3329,10 @@ async def api_composer_tts(job_id: str, request: Request):
                 gemini_cfg=gemini_cfg,
             )
             count = len(result)
+
+        # Composer TTS 생성 후 script_hash 저장 (Phase B 렌더 시 캐시 유효성 검증용)
+        from pipeline.runner import _save_script_hash
+        _save_script_hash(audio_dir, sentences)
 
         return {"ok": True, "count": count}
     except Exception as e:
@@ -3419,6 +3453,24 @@ async def api_assign_narration(job_id: str, slide_num: int,
     try:
         result = assign_narration_to_slide(job_id, slide_num, source_file, script)
     except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return result
+
+
+@app.post("/api/jobs/{job_id}/composer/split-narration")
+async def api_split_narration(job_id: str, request: Request):
+    """단일 나레이션 파일을 슬라이드별로 분할 배치."""
+    job = get_job(db, job_id)
+    if not job or not job.get("script_json"):
+        raise HTTPException(404, "Job not found")
+    body = await request.json()
+    source_file = body.get("source_file", "")
+    if not source_file:
+        raise HTTPException(400, "source_file required")
+    script = json.loads(job["script_json"])
+    try:
+        result = split_and_assign_narration(job_id, source_file, script)
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
         raise HTTPException(400, str(e))
     return result
 
