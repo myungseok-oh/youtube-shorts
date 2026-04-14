@@ -935,6 +935,15 @@ async def api_get_channel_trends(channel_id: str):
     return {"trends": trends, "formatted": formatted}
 
 
+@app.get("/api/news/today")
+async def api_news_today():
+    """오늘자 뉴스 헤드라인 수집 (Google News + 네이버 뉴스 RSS)"""
+    from pipeline.trend_collector import fetch_today_news, format_today_news
+    items = fetch_today_news(max_age_hours=12)
+    formatted = format_today_news(items)
+    return {"items": items, "formatted": formatted, "count": len(items)}
+
+
 @app.get("/api/news/browse")
 async def api_news_browse(category: str = ""):
     """뉴스 탐색 — Google News / Trends / YouTube Trending 통합 조회"""

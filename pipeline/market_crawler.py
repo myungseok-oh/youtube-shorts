@@ -298,8 +298,10 @@ def _is_market_closed(market: str) -> bool:
 
 def format_market_context(data: dict) -> str:
     """수집 데이터 → 프롬프트 주입용 마크다운"""
-    now_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
-    lines = [f"## 오늘 시장 데이터 ({now_kst})", ""]
+    _dt = datetime.now(KST)
+    _weekday = ["월", "화", "수", "목", "금", "토", "일"][_dt.weekday()]
+    now_kst = _dt.strftime("%Y-%m-%d %H:%M KST")
+    lines = [f"## 오늘 시장 데이터 ({now_kst}, {_weekday}요일)", ""]
 
     us_label = _market_time_label("us")
     kr_label = _market_time_label("kr")

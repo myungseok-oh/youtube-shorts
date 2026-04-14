@@ -384,13 +384,31 @@ brand 값은 "{brand}"로 설정해.
                           channel_format: str = "single",
                           has_outro: bool = False,
                           use_subagent: bool = False,
-                          target_duration: int = 60) -> dict:
+                          target_duration: int = 60,
+                          news_context: str = "") -> dict:
         """Step 1: 웹 검색 + 시놉시스 생성."""
         now = datetime.now()
         now_str = now.strftime("%Y년 %m월 %d일 %H시")
         date_str = now.strftime("%Y-%m-%d")
 
-        if channel_format == "roundup":
+        if news_context:
+            if channel_format == "roundup":
+                topic_list = [t.strip() for t in topic.split(" / ") if t.strip()]
+                topic_display = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(topic_list))
+                topic_section = f"""아래 {len(topic_list)}개 주제에 대해 [오늘자 뉴스 헤드라인]에서 관련 기사를 선정하고,
+라운드업(멀티뉴스) 형식의 시놉시스를 생성해줘.
+
+주제 목록:
+{topic_display}
+
+★ 헤드라인 목록에 없는 뉴스는 사용하지 마라. 수치/팩트 보충이 필요하면 WebSearch 최대 1회."""
+            else:
+                topic_section = f"""주제: {topic}
+
+[오늘자 뉴스 헤드라인]에서 이 주제와 관련된 기사를 선정하고,
+쇼츠 영상용 시놉시스를 생성해줘.
+헤드라인 목록에 없는 뉴스는 사용하지 마라."""
+        elif channel_format == "roundup":
             topic_list = [t.strip() for t in topic.split(" / ") if t.strip()]
             topic_display = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(topic_list))
             topic_section = f"""아래 {len(topic_list)}개 주제에 대해 각각 최신 뉴스를 웹에서 검색하고,
@@ -410,7 +428,11 @@ brand 값은 "{brand}"로 설정해.
         if has_outro:
             outro_note = "\n- ★ 별도 아웃트로가 있으므로 마지막 씬에 마무리/구독 요청 넣지 마라. 콘텐츠 전달로 끝내라."
 
-        prompt = f"""{instructions}
+        _news_section = ""
+        if news_context:
+            _news_section = f"\n\n{news_context}\n"
+
+        prompt = f"""{instructions}{_news_section}
 
 ---
 
@@ -420,10 +442,13 @@ brand 값은 "{brand}"로 설정해.
 
 {topic_section}
 
-### ★ 웹 검색 효율 규칙
-- WebSearch 결과의 제목+요약(snippet)만으로 팩트를 파악할 수 있으면 WebFetch 생략
-- WebFetch는 정확한 수치/통계 확인이 필요할 때만, 최대 1~2회
-- 검색은 2~3회 이내로 완료할 것
+{"### ★ 뉴스 선정 규칙" if news_context else "### ★ 웹 검색 효율 규칙"}
+{("- [오늘자 뉴스 헤드라인]에서 주제와 관련된 기사를 우선 선정하라." + chr(10) +
+  "- 헤드라인 목록에 없는 뉴스는 사용하지 마라." + chr(10) +
+  "- 수치/팩트 보충이 필요할 때만 WebSearch 최대 1회, WebFetch 금지") if news_context else (
+  "- WebSearch 결과의 제목+요약(snippet)만으로 팩트를 파악할 수 있으면 WebFetch 생략" + chr(10) +
+  "- WebFetch는 정확한 수치/통계 확인이 필요할 때만, 최대 1~2회" + chr(10) +
+  "- 검색은 2~3회 이내로 완료할 것")}
 
 ### ★ 날짜 엄격 규칙 (필수)
 - 오늘 날짜는 {date_str}이다. 반드시 오늘({date_str}) 또는 어제 게시된 기사만 사용하라.
@@ -1021,7 +1046,8 @@ brand 값은 "{brand}"로 설정해.
                             roundup_rules: str = "",
                             skip_web_search: bool = False,
                             gemini_api_key: str = "",
-                            zone_ratio: str = "3:4:3") -> dict:
+                            zone_ratio: str = "3:4:3",
+                            news_context: str = "") -> dict:
         """Phase A 통합: 시놉시스 + 비주얼 플랜 + 대본을 1회 Claude 호출로 생성."""
         now = datetime.now()
         now_str = now.strftime("%Y년 %m월 %d일 %H시")
@@ -1087,7 +1113,16 @@ brand 값은 "{brand}"로 설정해.
         # prompt_style이 비어있으면 Agent의 IMAGE_PROMPT_STYLE이 style_rules에 이미 할당됨
         _compact_style = style_rules
 
-        if skip_web_search:
+        if news_context:
+            _synopsis_instruction = (
+                "아래 [오늘자 뉴스 헤드라인]에서 주제와 관련된 기사를 선정하고 스토리 구조를 설계해.\n"
+                "헤드라인 목록에 없는 뉴스는 사용하지 마라.\n\n"
+                "### ★ 웹 검색 규칙\n"
+                f"- 헤드라인의 구체 수치/팩트 보충이 필요할 때만 WebSearch **최대 1회**\n"
+                f"- WebFetch **금지**\n"
+                f"- 오늘({date_str}) 기사만 사용"
+            )
+        elif skip_web_search:
             _synopsis_instruction = "위 지침에 제공된 데이터만으로 스토리 구조를 설계해. 웹 검색 금지."
         else:
             _synopsis_instruction = (
@@ -1098,7 +1133,11 @@ brand 값은 "{brand}"로 설정해.
                 f"- 오늘({date_str}) 또는 어제 기사만 사용"
             )
 
-        prompt = f"""{instructions}
+        _news_section = ""
+        if news_context:
+            _news_section = f"\n\n{news_context}\n"
+
+        prompt = f"""{instructions}{_news_section}
 
 ---
 

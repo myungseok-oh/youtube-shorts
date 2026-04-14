@@ -449,6 +449,21 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
             except Exception as e:
                 print(f"{_pa_tag} [1/4] 시장 데이터 크롤링 실패 ({time.time()-_t_market:.1f}초): {e}")
 
+        # 뉴스 채널이면 오늘자 뉴스 RSS 수집
+        _news_context = ""
+        _is_news_ch = (channel_format == "roundup"
+                       or any(kw in brand for kw in ("뉴스", "헤드라인", "증시", "코인")))
+        if _is_news_ch:
+            try:
+                _t_news = time.time()
+                print(f"{_pa_tag} [1.5/4] 오늘자 뉴스 RSS 수집 시작")
+                from pipeline.trend_collector import fetch_today_news, format_today_news
+                _news_items = fetch_today_news(max_age_hours=12)
+                _news_context = format_today_news(_news_items)
+                print(f"{_pa_tag} [1.5/4] 뉴스 수집 완료: {len(_news_items)}건, {time.time()-_t_news:.1f}초")
+            except Exception as e:
+                print(f"{_pa_tag} [1.5/4] 뉴스 수집 실패: {e}")
+
         if script_json is None:
             target_duration = int(ch_config.get("target_duration", 60))
 
@@ -460,7 +475,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                 # Gemini 드래프트 모드: 토글 ON + API 키 존재 시
                 _gemini_key = ch_config.get("gemini_api_key", "") if use_gemini_draft else ""
                 _mode = "Gemini+Claude" if _gemini_key else ("Claude(no-web)" if _skip_web else "Claude(web)")
-                print(f"{_pa_tag} [2/4] 대본 생성 시작: mode={_mode}, target={target_duration}초")
+                print(f"{_pa_tag} [2/4] 대본 생성 시작: mode={_mode}, target={target_duration}초, news={len(_news_context)}자")
                 _t_script = time.time()
                 result = generate_all_in_one(
                     topic, instructions, brand,
@@ -478,6 +493,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                     skip_web_search=_skip_web,
                     gemini_api_key=_gemini_key,
                     zone_ratio=ch_config.get("slide_zone_ratio", "3:4:3"),
+                    news_context=_news_context,
                 )
             except Exception as e:
                 print(f"{_pa_tag} [2/4] 대본 생성 실패 ({time.time()-_t_script:.1f}초): {e}")

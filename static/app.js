@@ -5933,16 +5933,48 @@ function openManualModal(channelId) {
   renderManualModal(channelId);
 }
 
-function copyManualPrompt(btnEl) {
-  const text = _buildManualPrompt(_manualChannelId);
+async function copyManualPrompt(btnEl) {
+  btnEl.textContent = "뉴스 수집중...";
+  btnEl.disabled = true;
+  const text = await _buildManualPromptWithNews(_manualChannelId);
   const done = () => {
-    btnEl.textContent = "✅ 복사됨";
+    btnEl.textContent = "복사됨";
+    btnEl.disabled = false;
     setTimeout(() => { btnEl.textContent = "지침 복사"; }, 1500);
   };
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(done).catch(() => { _copyFallback(text); done(); });
   } else {
     _copyFallback(text); done();
+  }
+}
+
+async function _buildManualPromptWithNews(channelId) {
+  const base = _buildManualPrompt(channelId);
+  // 뉴스 채널인지 확인 (roundup 또는 뉴스 관련 채널)
+  const ch = channelsCache.find(c => c.id === channelId);
+  const cfg = ch ? JSON.parse(ch.config || "{}") : {};
+  const fmt = cfg.format || "single";
+  const chName = ch ? ch.name : "";
+  const isNewsChannel = fmt === "roundup"
+    || chName.includes("뉴스") || chName.includes("헤드라인")
+    || chName.includes("증시") || chName.includes("코인");
+
+  if (!isNewsChannel) return base;
+
+  try {
+    const res = await fetch("/api/news/today");
+    if (!res.ok) return base;
+    const data = await res.json();
+    if (!data.formatted || data.count === 0) return base;
+    // 프롬프트 끝의 "[생성 요청 주제]" 앞에 뉴스 컨텍스트 삽입
+    const marker = "[생성 요청 주제]";
+    const idx = base.lastIndexOf(marker);
+    if (idx === -1) return base + "\n\n" + data.formatted;
+    return base.slice(0, idx) + data.formatted + "\n\n" + marker + base.slice(idx + marker.length);
+  } catch (e) {
+    console.warn("뉴스 수집 실패:", e);
+    return base;
   }
 }
 

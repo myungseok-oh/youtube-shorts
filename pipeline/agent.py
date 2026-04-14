@@ -75,11 +75,13 @@ def generate_synopsis(topic: str, instructions: str, brand: str = "이슈60초",
                       has_outro: bool = False,
                       use_subagent: bool = False,
                       target_duration: int = 60,
+                      news_context: str = "",
                       channel_id: str | None = None) -> dict:
     agent = get_agent(channel_id) if channel_id else _default_agent
     return agent.generate_synopsis(topic, instructions, brand,
                                    channel_format, has_outro,
-                                   use_subagent, target_duration)
+                                   use_subagent, target_duration,
+                                   news_context)
 
 
 def generate_visual_plan(topic: str, synopsis: dict,
@@ -153,6 +155,7 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
                         skip_web_search: bool = False,
                         gemini_api_key: str = "",
                         zone_ratio: str = "3:4:3",
+                        news_context: str = "",
                         channel_id: str | None = None) -> dict:
     agent = get_agent(channel_id) if channel_id else _default_agent
     return agent.generate_all_in_one(topic, instructions, brand,
@@ -162,7 +165,8 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
                                      scene_references, bg_display_mode,
                                      bg_media_type, script_rules,
                                      roundup_rules, skip_web_search,
-                                     gemini_api_key, zone_ratio)
+                                     gemini_api_key, zone_ratio,
+                                     news_context)
 
 
 def generate_image_prompts(topic: str, slides: list[dict],

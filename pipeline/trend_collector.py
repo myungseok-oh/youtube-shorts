@@ -95,6 +95,10 @@ _GOOGLE_NEWS_CATEGORIES = {
     "BUSINESS": "BUSINESS",
     "TECHNOLOGY": "TECHNOLOGY",
     "NATION": "NATION",
+    "ENTERTAINMENT": "ENTERTAINMENT",
+    "SPORTS": "SPORTS",
+    "SCIENCE": "SCIENCE",
+    "HEALTH": "HEALTH",
 }
 
 
@@ -225,4 +229,150 @@ def format_trend_context(trends: dict[str, list[str]]) -> str:
 
     lines.append("")
     lines.append("★ 위 트렌딩 데이터는 지금 실시간으로 수집한 것입니다. 이 키워드와 관련된 오늘자 뉴스를 최우선으로 선정하세요.")
+    return "\n".join(lines)
+
+
+# ── 한국 주요 언론사 RSS ──────────────────────────────────
+
+_KR_NEWS_FEEDS = [
+    ("연합뉴스", "https://www.yna.co.kr/rss/news.xml"),
+    ("조선일보", "https://www.chosun.com/arc/outboundfeeds/rss/?outputType=xml"),
+    ("한겨레", "https://www.hani.co.kr/rss/"),
+    ("경향신문", "https://www.khan.co.kr/rss/rssdata/total_news.xml"),
+    ("매일경제", "https://www.mk.co.kr/rss/40300001/"),
+    ("전자신문", "https://rss.etnews.com/Section901.xml"),
+]
+
+
+def _fetch_kr_news(max_age_hours: int = 12) -> list[dict]:
+    """한국 주요 언론사 RSS에서 최신 뉴스 수집.
+
+    Returns:
+        [{"title": "...", "source": "...", "link": "...", "pub_date": "..."}]
+    """
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(hours=max_age_hours)
+    all_items = []
+
+    for source_name, url in _KR_NEWS_FEEDS:
+        try:
+            resp = requests.get(url, timeout=8, headers={
+                "User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"
+            })
+            resp.raise_for_status()
+            root = ET.fromstring(resp.text)
+
+            count = 0
+            for item in root.iter("item"):
+                raw_title = item.findtext("title", "").strip()
+                if not raw_title:
+                    continue
+                link = item.findtext("link", "").strip()
+                pub_date = item.findtext("pubDate", "").strip()
+
+                # 날짜 필터
+                if pub_date:
+                    try:
+                        pub_dt = parsedate_to_datetime(pub_date)
+                        if pub_dt < cutoff:
+                            continue
+                    except Exception:
+                        pass
+
+                all_items.append({
+                    "title": raw_title,
+                    "source": source_name,
+                    "link": link,
+                    "pub_date": pub_date,
+                })
+                count += 1
+                if count >= 20:
+                    break
+        except Exception as e:
+            logger.warning("%s RSS 수집 실패: %s", source_name, e)
+
+    return all_items
+
+
+# ── 오늘자 뉴스 통합 수집 ──────────────────────────────────
+
+def fetch_today_news(max_age_hours: int = 12) -> list[dict]:
+    """Google News + 네이버 뉴스 RSS에서 오늘자 뉴스 통합 수집.
+
+    Returns:
+        [{"title": "...", "source": "...", "section": "...", "pub_date": "..."}]
+        중복 제거 후 최대 50건.
+    """
+    all_items = []
+
+    # Google News — 카테고리별 수집
+    for cat in ["", "BUSINESS", "TECHNOLOGY", "NATION", "ENTERTAINMENT", "SPORTS"]:
+        try:
+            items = _fetch_google_news(category=cat, max_age_hours=max_age_hours)
+            section_map = {
+                "": "종합", "BUSINESS": "경제", "TECHNOLOGY": "IT과학",
+                "NATION": "정치", "ENTERTAINMENT": "연예", "SPORTS": "스포츠",
+            }
+            for item in items:
+                item["section"] = section_map.get(cat, "종합")
+            all_items.extend(items)
+        except Exception as e:
+            logger.warning("Google News(%s) 수집 실패: %s", cat, e)
+
+    # 한국 언론사 RSS
+    try:
+        kr_items = _fetch_kr_news(max_age_hours=max_age_hours)
+        all_items.extend(kr_items)
+    except Exception as e:
+        logger.warning("한국 언론사 뉴스 수집 실패: %s", e)
+
+    # 중복 제거 (제목 유사도 기반)
+    seen_titles = set()
+    unique_items = []
+    for item in all_items:
+        # 제목에서 공백/특수문자 제거 후 앞 20자로 비교
+        _key = "".join(item["title"].split())[:20]
+        if _key in seen_titles:
+            continue
+        seen_titles.add(_key)
+        unique_items.append(item)
+        if len(unique_items) >= 50:
+            break
+
+    logger.info("오늘자 뉴스 수집 완료: %d건 (Google+네이버)", len(unique_items))
+    return unique_items
+
+
+def format_today_news(items: list[dict]) -> str:
+    """수집된 오늘자 뉴스를 프롬프트용 텍스트로 변환."""
+    if not items:
+        return ""
+
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H시")
+
+    lines = [f"[오늘자 뉴스 헤드라인 — {now_str} 수집]"]
+    lines.append("")
+
+    # 섹션별 그룹핑
+    sections: dict[str, list[dict]] = {}
+    for item in items:
+        sec = item.get("section", "종합")
+        sections.setdefault(sec, []).append(item)
+
+    idx = 1
+    for sec_name, sec_items in sections.items():
+        lines.append(f"## {sec_name}")
+        for item in sec_items[:8]:  # 섹션당 최대 8건
+            source = item.get("source", "")
+            source_str = f" — {source}" if source else ""
+            lines.append(f"{idx}. {item['title']}{source_str}")
+            idx += 1
+        lines.append("")
+
+    lines.append("★ 위 뉴스는 실시간 RSS에서 수집한 오늘자 헤드라인이다.")
+    lines.append("  이 목록에서 주제와 관련된 기사를 우선 참조하라.")
+    lines.append("  목록에 없는 뉴스를 사용하지 마라.")
+    lines.append("  각 뉴스의 구체 수치/팩트는 헤드라인 기반으로 작성하라.")
+
     return "\n".join(lines)
