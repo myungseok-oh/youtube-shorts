@@ -1339,7 +1339,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                            [final_path, _now(), job_id])
                 generate_metadata(topic, sentences, dirs["job"],
                                   youtube_title=script_json.get("youtube_title", ""),
-                                  brand=brand)
+                                  brand=brand,
+                                  hashtags_override=script_json.get("hashtags") or None)
 
                 # 썸네일 생성
                 try:
@@ -1817,7 +1818,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                            [final_path, _now(), job_id])
                 generate_metadata(topic, sentences, dirs["job"],
                                   youtube_title=script_json.get("youtube_title", ""),
-                                  brand=brand)
+                                  brand=brand,
+                                  hashtags_override=script_json.get("hashtags") or None)
 
                 # 썸네일 생성 (render 완료 후 — 배경 이미지 확보된 상태)
                 try:
@@ -2945,7 +2947,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
             db.execute("UPDATE jobs SET output_path = ?, updated_at = ? WHERE id = ?",
                        [final_path, _now(), job_id])
             generate_metadata(topic, sentences, dirs["job"],
-                              youtube_title=script_json.get("youtube_title", ""))
+                              youtube_title=script_json.get("youtube_title", ""),
+                              hashtags_override=script_json.get("hashtags") or None)
 
             # 썸네일 생성 (render 완료 후)
             try:

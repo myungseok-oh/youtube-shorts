@@ -1334,10 +1334,175 @@ async def api_generate_thumbnail(job_id: str):
                 bg_path = p
                 break
 
+    # 배경 이미지 없으면 완성 영상 첫 프레임 추출해서 사용
+    frame_tmp = ""
+    if not bg_path and job.get("output_path") and os.path.exists(job["output_path"]):
+        frame_tmp = os.path.join(config.output_dir(), job_id, "thumbnail_frame.jpg")
+        try:
+            _sp.run([config.ffmpeg(), "-y", "-i", job["output_path"],
+                     "-vframes", "1", "-q:v", "2", frame_tmp],
+                    capture_output=True, timeout=30)
+            if os.path.exists(frame_tmp):
+                bg_path = frame_tmp
+        except Exception:
+            pass
+
     output_path = os.path.join(config.output_dir(), job_id, "thumbnail.png")
-    generate_thumbnail(title, output_path, category=category,
-                       accent=accent, brand=brand, background=bg_path)
+    try:
+        generate_thumbnail(title, output_path, category=category,
+                           accent=accent, brand=brand, background=bg_path)
+    finally:
+        if frame_tmp and os.path.exists(frame_tmp):
+            try:
+                os.remove(frame_tmp)
+            except Exception:
+                pass
     return {"ok": True, "path": output_path}
+
+
+@app.post("/api/jobs/{job_id}/final-video")
+async def api_upload_final_video(job_id: str, file: UploadFile = File(...)):
+    """외부에서 편집한 완성 영상 업로드 → 영상 제작 스킵 후 YouTube 업로드 대기 상태로 전환"""
+    job = db.fetchone("SELECT * FROM jobs WHERE id = ?", [job_id])
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    original = file.filename or "final.mp4"
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else "mp4"
+    if ext not in ("mp4", "mov", "webm", "mkv"):
+        raise HTTPException(400, "지원하지 않는 영상 포맷 (mp4/mov/webm/mkv만 가능)")
+
+    job_dir = os.path.join(config.output_dir(), job_id)
+    video_dir = os.path.join(job_dir, "video")
+    os.makedirs(video_dir, exist_ok=True)
+    final_path = os.path.join(video_dir, f"{job_id}.mp4")
+
+    # 기존 렌더 결과물 교체
+    if os.path.exists(final_path):
+        os.remove(final_path)
+
+    content = await file.read()
+    # mp4가 아니면 일단 원본 확장자로 저장 후 ffmpeg로 mp4 변환
+    if ext == "mp4":
+        with open(final_path, "wb") as f:
+            f.write(content)
+    else:
+        tmp_path = os.path.join(video_dir, f"_upload.{ext}")
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+        try:
+            _sp.run([config.ffmpeg(), "-y", "-i", tmp_path, "-c:v", "libx264",
+                     "-c:a", "aac", "-movflags", "+faststart", final_path],
+                    capture_output=True, timeout=600)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        if not os.path.exists(final_path):
+            raise HTTPException(500, "영상 변환 실패")
+
+    # duration 추출
+    duration = 0.0
+    try:
+        r = _sp.run([config.ffprobe(), "-v", "error", "-show_entries",
+                     "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+                     final_path], capture_output=True, text=True, timeout=30)
+        duration = float(r.stdout.strip() or 0)
+    except Exception:
+        pass
+
+    # 썸네일: 영상 첫 프레임 추출 → generate_thumbnail()로 제목/배지 오버레이 합성
+    thumb_path = os.path.join(job_dir, "thumbnail.png")
+    frame_path = os.path.join(job_dir, "thumbnail_frame.jpg")
+    try:
+        _sp.run([config.ffmpeg(), "-y", "-i", final_path,
+                 "-vframes", "1", "-q:v", "2", frame_path],
+                capture_output=True, timeout=30)
+        if os.path.exists(frame_path) and job.get("script_json"):
+            try:
+                from pipeline.slide_generator import generate_thumbnail
+                script = json.loads(job["script_json"])
+                slides = script.get("slides", [])
+                title = script.get("youtube_title", "") or (
+                    slides[0].get("main", "").replace('<span class="hl">', "").replace("</span>", "")
+                    if slides else job.get("topic", "")
+                )
+                category = slides[0].get("category", "") if slides else ""
+                accent = slides[0].get("accent", "#ff6b35") if slides else "#ff6b35"
+                channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?",
+                                         [job.get("channel_id", "")])
+                brand = channel["name"] if channel else "이슈60초"
+                generate_thumbnail(title, thumb_path, category=category,
+                                   accent=accent, brand=brand, background=frame_path)
+            except Exception as e:
+                print(f"[final-video] 썸네일 합성 실패, 첫 프레임 그대로 사용: {e}")
+                shutil.copy(frame_path, thumb_path)
+        elif os.path.exists(frame_path):
+            shutil.copy(frame_path, thumb_path)
+    except Exception as e:
+        print(f"[final-video] 썸네일 추출 실패 (무시): {e}")
+    finally:
+        if os.path.exists(frame_path):
+            try:
+                os.remove(frame_path)
+            except Exception:
+                pass
+
+    # 메타데이터: 없으면 생성 (대본 결과 기반)
+    meta_path = os.path.join(job_dir, "metadata.json")
+    if not os.path.exists(meta_path) and job.get("script_json"):
+        try:
+            from pipeline.metadata import generate_metadata
+            script = json.loads(job["script_json"])
+            sentences = script.get("sentences", [])
+            channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?",
+                                     [job.get("channel_id", "")])
+            brand = channel["name"] if channel else "이슈60초"
+            generate_metadata(job.get("topic", ""), sentences, job_dir,
+                              youtube_title=script.get("youtube_title", ""),
+                              brand=brand,
+                              hashtags_override=script.get("hashtags") or None)
+        except Exception as e:
+            print(f"[final-video] 메타데이터 생성 실패 (무시): {e}")
+
+    # 파이프라인 스텝 상태: slides/tts/render → completed (skipped 의미), upload → pending
+    now_ts = datetime.now().isoformat(timespec="seconds")
+    file_size_mb = round(os.path.getsize(final_path) / (1024 * 1024), 1)
+    skipped_out = json.dumps({"message": "완성 영상 업로드로 스킵"}, ensure_ascii=False)
+    for step_name in ("slides", "tts"):
+        db.execute(
+            "UPDATE job_steps SET status = 'completed', started_at = ?, completed_at = ?, "
+            "output_data = ?, updated_at = ? WHERE job_id = ? AND step_name = ?",
+            [now_ts, now_ts, skipped_out, now_ts, job_id, step_name]
+        )
+    render_out = json.dumps({
+        "file": final_path,
+        "duration": round(duration, 1),
+        "size_mb": file_size_mb,
+        "source": "manual_upload",
+    }, ensure_ascii=False)
+    db.execute(
+        "UPDATE job_steps SET status = 'completed', started_at = ?, completed_at = ?, "
+        "output_data = ?, updated_at = ? WHERE job_id = ? AND step_name = 'render'",
+        [now_ts, now_ts, render_out, now_ts, job_id]
+    )
+    db.execute(
+        "UPDATE job_steps SET status = 'pending', started_at = NULL, completed_at = NULL, "
+        "output_data = NULL, error_msg = '', updated_at = ? WHERE job_id = ? AND step_name = 'upload'",
+        [now_ts, job_id]
+    )
+
+    # jobs 테이블: output_path + status=completed (YouTube 업로드 대기)
+    db.execute(
+        "UPDATE jobs SET output_path = ?, status = 'completed', updated_at = ? WHERE id = ?",
+        [final_path, now_ts, job_id]
+    )
+
+    return {
+        "ok": True,
+        "file": f"video/{job_id}.mp4",
+        "size_mb": file_size_mb,
+        "duration": round(duration, 1),
+    }
 
 
 @app.post("/api/jobs/{job_id}/narration")
@@ -1475,6 +1640,19 @@ async def api_manual_youtube_upload(job_id: str, request: Request):
     meta_path = os.path.join(job_dir, "metadata.json")
     if not os.path.exists(meta_path):
         raise HTTPException(404, "메타데이터 파일을 찾을 수 없습니다")
+
+    # 업로드 직전 script의 hashtags를 메타데이터에 반영 (기존 완료 작업도 최신 태그 반영)
+    try:
+        script = json.loads(job.get("script_json") or "{}")
+        if script.get("hashtags"):
+            from pipeline.metadata import generate_metadata
+            generate_metadata(job.get("topic", ""), script.get("sentences", []),
+                              job_dir,
+                              youtube_title=script.get("youtube_title", ""),
+                              brand=(channel["name"] if channel else "이슈60초"),
+                              hashtags_override=script["hashtags"])
+    except Exception as e:
+        print(f"[youtube-upload] 메타데이터 갱신 실패 (기존 값 사용): {e}")
 
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)

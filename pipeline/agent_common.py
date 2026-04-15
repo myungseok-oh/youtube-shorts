@@ -400,6 +400,7 @@ def _normalize_gemini_result(data: dict) -> dict:
             "youtube_title": data.pop("youtube_title", ""),
             "sentences": data.pop("sentences", []),
             "slides": data.pop("slides", []),
+            "hashtags": data.pop("hashtags", []),
         }
         vp = data.pop("visual_plan", [])
         syn = data.pop("synopsis", {})
@@ -470,11 +471,18 @@ def _build_script_schema(channel_format: str = "single",
   "news_date": "2026-03-09",
   "youtube_title": "제목 (100자 이내)",
   "sentences": [{{"text": "문장 (15~25자)", "slide": 1}}, ...],
-  "slides": [{{"category": "카테고리", "main": "핵심 <span class=\\"hl\\">강조</span>", "sub": "보조 설명", "bg_type": "photo"}}, ...]
+  "slides": [{{"category": "카테고리", "main": "핵심 <span class=\\"hl\\">강조</span>", "sub": "보조 설명", "bg_type": "photo"}}, ...],
+  "hashtags": ["채널 기본 태그", "...", "내용 관련 태그", "..."]
 }}
 
 규칙:
 {rules_text}
+
+해시태그 규칙:
+- 채널 지침의 `## 해시태그` 섹션에 명시된 기본 태그를 먼저 포함할 것
+- 그 뒤에 주제 내용에 맞는 태그 5개를 추가
+- 각 태그는 # 없이 단어만 (예: "건강정보", "다이어트")
+- 전체 7~10개 이내
 """
 
 
@@ -511,11 +519,18 @@ def _build_roundup_schema(roundup_rules: str = "",
       "bg_type": "photo"
     }},
     ...
-  ]
+  ],
+  "hashtags": ["채널 기본 태그", "...", "내용 관련 태그", "..."]
 }}
 
 규칙:
 {rules_text}
+
+해시태그 규칙:
+- 채널 지침의 `## 해시태그` 섹션에 명시된 기본 태그를 먼저 포함할 것
+- 그 뒤에 주제 내용에 맞는 태그 5개를 추가
+- 각 태그는 # 없이 단어만
+- 전체 7~10개 이내
 """
 
 

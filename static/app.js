@@ -2051,6 +2051,54 @@ async function quickRender(jobId) {
 }
 
 
+async function uploadFinalVideo(jobId) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.webm,.mkv";
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+
+    const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+    if (!confirm(`영상을 업로드하시겠습니까?\n\n파일: ${file.name} (${sizeMb} MB)\n\n· 영상 제작(렌더) 단계 스킵\n· 썸네일은 영상 첫 프레임 자동 추출\n· YouTube 업로드 대기 상태로 전환됩니다.`)) return;
+
+    const btn = document.getElementById("btn-upload-final");
+    if (btn) {
+      btn.textContent = "업로드 중...";
+      btn.disabled = true;
+      btn.classList.add("opacity-50", "cursor-not-allowed");
+    }
+
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`/api/jobs/${jobId}/final-video`, { method: "POST", body: fd });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.detail || "업로드 실패");
+        if (btn) {
+          btn.textContent = "영상 업로드";
+          btn.disabled = false;
+          btn.classList.remove("opacity-50", "cursor-not-allowed");
+        }
+        return;
+      }
+      _wizardStep = 4;
+      await refreshJobDetail(jobId);
+      loadAll();
+    } catch (e) {
+      alert("업로드 실패: " + e.message);
+      if (btn) {
+        btn.textContent = "영상 업로드";
+        btn.disabled = false;
+        btn.classList.remove("opacity-50", "cursor-not-allowed");
+      }
+    }
+  };
+  input.click();
+}
+
+
 // ─── Step 4: 영상 제작 ───
 
 function renderWizardStep4(jobId, scriptData, stepsData) {
@@ -2223,6 +2271,11 @@ function renderWizardFooter(step, jobId, scriptData, stepsData) {
         class="px-4 py-2 bg-blue-700 hover:bg-blue-600 rounded-lg text-sm font-medium transition inline-block">
         전문 편집
       </a>
+      <button id="btn-upload-final" onclick="uploadFinalVideo('${jobId}')"
+        class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition"
+        title="외부에서 편집한 완성 영상을 업로드합니다 (영상 제작 스킵)">
+        영상 업로드
+      </button>
       <button onclick="navigateWizard(3)"
         class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition">
         효과 추가 →

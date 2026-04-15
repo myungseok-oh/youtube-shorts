@@ -50,8 +50,13 @@ def _extract_topic_tags(topic: str) -> list[str]:
 
 def generate_metadata(job_topic: str, script: list[dict],
                       output_dir: str, youtube_title: str = "",
-                      brand: str = "이슈60초") -> dict:
+                      brand: str = "이슈60초",
+                      hashtags_override: list[str] | None = None) -> dict:
     """영상 메타데이터(제목, 설명, 해시태그) 생성.
+
+    Args:
+        hashtags_override: 채널 지침 기반 AI 생성 해시태그 (script_json의 hashtags).
+                          있으면 이 값만 사용, 없으면 기존 폴백(brand + DEFAULT + topic).
 
     Returns:
         메타데이터 dict
@@ -59,9 +64,19 @@ def generate_metadata(job_topic: str, script: list[dict],
     sentences = [s["text"] for s in script]
     description_body = " ".join(sentences[:3]) + "..."
 
-    topic_tags = _extract_topic_tags(job_topic)
-    base_tags = [brand] + _DEFAULT_TAGS
-    all_tags = base_tags + topic_tags
+    if hashtags_override:
+        # AI가 채널 지침 기반으로 생성한 태그 그대로 사용 (# 제거, 중복 제거)
+        seen = set()
+        all_tags = []
+        for t in hashtags_override:
+            t = str(t).lstrip("#").strip()
+            if t and t not in seen:
+                seen.add(t)
+                all_tags.append(t)
+    else:
+        topic_tags = _extract_topic_tags(job_topic)
+        base_tags = [brand] + _DEFAULT_TAGS
+        all_tags = base_tags + topic_tags
 
     hashtags = " ".join(f"#{t}" for t in all_tags)
 
