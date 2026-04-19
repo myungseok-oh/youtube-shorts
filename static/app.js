@@ -5914,6 +5914,23 @@ ${bgMediaType === "single"
 - image_prompts.motion: 빈 문자열 ""`
     : `- image_prompts.media: "image" 또는 "video" — 정적 이미지(~5초) 또는 영상(~6초)
 - image_prompts.motion: video일 때 카메라/피사체 움직임, image일 때 빈 문자열`}
+
+[★★★ 이미지 프롬프트 절대 금지 — AI 이미지 모델 한계 ★★★]
+- 스마트폰 화면, 앱 UI, 채팅창, 알림 화면 등 디지털 인터페이스 렌더링 금지
+- chart, bar graph, infographic, diagram 등 차트/그래프 생성 금지
+- text, numbers, labels, percentage 등 이미지 내 텍스트/숫자 렌더링 금지
+- Dialogue, lip movements, gestures 등 대사/동작 지시 금지
+- 추상적 의료/과학 다이어그램 금지
+→ 수치/통계는 나레이션으로 전달, 배경은 해당 주제의 실제 사물/장소 사진으로 표현
+→ 예: "48시간 타이머" → 모래시계 / "앱 채팅창" → 펜과 메모장 / "10% 수치" → 계산기와 영수증 / "법률 조항" → 펼쳐진 법전
+
+[★ 한국 로컬 이미지 규칙]
+- 모든 장면은 한국 환경 기준. 프롬프트에 "Korean" 키워드 반드시 포함
+- 건물/인테리어: Korean apartment, Korean gym, Korean office, Korean cafe
+- 화폐: Korean won bills (달러/유로 대신 한국 원화)
+- 서류: Korean contract, Korean official documents
+- 환경: Korean street, Korean urban setting
+- Western/European/American 스타일 사물 금지
 `;
 
   // bg_media_type=single 규칙은 채널 규칙 유무와 무관하게 항상 추가

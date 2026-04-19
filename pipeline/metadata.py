@@ -29,7 +29,7 @@ _KEYWORD_TAGS = {
     "비트코인": ["비트코인", "암호화폐", "코인"],
 }
 
-_DEFAULT_TAGS = ["Shorts", "핫이슈"]
+_DEFAULT_TAGS = ["Shorts"]
 
 
 def _extract_topic_tags(topic: str) -> list[str]:
@@ -48,24 +48,47 @@ def _extract_topic_tags(topic: str) -> list[str]:
     return result
 
 
+def _parse_channel_hashtags(instructions: str) -> list[str]:
+    """채널 지침의 ## 해시태그 섹션에서 고정 해시태그를 파싱.
+
+    예: '## 해시태그\\n#건강상식 #건강정보 #건강팁 #Shorts + 내용 관련 5개'
+    → ['건강상식', '건강정보', '건강팁', 'Shorts']
+    """
+    if not instructions:
+        return []
+    # ## 해시태그 섹션 찾기
+    m = re.search(r'^##\s*해시태그\s*\n(.+?)(?=\n#|\Z)', instructions,
+                  re.MULTILINE | re.DOTALL)
+    if not m:
+        return []
+    section = m.group(1).strip()
+    # 첫 줄에서 #태그들 추출 ("+ 내용 관련 N개" 이전까지)
+    first_line = section.split("\n")[0]
+    # "+ " 이후 제거
+    if "+" in first_line:
+        first_line = first_line[:first_line.index("+")]
+    tags = re.findall(r'#([\w가-힣]+)', first_line)
+    return tags
+
+
 def generate_metadata(job_topic: str, script: list[dict],
                       output_dir: str, youtube_title: str = "",
                       brand: str = "이슈60초",
-                      hashtags_override: list[str] | None = None) -> dict:
+                      hashtags_override: list[str] | None = None,
+                      channel_instructions: str = "") -> dict:
     """영상 메타데이터(제목, 설명, 해시태그) 생성.
 
     Args:
-        hashtags_override: 채널 지침 기반 AI 생성 해시태그 (script_json의 hashtags).
-                          있으면 이 값만 사용, 없으면 기존 폴백(brand + DEFAULT + topic).
+        hashtags_override: AI 생성 해시태그 (script_json의 hashtags).
+        channel_instructions: 채널 지침 텍스트. ## 해시태그 섹션 파싱용.
 
-    Returns:
-        메타데이터 dict
+    우선순위: hashtags_override > channel_instructions 해시태그 > 폴백(brand + DEFAULT + topic)
     """
     sentences = [s["text"] for s in script]
     description_body = " ".join(sentences[:3]) + "..."
 
     if hashtags_override:
-        # AI가 채널 지침 기반으로 생성한 태그 그대로 사용 (# 제거, 중복 제거)
+        # AI가 생성한 태그 그대로 사용 (# 제거, 중복 제거)
         seen = set()
         all_tags = []
         for t in hashtags_override:
@@ -73,10 +96,24 @@ def generate_metadata(job_topic: str, script: list[dict],
             if t and t not in seen:
                 seen.add(t)
                 all_tags.append(t)
+    elif channel_instructions:
+        # 채널 지침에서 해시태그 파싱
+        channel_tags = _parse_channel_hashtags(channel_instructions)
+        if channel_tags:
+            # 주제 키워드 태그도 추가
+            topic_tags = _extract_topic_tags(job_topic)
+            seen = set()
+            all_tags = []
+            for t in channel_tags + topic_tags:
+                if t not in seen:
+                    seen.add(t)
+                    all_tags.append(t)
+        else:
+            topic_tags = _extract_topic_tags(job_topic)
+            all_tags = [brand] + _DEFAULT_TAGS + topic_tags
     else:
         topic_tags = _extract_topic_tags(job_topic)
-        base_tags = [brand] + _DEFAULT_TAGS
-        all_tags = base_tags + topic_tags
+        all_tags = [brand] + _DEFAULT_TAGS + topic_tags
 
     hashtags = " ".join(f"#{t}" for t in all_tags)
 

@@ -232,13 +232,17 @@ def _now():
 
 
 def _extract_section(text: str, section_name: str) -> str:
-    """통합 지침(instructions)에서 '# 섹션명' 블록 추출. 없으면 빈 문자열."""
+    """통합 지침(instructions)에서 '#' 또는 '##' 섹션명 블록 추출. 없으면 빈 문자열."""
     if not text:
         return ""
     import re
-    pattern = rf'^# {re.escape(section_name)}\s*\n(.*?)(?=^# |\Z)'
-    m = re.search(pattern, text, re.MULTILINE | re.DOTALL)
-    return m.group(1).strip() if m else ""
+    # ## 레벨2 먼저 시도, 없으면 # 레벨1
+    for prefix in ("##", "#"):
+        pattern = rf'^{prefix} {re.escape(section_name)}\s*\n(.*?)(?=^#{1,2} |\Z)'
+        m = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+        if m:
+            return m.group(1).strip()
+    return ""
 
 
 def _update_step(db, job_id, step_name, status, output_data=None, error_msg=None):
@@ -558,16 +562,7 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                     "slide": vp.get("scene", 1),
                 })
 
-            # ch-0003: 이미지 프롬프트에 대사(Dialogue) 주입
-            if channel_id == "ch-0003" and script_json:
-                _sents_a = script_json.get("sentences", [])
-                for ip in image_prompts:
-                    _sn = ip.get("slide", 1)
-                    _dl = [s["text"] for s in _sents_a if s.get("slide") == _sn and s.get("text", "").strip()]
-                    if _dl:
-                        _dialogue_text = " ".join(_dl)
-                        ip["en"] = ip.get("en", "") + f'. Dialogue: "{_dialogue_text}". The character\'s lip movements and gestures must perfectly match this dialogue.'
-                        ip["ko"] = ip.get("ko", "") + f" [대사: {_dialogue_text}]"
+            # ch-0003 Dialogue 주입 제거됨 — AI 이미지 모델은 대사/립싱크 불가
 
             if image_prompts and any(p.get("en") for p in image_prompts):
                 meta["image_prompts"] = image_prompts
@@ -1340,7 +1335,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 generate_metadata(topic, sentences, dirs["job"],
                                   youtube_title=script_json.get("youtube_title", ""),
                                   brand=brand,
-                                  hashtags_override=script_json.get("hashtags") or None)
+                                  hashtags_override=script_json.get("hashtags") or None,
+                                  channel_instructions=instructions)
 
                 # 썸네일 생성
                 try:
@@ -1819,7 +1815,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                 generate_metadata(topic, sentences, dirs["job"],
                                   youtube_title=script_json.get("youtube_title", ""),
                                   brand=brand,
-                                  hashtags_override=script_json.get("hashtags") or None)
+                                  hashtags_override=script_json.get("hashtags") or None,
+                                  channel_instructions=instructions)
 
                 # 썸네일 생성 (render 완료 후 — 배경 이미지 확보된 상태)
                 try:
@@ -2948,7 +2945,9 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                        [final_path, _now(), job_id])
             generate_metadata(topic, sentences, dirs["job"],
                               youtube_title=script_json.get("youtube_title", ""),
-                              hashtags_override=script_json.get("hashtags") or None)
+                              brand=brand,
+                              hashtags_override=script_json.get("hashtags") or None,
+                              channel_instructions=instructions)
 
             # 썸네일 생성 (render 완료 후)
             try:

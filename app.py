@@ -1457,10 +1457,12 @@ async def api_upload_final_video(job_id: str, file: UploadFile = File(...)):
             channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?",
                                      [job.get("channel_id", "")])
             brand = channel["name"] if channel else "이슈60초"
+            ch_instructions = channel.get("instructions", "") if channel else ""
             generate_metadata(job.get("topic", ""), sentences, job_dir,
                               youtube_title=script.get("youtube_title", ""),
                               brand=brand,
-                              hashtags_override=script.get("hashtags") or None)
+                              hashtags_override=script.get("hashtags") or None,
+                              channel_instructions=ch_instructions)
         except Exception as e:
             print(f"[final-video] 메타데이터 생성 실패 (무시): {e}")
 
@@ -1641,16 +1643,17 @@ async def api_manual_youtube_upload(job_id: str, request: Request):
     if not os.path.exists(meta_path):
         raise HTTPException(404, "메타데이터 파일을 찾을 수 없습니다")
 
-    # 업로드 직전 script의 hashtags를 메타데이터에 반영 (기존 완료 작업도 최신 태그 반영)
+    # 업로드 직전 메타데이터 갱신 (채널 지침 해시태그 반영)
     try:
         script = json.loads(job.get("script_json") or "{}")
-        if script.get("hashtags"):
-            from pipeline.metadata import generate_metadata
-            generate_metadata(job.get("topic", ""), script.get("sentences", []),
-                              job_dir,
-                              youtube_title=script.get("youtube_title", ""),
-                              brand=(channel["name"] if channel else "이슈60초"),
-                              hashtags_override=script["hashtags"])
+        from pipeline.metadata import generate_metadata
+        ch_instructions = channel.get("instructions", "") if channel else ""
+        generate_metadata(job.get("topic", ""), script.get("sentences", []),
+                          job_dir,
+                          youtube_title=script.get("youtube_title", ""),
+                          brand=(channel["name"] if channel else "이슈60초"),
+                          hashtags_override=script.get("hashtags") or None,
+                          channel_instructions=ch_instructions)
     except Exception as e:
         print(f"[youtube-upload] 메타데이터 갱신 실패 (기존 값 사용): {e}")
 
