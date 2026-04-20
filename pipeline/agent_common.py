@@ -466,11 +466,17 @@ def _build_script_schema(channel_format: str = "single",
 
     return f"""\
 다음 JSON 형식으로만 출력해. 다른 텍스트 없이 JSON만.
+★ 각 슬라이드에 반드시 2~3개 문장을 배정해야 한다. 1문장만 있는 슬라이드는 규칙 위반이다.
 
 {{
   "news_date": "2026-03-09",
   "youtube_title": "제목 (100자 이내)",
-  "sentences": [{{"text": "문장 (15~25자)", "slide": 1}}, ...],
+  "sentences": [
+    {{"text": "슬라이드1 팩트 문장 (15~25자)", "slide": 1}},
+    {{"text": "슬라이드1 배경 문장", "slide": 1}},
+    {{"text": "슬라이드2 팩트 문장", "slide": 2}},
+    {{"text": "슬라이드2 원인 문장", "slide": 2}}
+  ],
   "slides": [{{"category": "카테고리", "main": "핵심 <span class=\\"hl\\">강조</span>", "sub": "보조 설명", "bg_type": "photo"}}, ...],
   "hashtags": ["채널 기본 태그", "...", "내용 관련 태그", "..."]
 }}
@@ -494,14 +500,19 @@ def _build_roundup_schema(roundup_rules: str = "",
 
     return f"""\
 다음 JSON 형식으로만 출력해. 다른 텍스트 없이 JSON만 출력해.
+★ 각 슬라이드에 반드시 2~3개 문장을 배정해야 한다. 1문장만 있는 슬라이드는 규칙 위반이다.
 
 {{
   "news_date": "2026-03-09",
   "youtube_title": "YouTube 업로드용 제목 (100자 이내, 짧고 임팩트 있게)",
   "sentences": [
-    {{"text": "TTS로 읽을 문장 (20자 이내)", "slide": 1}},
-    {{"text": "두번째 문장", "slide": 1}},
-    ...
+    {{"text": "오프닝 팩트 문장 (15~25자)", "slide": 1}},
+    {{"text": "오프닝 배경 문장", "slide": 1}},
+    {{"text": "섹션1 팩트 문장", "slide": 2}},
+    {{"text": "섹션1 원인/배경 문장", "slide": 2}},
+    {{"text": "섹션2 팩트 문장", "slide": 3}},
+    {{"text": "섹션2 원인 문장", "slide": 3}},
+    {{"text": "섹션2 영향 문장", "slide": 3}}
   ],
   "slides": [
     {{
