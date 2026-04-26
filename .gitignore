@@ -9,6 +9,8 @@ data/client_secret_*.json
 data/shorts.db
 data/shorts.db-shm
 data/shorts.db-wal
+data/channels.db-shm
+data/channels.db-wal
 data/google-tts.json
 data/channel_secrets.json
 data/channels.db.bak.*
