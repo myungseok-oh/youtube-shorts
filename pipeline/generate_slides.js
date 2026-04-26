@@ -1364,4 +1364,197 @@ async function main() {
   console.log('__RESULT__' + JSON.stringify(result));
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+// ════════════════════════════════════════════════════════════════════
+// Intro Overview — 헤드라인 누적 등장 인트로
+// ════════════════════════════════════════════════════════════════════
+async function runIntroOverview(d, outDir) {
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+  const introBg = d.introBg || '';
+  const headlines = (d.headlines || []).slice(0, 12);  // 안전 상한 12
+  const dateLabel = d.dateLabel || '';
+  const title = d.title || '오늘의 헤드라인';
+  const accent = d.accentColor || '#ff6b35';
+  const hl = d.hlColor || '#ffd700';
+
+  // 카드 개수에 따라 자동 크기 조정 (글자 잘림/넘침 방지)
+  // n<=5: 큰 카드, 6~7: 중간, 8~9: 작게, 10+: 더 작게
+  const _n = headlines.length;
+  let _cardPadV, _cardPadH, _cardGap, _numSize, _textSize, _numMinW, _titleSize, _topPad, _botPad;
+  if (_n <= 5) {
+    _cardPadV = 22; _cardPadH = 30; _cardGap = 22;
+    _numSize = 60; _textSize = 48; _numMinW = 88;
+    _titleSize = 92; _topPad = 220; _botPad = 200;
+  } else if (_n <= 7) {
+    _cardPadV = 16; _cardPadH = 26; _cardGap = 16;
+    _numSize = 48; _textSize = 42; _numMinW = 72;
+    _titleSize = 80; _topPad = 180; _botPad = 140;
+  } else if (_n <= 9) {
+    _cardPadV = 12; _cardPadH = 22; _cardGap = 12;
+    _numSize = 40; _textSize = 36; _numMinW = 62;
+    _titleSize = 72; _topPad = 160; _botPad = 110;
+  } else {
+    _cardPadV = 9; _cardPadH = 18; _cardGap = 9;
+    _numSize = 34; _textSize = 30; _numMinW = 54;
+    _titleSize = 64; _topPad = 140; _botPad = 90;
+  }
+
+  // 배경 이미지를 base64 data URL로 변환 (file:/// 차단 회피)
+  let bgUrl = '';
+  if (introBg && fs.existsSync(introBg)) {
+    const buf = fs.readFileSync(introBg);
+    const ext = path.extname(introBg).toLowerCase().slice(1) || 'jpeg';
+    const mime = ext === 'jpg' ? 'jpeg' : ext;
+    bgUrl = `data:image/${mime};base64,${buf.toString('base64')}`;
+  }
+
+  // 헤드라인 카드 N개 (모두 .visible 토글로 등장 제어)
+  const cardsHTML = headlines.map((text, i) => {
+    const num = String(i + 1).padStart(2, '0');
+    return `<div class="hl-card" data-idx="${i}">
+      <div class="hl-num">${num}</div>
+      <div class="hl-text">${text}</div>
+    </div>`;
+  }).join('\n');
+
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    width: 1080px; height: 1920px;
+    font-family: 'Noto Sans KR', sans-serif;
+    color: #ffffff; overflow: hidden; position: relative;
+    word-break: keep-all; overflow-wrap: break-word;
+    ${bgUrl ? `background: url('${bgUrl}') center/cover no-repeat;` : 'background: linear-gradient(170deg, #0b0e1a 0%, #141b2d 50%, #1a2238 100%);'}
+  }
+  .bg-overlay {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.65) 50%, rgba(0,0,0,0.85) 100%);
+    z-index: 1;
+  }
+  .wrap {
+    position: relative; z-index: 5;
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    padding: ${_topPad}px 80px ${_botPad}px;
+  }
+  .header {
+    display: flex; flex-direction: column; align-items: flex-start;
+    margin-bottom: ${_n <= 5 ? 60 : 36}px;
+  }
+  .date-badge {
+    display: inline-block;
+    padding: 14px 28px;
+    background: ${accent};
+    color: #fff;
+    font-size: ${_n <= 5 ? 36 : 30}px; font-weight: 900;
+    letter-spacing: 1px;
+    border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+    margin-bottom: 24px;
+  }
+  .title {
+    font-size: ${_titleSize}px; font-weight: 900;
+    color: #fff;
+    line-height: 1.1;
+    letter-spacing: -2px;
+    text-shadow: 0 4px 24px rgba(0,0,0,0.8);
+  }
+  .accent-line {
+    width: 96px; height: 8px;
+    background: ${accent};
+    margin-top: 28px;
+    border-radius: 4px;
+  }
+  .cards {
+    display: flex; flex-direction: column;
+    gap: ${_cardGap}px;
+    flex: 1;
+    justify-content: flex-start;
+  }
+  .hl-card {
+    display: flex; align-items: center;
+    gap: ${Math.max(16, _cardPadH - 6)}px;
+    padding: ${_cardPadV}px ${_cardPadH}px;
+    background: rgba(15,18,30,0.78);
+    border-left: 6px solid ${accent};
+    border-radius: 0 14px 14px 0;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+    /* 초기 숨김: opacity + 살짝 아래로 + 작게 */
+    opacity: 0;
+    transform: translateY(40px) scale(0.94);
+    transition: none;
+  }
+  .hl-card.visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  .hl-card.pop {
+    /* 막 등장한 카드: 잠깐 강조 (큰 그림자 + accent 글로우) */
+    box-shadow: 0 0 0 4px ${accent}55, 0 14px 50px rgba(0,0,0,0.6);
+  }
+  .hl-num {
+    font-size: ${_numSize}px; font-weight: 900;
+    color: ${accent};
+    min-width: ${_numMinW}px;
+    text-align: center;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
+    letter-spacing: -2px;
+  }
+  .hl-text {
+    font-size: ${_textSize}px; font-weight: 800;
+    color: #fff;
+    line-height: 1.25;
+    text-shadow: 0 2px 12px rgba(0,0,0,0.95);
+    flex: 1;
+  }
+</style></head>
+<body>
+  <div class="bg-overlay"></div>
+  <div class="wrap">
+    <div class="header">
+      ${dateLabel ? `<div class="date-badge">${dateLabel}</div>` : ''}
+      <div class="title">${title}</div>
+      <div class="accent-line"></div>
+    </div>
+    <div class="cards">
+      ${cardsHTML}
+    </div>
+  </div>
+</body></html>`;
+
+  const browser = await puppeteer.launch({ headless: 'new' });
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1080, height: 1920 });
+  await page.setContent(html, { waitUntil: 'load' });
+  await new Promise(r => setTimeout(r, 400));
+
+  // stage_0 ~ stage_N : i번째 카드까지 visible
+  const result = [];
+  const n = headlines.length;
+  for (let i = 0; i <= n; i++) {
+    await page.evaluate((idx) => {
+      document.querySelectorAll('.hl-card').forEach((el, k) => {
+        el.classList.toggle('visible', k < idx);
+        // 가장 최근 등장한 카드만 pop 강조 (과한 강조 방지)
+        el.classList.toggle('pop', k === idx - 1);
+      });
+    }, i);
+    await new Promise(r => setTimeout(r, 60));
+    const out = path.join(outDir, `stage_${i}.png`);
+    await page.screenshot({ path: out, type: 'png' });
+    result.push(out);
+    console.log(`stage_${i}.png`);
+  }
+
+  await browser.close();
+  console.log('__RESULT__' + JSON.stringify(result));
+}
+
+// ─── 엔트리 분기 ───
+if (data.mode === 'intro-overview') {
+  runIntroOverview(data, outputDir).catch(e => { console.error(e); process.exit(1); });
+} else {
+  main().catch(e => { console.error(e); process.exit(1); });
+}

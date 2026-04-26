@@ -12,7 +12,6 @@ DEFAULTS = {
     "use_subagent":      False,
 
     # 콘텐츠 (content) — 항상 표시
-    "target_duration":   60,
     "format":            "single",
     "dedup_hours":       24,
     "skip_web_search":   False,
@@ -34,17 +33,20 @@ DEFAULTS = {
     # 이미지/영상 (image)
     "bg_media_type":             "auto",
     "first_slide_single_bg":     False,
+    "first_slide_use_intro_bg":  False,
     "style_reference":           False,
     "image_style":               "mixed",
     "video_chaining":            False,
     # image_prompt_style 제거됨 (통합 지침 내 '# 이미지 프롬프트 지침' 섹션으로 관리)
 
     # 인트로/아웃트로 (intro_outro)
-    "intro_duration":    3,
-    "outro_duration":    3,
-    "intro_narration":   "",
-    "outro_narration":   "",
-    "narration_delay":   2,
+    "intro_duration":       3,
+    "outro_duration":       3,
+    "intro_narration":      "",
+    "outro_narration":      "",
+    "narration_delay":      2,
+    "intro_show_headlines": False,
+    "intro_overview_title": "오늘의 헤드라인",
 
     # TTS (tts) — 항상 표시
     "tts_engine":        "edge-tts",
@@ -109,7 +111,7 @@ OPTION_GROUPS = [
         "icon": "C",
         "always_on": True,
         "fields": [
-            "target_duration", "format", "dedup_hours",
+            "format", "dedup_hours",
             "skip_web_search", "production_mode", "auto_bg_source",
             "image_style",
         ],
@@ -143,7 +145,7 @@ OPTION_GROUPS = [
         "icon": "I",
         "always_on": False,
         "fields": [
-            "bg_media_type", "first_slide_single_bg", "style_reference",
+            "bg_media_type", "first_slide_single_bg", "first_slide_use_intro_bg", "style_reference",
             "video_chaining",
         ],
     },
@@ -155,6 +157,7 @@ OPTION_GROUPS = [
         "fields": [
             "intro_duration", "outro_duration",
             "intro_narration", "outro_narration", "narration_delay",
+            "intro_show_headlines", "intro_overview_title",
         ],
     },
     {

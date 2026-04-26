@@ -732,7 +732,7 @@ Each array must have exactly {num_slides} items.
 """
 
     raw = _run_claude(prompt, timeout=120, use_web=False,
-                      model="claude-haiku-4-5-20251001")
+                      model="claude-sonnet-4-6")
 
     # 파싱
     try:
@@ -785,7 +785,7 @@ SDXL RULES:
 - Output ONLY the English prompt, nothing else."""
 
     raw = _run_claude(prompt, timeout=60, use_web=False,
-                      model="claude-haiku-4-5-20251001")
+                      model="claude-sonnet-4-6")
     try:
         wrapper = json.loads(raw)
         if isinstance(wrapper, dict) and "result" in wrapper:
@@ -866,7 +866,7 @@ RULES: Detailed scene, 30-60 words, end with "high quality, photorealistic, vivi
 Output ONLY the improved prompt."""
 
     raw = _run_claude(prompt, timeout=60, use_web=False,
-                      model="claude-haiku-4-5-20251001")
+                      model="claude-sonnet-4-6")
     try:
         wrapper = json.loads(raw)
         if isinstance(wrapper, dict) and "result" in wrapper:

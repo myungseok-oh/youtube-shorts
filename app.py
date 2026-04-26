@@ -125,8 +125,21 @@ def _migrate_channels_db():
     if not rows:
         return
 
+    from db.models import _split_config, _load_secrets, _save_secrets
+    secrets = _load_secrets()
     for row in rows:
-        db_ch.insert("channels", dict(row))
+        d = dict(row)
+        try:
+            cfg = json.loads(d.get("config") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
+        public_cfg, secret_cfg = _split_config(cfg)
+        d["config"] = json.dumps(public_cfg, ensure_ascii=False)
+        if secret_cfg:
+            secrets[d["id"]] = {**secrets.get(d["id"], {}), **secret_cfg}
+        db_ch.insert("channels", d)
+    if secrets:
+        _save_secrets(secrets)
     print(f"[마이그레이션] channels.db로 {len(rows)}개 채널 복사 완료")
 
 
@@ -936,12 +949,32 @@ async def api_get_channel_trends(channel_id: str):
 
 
 @app.get("/api/news/today")
-async def api_news_today():
-    """오늘자 뉴스 헤드라인 수집 (Google News + 네이버 뉴스 RSS)"""
+async def api_news_today(section: str = ""):
+    """오늘자 뉴스 헤드라인 수집 (Google News + 네이버 뉴스 RSS)
+
+    Args:
+        section: 콤마로 구분된 섹션 필터 (예: "종합", "경제,IT과학"). 빈값=전체
+    """
     from pipeline.trend_collector import fetch_today_news, format_today_news
-    items = fetch_today_news(max_age_hours=12)
+    sections = [s.strip() for s in section.split(",") if s.strip()] if section else None
+    items = fetch_today_news(max_age_hours=12, sections=sections)
     formatted = format_today_news(items)
     return {"items": items, "formatted": formatted, "count": len(items)}
+
+
+@app.get("/api/market/data")
+async def api_market_data(sources: str = ""):
+    """시장 데이터 크롤링 (BTC, 공포탐욕지수, 증시 등).
+
+    Args:
+        sources: 콤마로 구분된 데이터 소스 (예: "crypto,fear_greed").
+                 빈값이면 전체.
+    """
+    from pipeline.market_crawler import collect_market_data, format_market_context
+    src_list = [s.strip() for s in sources.split(",") if s.strip()] or None
+    data = collect_market_data(sources=src_list)
+    formatted = format_market_context(data)
+    return {"data": data, "formatted": formatted}
 
 
 @app.get("/api/news/browse")
@@ -1026,7 +1059,7 @@ async def api_get_job_script(job_id: str):
     meta = json.loads(job["meta_json"]) if job.get("meta_json") else {}
 
     # 채널 config (배경 소스 정보)
-    channel = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [job.get("channel_id", "")])
+    channel = get_channel(db_ch, job.get("channel_id", ""))
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
 
     # 썸네일 확인
@@ -1315,7 +1348,7 @@ async def api_generate_thumbnail(job_id: str):
     if not slides:
         raise HTTPException(400, "No slides in script")
 
-    channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [job.get("channel_id", "")])
+    channel = get_channel(db_ch, job.get("channel_id", ""))
     brand = channel["name"] if channel else ""
 
     title = script.get("youtube_title", "")
@@ -1428,8 +1461,7 @@ async def api_upload_final_video(job_id: str, file: UploadFile = File(...)):
                 )
                 category = slides[0].get("category", "") if slides else ""
                 accent = slides[0].get("accent", "#ff6b35") if slides else "#ff6b35"
-                channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?",
-                                         [job.get("channel_id", "")])
+                channel = get_channel(db_ch, job.get("channel_id", ""))
                 brand = channel["name"] if channel else "이슈60초"
                 generate_thumbnail(title, thumb_path, category=category,
                                    accent=accent, brand=brand, background=frame_path)
@@ -1454,8 +1486,7 @@ async def api_upload_final_video(job_id: str, file: UploadFile = File(...)):
             from pipeline.metadata import generate_metadata
             script = json.loads(job["script_json"])
             sentences = script.get("sentences", [])
-            channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?",
-                                     [job.get("channel_id", "")])
+            channel = get_channel(db_ch, job.get("channel_id", ""))
             brand = channel["name"] if channel else "이슈60초"
             ch_instructions = channel.get("instructions", "") if channel else ""
             generate_metadata(job.get("topic", ""), sentences, job_dir,
@@ -1616,7 +1647,7 @@ async def api_manual_youtube_upload(job_id: str, request: Request):
     if job.get("status") != "completed":
         raise HTTPException(400, "영상이 완성되지 않았습니다")
 
-    channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = get_channel(db_ch, job["channel_id"])
     ch_config = json.loads(channel.get("config", "{}")) if channel else {}
 
     yt_client_id = ch_config.get("youtube_client_id", "")
@@ -1725,7 +1756,7 @@ async def api_generate_image_prompts(job_id: str):
     slides = script.get("slides", [])
     topic = job.get("topic", "")
 
-    channel = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = get_channel(db_ch, job["channel_id"])
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     prompt_style = ch_cfg.get("image_prompt_style", "")
     slide_layout = ch_cfg.get("slide_layout", "full")
@@ -1957,7 +1988,7 @@ async def api_sd_generate_single(job_id: str, index: int, request: Request):
         raise HTTPException(404, "Job not found")
 
     # 채널 config에서 소스 결정
-    channel = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = get_channel(db_ch, job["channel_id"])
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     auto_bg_source = ch_cfg.get("auto_bg_source", "sd_image")
     gemini_key = ch_cfg.get("gemini_api_key", "")
@@ -2170,7 +2201,7 @@ async def api_sd_generate_auto(job_id: str):
     sentences = script.get("sentences", [])
 
     # 채널 config
-    channel = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = get_channel(db_ch, job["channel_id"])
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     slide_layout = ch_cfg.get("slide_layout", "full")
     auto_bg_source = ch_cfg.get("auto_bg_source", "sd_image")
@@ -2275,7 +2306,7 @@ async def api_rerender_slides(job_id: str):
     slides_data = script.get("slides", [])
     date_str = script.get("date", "")
 
-    channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = get_channel(db_ch, job["channel_id"])
     brand = channel.get("name", "") if channel else ""
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     slide_layout = ch_cfg.get("slide_layout", "full")
@@ -2315,7 +2346,7 @@ async def api_bg_to_video(job_id: str, bg_idx: int, request: Request):
     if not job:
         raise HTTPException(404, "Job not found")
 
-    channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [job["channel_id"]])
+    channel = get_channel(db_ch, job["channel_id"])
     ch_cfg = json.loads(channel.get("config", "{}")) if channel else {}
     gemini_key = ch_cfg.get("gemini_api_key", "")
     if not gemini_key:
@@ -2724,7 +2755,7 @@ async def api_auto_effects(job_id: str):
     ch_id = db.fetchone("SELECT channel_id FROM jobs WHERE id = ?", [job_id])
     ch_config = {}
     if ch_id:
-        ch = db_ch.fetchone("SELECT config FROM channels WHERE id = ?", [ch_id["channel_id"]])
+        ch = get_channel(db_ch, ch_id["channel_id"])
         if ch:
             try: ch_config = json.loads(ch.get("config") or "{}")
             except: pass
@@ -3139,9 +3170,24 @@ async def api_import_channels(file: UploadFile = File(...)):
         cid = ch.get("id")
         if not cid:
             continue
-        cfg = ch.get("config", {})
-        if isinstance(cfg, dict):
-            cfg = json.dumps(cfg, ensure_ascii=False)
+        cfg_raw = ch.get("config", {})
+        if isinstance(cfg_raw, str):
+            try:
+                cfg_dict = json.loads(cfg_raw)
+            except (json.JSONDecodeError, TypeError):
+                cfg_dict = {}
+        else:
+            cfg_dict = dict(cfg_raw or {})
+        # 시크릿 분리: import JSON에 시크릿이 있어도 별도 파일로
+        from db.models import _split_config, _load_secrets, _save_secrets
+        public_cfg, secret_cfg = _split_config(cfg_dict)
+        if secret_cfg:
+            _all_secrets = _load_secrets()
+            _existing_sec = _all_secrets.get(cid, {})
+            _existing_sec.update(secret_cfg)
+            _all_secrets[cid] = _existing_sec
+            _save_secrets(_all_secrets)
+        cfg = json.dumps(public_cfg, ensure_ascii=False)
         existing = db_ch.fetchone("SELECT id FROM channels WHERE id = ?", [cid])
         if existing:
             db_ch.execute(

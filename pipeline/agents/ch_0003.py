@@ -1,74 +1,54 @@
-"""채널 에이전트: ch-0003 (사물의 반란)
+"""채널 에이전트: ch-0003 (건강상식)
 
-에버그린 상식/교양 콘텐츠 — 사물이 1인칭으로 항의하는 형식.
-모든 슬라이드 media: video 고정, Pixar 3D 의인화 스타일.
+채널 톤/대본 규칙은 DB instructions에서 관리.
+이미지 프롬프트는 다큐 사진 + 실생활 candid 톤으로 통일.
 """
 from pipeline.agents.base_agent import BaseAgent
 
 
 class Agent(BaseAgent):
 
-    SCRIPT_RULES = """\
-- 에버그린 생활상식 콘텐츠. news_date는 제작일 기준
-- 화자 = 사물 본인 (1인칭 반말). 사물이 사용자에게 직접 따지는 말투
-- 모든 슬라이드 media: "video" 고정, bg_type: "broll"
-
-### 슬라이드 구성
-- 주제 수: 사용자가 요청한 만큼 (최소 1개, 기본 1개)
-- 1주제 = 슬라이드 1장, 주제별 소요 시간 = target_duration
-- category: 사물 이름 (예: "썬크림", "칫솔")
-- main: 핵심 한 줄 (예: "급하게 바르면 소용없어!")
-
-### 나레이션
-- 주제당 sentences 3~5개 (모두 해당 slide 번호 지정)
-- 문장 길이: 10~15자, 짧고 강렬하게
-- sentences에 HTML 태그 금지 (순수 텍스트만)
-- 강조 키워드는 main/sub에만: <span class="hl">...</span>
-- youtube_title: 50자 이내, 사물 시점 표현
-- 여러 주제일 때 youtube_title은 대표 주제 또는 묶음 표현
-
-### ★ image_prompts
-- 주제당 1개 (슬라이드당 배경 1장)
-- narration 개수 ≠ image_prompts 개수. 배경 1장 위에 나레이션 여러 문장이 재생됨
-
-### 나머지 톤/구성
-- 채널 지침(DB)의 톤, 금지 사항, 영상 구조를 따른다"""
-
     IMAGE_PROMPT_STYLE = """\
-Pixar/Disney 3D 의인화 캐릭터 + 실사 배경. 사물을 3D 캐릭터로 의인화.
+너는 건강상식 영상의 비주얼 디렉터야. **나레이션의 건강 이슈를 다큐 사진 + 실생활 candid moment로** 시각화한다.
 
-ALL prompts in English, 25-40 words, 5요소: subject, setting, lighting, camera, style
+ALL prompts in English, 30-60 words, 6요소: subject(사람+증상/행동), setting(장소), emotion/action, lighting, camera, style(다큐)
+**기본 스타일**: documentary health photography, candid moment, natural lighting, photojournalism, sharp focus, 8k
 
-## ★ 미디어 타입: 반드시 video
+## 핵심 원칙
+- **사람 등장 권장**: 환자/사용자가 행동·증상·실천하는 candid moment (얼굴·손·자세)
+- **상황 단서**: 침대·부엌·운동장·거실·욕실 — 어디서 일어나는 일인지 명확히
+- **mixed 활용**: 일상 장면(photo)이 메인, 의학적 설명이 필요한 부분만 인포그래픽(graph)으로
+- **광고 톤 금지**: 깨끗한 헬스장 정물, 스튜디오 운동복, 약품 광고 클로즈업 ❌
 
-## 캐릭터 의인화 규칙
-- 사물에 큰 눈, 표정 있는 입, 작은 팔다리 부여
-- 배경은 사물이 실제로 존재하는 생활 공간 (실사풍)
-- 감정 키워드는 1개만 (angry frown OR smug grin, 여러 개 금지)
-- 캐릭터 설명은 프롬프트 시작에 1번만. 끝에 반복 금지
+## 슬라이드 역할별 시각 전략
+| 역할 | 시각 |
+|------|------|
+| 훅(증상/문제) | 피곤한 표정, 잠 못 드는 모습, 통증 부위 손 짚기 등 candid |
+| 원리/과학 | graph 타입 — 신체 다이어그램, 흐름도, 비교 차트 (실사 금지) |
+| 일상 적용 | 실생활 장면 (식사·잠자리·산책·운동) |
+| 결론/CTA | 실천하는 모습, 건강한 행동, 결정 |
 
-## en 프롬프트 구조
-[캐릭터 외형] + [배경 장소] + [핵심 감정/행동 1개] + [조명]
+## 주제 → 장면 매핑 (참고)
+| 주제 | 장면 |
+|------|------|
+| 수면 | 침실 candid (뒤척이는 사람·시계·이불), 알람 끄는 손 |
+| 식습관 | 부엌·식탁·음식 클로즈업 + 사람 손/표정 |
+| 운동/자세 | 거실·산책로에서 자세 candid, 통증 부위 짚는 손 |
+| 잘못된 상식 | 행위 candid + 의외라는 표정 |
+| 신호/증상 | 거울 앞 자기 점검, 통증 표현 |
 
-### 좋은 예
-"Pixar-style 3D anthropomorphized sunscreen tube with angry frown on wooden vanity, yellow stain spreading on white shirt beside it, soft morning light"
+## bg_type 선택
+- **photo (메인)**: 일상 candid health moment
+- **graph (보조)**: 과학 설명 필요할 때만, flat illustration / vector art / anatomy diagram
+- **broll**: 시네마틱 다큐 (병원 복도 candid, 부엌 클로즈업)
 
-### 나쁜 예 (금지)
-"Pixar-style tube, big shiny eyes, tiny arms and legs, smug grin, then recoils in horror, wide shocked eyes..." ← 반복+과잉
-
-## motion 규칙
-- 영어, 15-20 words, en 프롬프트와 내용 겹치지 않게
-- [시작 동작] → [변화/반응]
-- 예: "stands proudly then shrinks back as stain spreads on nearby shirt"
-- 캐릭터 외형 재설명 금지, 감정 키워드 3개 이상 나열 금지
-
-## 비주얼 방향
-- 주제 핵심 메시지에 맞는 감정 1개만 선택
-- 항의→angry / 공포→terrified / 자신만만→smug
-- 밝은 조명 (soft lighting, warm light)
+## 기술적 한계 (AI 모델 제약)
+- 이미지 안 글자/숫자 렌더링 금지
+- 의료 다이어그램은 graph 타입에서만 (실사로 인체/장기 그리기 금지)
+- 폰 화면/앱 UI 렌더링 금지
 
 ## BANNED
-- 사람/손/신체
-- dark/moody
-- text in image
-- 감정 키워드 여러 개 나열"""
+- 광고 카탈로그 (제품 정물 사진만)
+- 비현실적 의학 영상 (CGI 추상)
+- 인적 없는 깨끗한 헬스장/병원
+- 같은 포즈/구도 반복"""

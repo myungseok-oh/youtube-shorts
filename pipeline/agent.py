@@ -74,14 +74,12 @@ def generate_synopsis(topic: str, instructions: str, brand: str = "이슈60초",
                       channel_format: str = "single",
                       has_outro: bool = False,
                       use_subagent: bool = False,
-                      target_duration: int = 60,
                       news_context: str = "",
                       channel_id: str | None = None) -> dict:
     agent = get_agent(channel_id) if channel_id else _default_agent
     return agent.generate_synopsis(topic, instructions, brand,
                                    channel_format, has_outro,
-                                   use_subagent, target_duration,
-                                   news_context)
+                                   use_subagent, news_context)
 
 
 def generate_visual_plan(topic: str, synopsis: dict,
@@ -93,14 +91,12 @@ def generate_visual_plan(topic: str, synopsis: dict,
                          bg_media_type: str = "auto",
                          auto_bg_source: str = "",
                          first_slide_single_bg: bool = False,
-                         target_duration: int = 60,
                          channel_id: str | None = None) -> list[dict]:
     agent = get_agent(channel_id) if channel_id else _default_agent
     return agent.generate_visual_plan(topic, synopsis, prompt_style,
                                       layout, image_style, scene_references,
                                       bg_display_mode, bg_media_type,
-                                      auto_bg_source, first_slide_single_bg,
-                                      target_duration)
+                                      auto_bg_source, first_slide_single_bg)
 
 
 def generate_script_from_plan(topic: str, synopsis: dict,
@@ -120,7 +116,7 @@ def generate_script_from_plan(topic: str, synopsis: dict,
 
 
 def _validate_with_claude(draft_json: dict, instructions: str, brand: str,
-                          topic: str, target_duration: int = 60,
+                          topic: str,
                           prompt_style: str = "", layout: str = "full",
                           image_style: str = "mixed", scene_references: str = "",
                           bg_display_mode: str = "zone",
@@ -132,7 +128,7 @@ def _validate_with_claude(draft_json: dict, instructions: str, brand: str,
                           channel_id: str | None = None) -> dict:
     agent = get_agent(channel_id) if channel_id else _default_agent
     return agent._validate_with_claude(draft_json, instructions, brand, topic,
-                                       target_duration, prompt_style, layout,
+                                       prompt_style, layout,
                                        image_style, scene_references,
                                        bg_display_mode, bg_media_type,
                                        channel_format, has_outro,
@@ -143,7 +139,6 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
                         channel_format: str = "single",
                         has_outro: bool = False,
                         use_subagent: bool = False,
-                        target_duration: int = 60,
                         prompt_style: str = "",
                         layout: str = "full",
                         image_style: str = "mixed",
@@ -160,7 +155,7 @@ def generate_all_in_one(topic: str, instructions: str, brand: str = "이슈60초
     agent = get_agent(channel_id) if channel_id else _default_agent
     return agent.generate_all_in_one(topic, instructions, brand,
                                      channel_format, has_outro,
-                                     use_subagent, target_duration,
+                                     use_subagent,
                                      prompt_style, layout, image_style,
                                      scene_references, bg_display_mode,
                                      bg_media_type, script_rules,

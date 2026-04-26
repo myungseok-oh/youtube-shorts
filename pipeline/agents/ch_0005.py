@@ -1,7 +1,8 @@
 """채널 에이전트: ch-0005 (증시/코인)
 
-데일리 시장 브리핑 — 글로벌 증시 → 국내 증시 → 코인 고정 3섹션.
-시장 데이터 크롤러(market_crawler)가 수치를 자동 주입.
+경제 뉴스 라운드업 — RSS 경제 헤드라인 5개 + 코인 현황 1개 = 6슬라이드.
+ch-0001과 동일한 라운드업 구조, 단 경제 카테고리만.
+시장 데이터 크롤러(market_crawler)가 BTC/공포탐욕지수 자동 주입.
 금융 안전 규칙 엄격 적용.
 """
 from pipeline.agents.base_agent import BaseAgent
@@ -10,114 +11,126 @@ from pipeline.agents.base_agent import BaseAgent
 class Agent(BaseAgent):
 
     ROUNDUP_RULES = """\
-⚠️ 이 채널은 고정 3섹션 브리핑 구조다. 반드시 아래 구조를 따른다.
+- news_date: 참조한 뉴스 기사들의 게시 날짜 (YYYY-MM-DD), 정확히 기입
+- 경제 RSS 헤드라인 5개 + 코인 현황 1개 = 총 6개 슬라이드
+- 각 뉴스는 완전히 다른 분야 (반도체/금리/부동산/원자재/유가/환율 등 분산)
+- sentences를 이어 읽으면 자연스러운 경제 브리핑 내레이션이 되어야 함
 
-### 슬라이드 구성 (총 8~10장)
+### 슬라이드 구성 (총 6개, 고정)
 
-**섹션1: 글로벌 증시** (~20초, 슬라이드 2~3장)
-- 슬라이드A — 미 증시 수치
-  - category: "🌍 글로벌 증시" 또는 날짜
-  - main: 3대 지수 요약 (예: "나스닥 반등, 다우 소폭 하락")
-  - sub: 시간 기준
-  - sentences: 다우/S&P500/나스닥 각각 등락폭+등락률
-  - bg_type: photo
-- 슬라이드B — 원인/이벤트
-  - main: 움직임 원인
-  - sentences: 핵심 이벤트 2~3문장
-  - bg_type: photo 또는 broll
-
-**섹션2: 국내 증시** (~20초, 슬라이드 2~3장)
-- 슬라이드C — 코스피/코스닥
-  - category: "🇰🇷 국내 증시"
-  - sentences: 종가+등락률, 외국인/기관 매매동향
-  - bg_type: photo
-- 슬라이드D — 업종/종목
-  - sentences: 업종별 흐름 2~3문장
-  - bg_type: photo 또는 graph
-
-**섹션3: 코인 시장** (~20초, 슬라이드 2~3장)
-- 슬라이드E — BTC 시세
-  - category: "₿ 코인 시장"
-  - sentences: BTC 가격, 24h 등락률, 거래량
-  - bg_type: photo
-- 슬라이드F — 시장 심리/이슈
-  - sentences: 공포탐욕지수, 주요 알트코인
-  - bg_type: photo 또는 graph
-
-### 대본 규칙
-- sentences: 18~26개, 각 15~30자, 총 280~400자 (=60~80초)
-- 슬라이드 1개당 문장 1~4개 (5개 이상 금지)
-- ★ 슬라이드당 나레이션은 약 5초 또는 약 10초
-- 존댓말 뉴스 앵커 스타일
-- 문장 어미 다양: ~입니다 / ~인데요 / ~됩니다 / ~을 기록했습니다
-  - 같은 어미 2번 연속 금지
-- **섹션 전환**: "국내 증시 살펴보겠습니다", "코인 시장입니다" 자연스럽게
-  - 같은 전환 표현 반복 금지
-- sentences에 채널명 언급 금지, HTML 태그 금지 (순수 텍스트만)
-- 강조 키워드는 main/sub에만: <span class="hl">...</span>
-- 단순 수치 나열 금지 → 각 슬라이드에 "왜" 1줄 이상
-- 섹션 간 연결: "미 증시 상승 영향으로 국내도..." 식 흐름
-- 확인 불가 수치는 "소폭 상승/약보합/하락세" 사용, 임의 숫자 금지
-- youtube_title: 40자 이내, 핵심 수치 + 날짜 포함
+**슬라이드 1~5: 경제 뉴스 (각 1슬라이드)**
+- RSS [오늘자 뉴스 헤드라인]의 "경제" 섹션에서 5건을 선정
+- category: 번호 + 분야 (예: "1 증시", "2 산업", "3 금리", "4 부동산", "5 무역")
+- 각 뉴스당 2~3문장 (핵심 팩트 + 영향/배경)
+- main: 구체 수치 또는 고유명사 필수 (예: "코스피 <span class=\\"hl\\">0.3% 하락</span>")
 - bg_type: photo | broll | graph | logo
 
-### 금융 안전 규칙
-- 투자 시그널 금지 ("매수 타이밍", "지금이 기회")
-- 가격 예측/목표가 금지
-- 팩트 전달만, 면책 문구 포함
+**슬라이드 6: 코인 현황 (시장 데이터 자동 주입)**
+- category: "6 코인 현황"
+- main: BTC 시세 + 등락률 (예: "비트코인 <span class=\\"hl\\">8만 3천 달러</span>")
+- sub: 공포탐욕지수 또는 24h 거래량
+- sentences: 2~3문장 (BTC 가격, 24h 등락률 + 공포탐욕지수)
+- bg_type: photo
+
+### ★★★ 절대 금지 표현 (정보 없는 추상어)
+다음 단어가 main/sub/**나레이션** 어디든 들어가면 그 뉴스는 폐기하고 다른 경제 뉴스로 교체:
+- **추상 동사**: 혼조세, 확대, 심화, 지속, 진행, 이어지다, 주목, 검토, 논의, 전망
+- **모호 명사**: 흐름, 변동, 움직임, 분위기, 조짐, 양상, 추세, 기조
+- **빈 수식어**: 일부, 다소, 점차, 대체로, 어느 정도
+
+❌ "코스피 혼조세", "AI 경쟁 심화", "환율 변동 지속"
+✅ "코스피 0.3% 하락 2,650선", "오픈AI 5조원 투자 유치", "법인세 22%로 인하 발표"
+
+### ★★★ main 텍스트 필수 조건
+모든 main 텍스트에 다음 중 **최소 1개** 필수:
+1. **구체 숫자**: 12%, 3조원, 2,650, 127억$, 1,200억
+2. **고유명사**: 삼성, 코스피, 연준, 비트코인, 오픈AI, 한은, 이더리움
+3. **구체 사건 동사**: 발표, 체결, 인하, 출시, 합의, 인수, 제소, 승인, 무산
+
+### ★★★ sub 텍스트 필수 조건
+- main과 같은 단어 반복 금지
+- 원인/배경/영향 중 하나를 **새로운 수치 또는 고유명사**와 함께 제시
+- 예: main "코스피 0.3% 하락 2,650" → sub "외국인 1,200억 순매도, 미 금리 우려"
+
+### ★★★ 나레이션 필수 조건 (음성만 들어도 기사 파악 가능)
+각 뉴스 슬라이드의 첫 문장은 **한 줄만 들어도 어느 주체가 무엇을 했는지** 알 수 있어야 함.
+
+**필수**: 각 슬라이드 첫 문장에 다음 중 **최소 2개** 포함:
+1. 구체 숫자 (12%, 3조원, 2,650선, 127억$)
+2. 고유명사 (삼성, 코스피, 파월, 연준, 오픈AI, 비트코인)
+3. 구체 사건 동사 (발표, 체결, 인하, 출시, 합의, 인수)
+
+❌ "오늘 새벽 연준 인사 발언이 주목받았습니다"
+✅ "파월 의장, 12월 금리 동결 가능성 시사했습니다"
+
+### 대본 규칙
+- sentences: 12~16개, 각 12~30자, 총 180~260자 (=45~55초)
+- 슬라이드 1개당 문장 2~3개 (1문장만 절대 금지, 4문장 초과 금지)
+- ★ 각 슬라이드 최소 2문장: 첫째=핵심 팩트(수치+고유명사 최소 2개), 둘째=배경/영향(또 다른 수치 또는 인용)
+- ★ 슬라이드당 약 5초 또는 약 10초 (6~7초 금지)
+- 마지막 슬라이드(코인 현황)는 시장 데이터 크롤러 수치 우선 사용
+- sentences에 채널명 언급 금지, HTML 태그 금지 (순수 텍스트만)
+- 숫자는 읽기 쉬운 형태: 12%, 3조원, 2억 달러, 8만 3천 달러
+- 존댓말 뉴스 앵커 스타일, 감정적 표현 금지
+- 문장 어미 다양: ~입니다 / ~인데요 / ~한 상황입니다 / ~됩니다 / ~했습니다
+  - 같은 어미 2번 연속 금지
+- **주제 전환 표현 매번 다르게**: "다음 소식입니다", "이어서", "한편", "또 다른 소식"
+  - 같은 전환 표현 2회 이상 반복 금지
+- slides: 정확히 6개 (5 경제뉴스 + 1 코인). 강조 키워드는 main/sub에서 <span class="hl">...</span>
+- youtube_title: 20~40자, 가장 임팩트 있는 경제 키워드 + BTC 중 1개 포함
+
+### ★ 수치/팩트 미확보 시 처리 규칙
+- 수치/고유명사를 확보 못 한 뉴스는 **그 뉴스를 통째로 빼고** 다른 경제 뉴스로 교체
+- 추상화로 도망가지 말 것
+- 5건 라운드업 범위 내에서 수치 있는 뉴스만 선별
+
+### 금융/투자 안전 규칙 (엄격)
+- **금지**: 투자 시그널("매수 타이밍", "지금이 기회"), 가격 예측/목표가, RSI/MACD 전망, 과거 수익률 암시
+- **허용**: 팩트 전달, 시장 상황 설명, 전문가/기관 의견 인용 (출처 명시)
+- **면책 문구**: 마지막 코인 슬라이드 나레이션 끝에 "투자 판단은 본인 책임입니다" 반드시 포함
 
 ### ★ 슬라이드 텍스트 임팩트 (음소거로도 내용 파악)
-- **main**: 지수명 + 등락 필수. "증시 하락" → "나스닥 <span class=\\"hl\\">-2.3%</span> 기술주 급락"
-- **sub**: 수치 보조. "다우 +0.1%, S&P500 -0.8%"
-- 3섹션 각각의 main만 읽어도 오늘 시장 흐름이 잡혀야 함"""
+- **main**: 핵심 수치/팩트 필수. "수출 호조" → "반도체 수출 <span class=\\"hl\\">127억$</span> 역대 최대"
+- **sub**: main의 원인/맥락 한줄. "전년比 +23%, AI 수요 급증"
+- 각 뉴스의 main+sub만 읽어도 해당 뉴스의 핵심이 완전히 전달되어야 함"""
 
     IMAGE_PROMPT_STYLE = """\
-너는 금융/증시 뉴스 영상의 비주얼 디렉터야. 글로벌→국내→코인 3섹션 구조.
+너는 경제 뉴스 영상의 비주얼 디렉터야. **나레이션 문장 자체를 그대로 뉴스 사진처럼 시각화**하는 게 핵심이다.
+슬라이드 전체를 먼저 읽고 기사 흐름을 이해한 후, 각 장면을 해당 사건이 그대로 보이는 보도 사진으로 구성해.
 
 ALL prompts in English, 30-60 words, 5요소: subject, setting, lighting, camera, style
+**기본 스타일**: photojournalism style, realistic news photo, sharp focus, 8k resolution
 
-## ★ 핵심 원칙: 피사체 다양성
-- 모든 슬라이드가 건물 외관/스카이라인이면 안 됨. 반드시 다양한 피사체를 사용
-- 8~10장 중 건물/스카이라인은 최대 2장까지만 허용
-- 나머지는 아래 피사체 풀에서 뉴스 내용에 맞게 선택
+## 핵심 원칙
+- 사람·얼굴·건물 외관 모두 허용 (뉴스 사진이니까 자연스럽게)
+- 사건의 주역(시위대·관료·기업 임원)·장소(공장·국회·거래소)·물건(서류·화폐·차량) 모두 화면에 직접 등장
+- 나레이션이 "삼성 노조 총파업"이면 → 삼성 공장 앞 노조 시위 현수막
+- 나레이션이 "IMF 부채 경고"이면 → IMF 회견장 발표 장면 또는 한국 정부 청사 회의
+- 나레이션이 "코스피 하락"이면 → 한국거래소 객장 + 모니터
+- 나레이션이 "비트코인 7만 달러"이면 → 비트코인 코인 또는 거래소 객장
+- 추상적 사물 클로즈업으로 도망가지 말고 **사건 그 자체**를 보여줘라
 
-## 피사체 풀 (섹션별)
-
-### 글로벌 증시
-- 트레이딩 모니터: multiple trading monitors displaying candlestick charts, green/red glow
-- 전광판 클로즈업: LED stock ticker board scrolling numbers, warm amber glow
-- 증권가 상징물: bronze Wall Street bull statue, dramatic low angle
-- 금/원자재: stack of gold bars in bank vault, metallic reflections
-- 신문/미디어: financial newspaper front page with stock charts, shallow depth of field
-- 회의실: glass boardroom table with financial documents, soft overhead lighting
-
-### 국내 증시
-- 트레이딩 데스크: row of trading desk monitors with Korean stock data, blue ambient
-- 반도체/산업: semiconductor wafer closeup, cleanroom blue lighting, macro shot
-- 자동차/제조: automotive assembly line robotic arms, factory lighting
-- 배터리/에너지: lithium battery cells stacked in factory, industrial blue-white
-- 조선/중공업: massive ship hull in dry dock, scale perspective
-- 화폐/경제: Korean won coins and bills, shallow depth of field macro
-
-### 코인 시장
-- 채굴 장비: GPU mining rig closeup with glowing fans, neon ambient
-- 서버 회로: circuit board macro with glowing traces, cyberpunk blue-purple
-- 하드웨어 월렛: hardware crypto wallet on desk, moody desk lamp lighting
-- 블록체인 상징: fiber optic cables hub, blue data stream lighting
-- 거래 환경: laptop screen in dark room with crypto interface glow
+## 경제 주제 → 장면 매핑 (참고)
+| 주제 | 장면 |
+|------|------|
+| 증시/지수 | 한국거래소 객장, 트레이더 모니터 앞 모습, 코스피 전광판 |
+| 반도체 | 삼성/SK하이닉스 공장 외관, 클린룸 작업자, 웨이퍼 |
+| 자동차/제조 | 조립 라인 로봇팔, 공장 라이팅, 모터쇼 회전 무대 |
+| 부동산 | 아파트 단지 항공뷰, 분양 현장 |
+| 환율/금리 | 한국은행 본관, 환율 전광판, 원화 지폐 |
+| 무역/수출 | 컨테이너 항구, 크레인, 화물선 |
+| 에너지/유가 | 정유 설비, 주유소, 항공기 급유 |
+| 시위/파업 | 노조 깃발과 현수막, 시위대(뒷모습/광각) |
+| 코인 | 비트코인 코인, 크립토 거래소 트레이더 객장 |
 
 ## bg_type별 스타일
-- **photo**: realistic, sharp focus, professional photography, 8k resolution
-- **broll**: cinematic shot, dramatic composition, depth of field
-- **graph**: 실사 오브젝트 클로즈업 (차트/인포그래픽 아님). 주제를 상징하는 사물 매크로 촬영
+- **photo**: 보도 사진. realistic news photo, sharp focus, photojournalism, 8k
+- **broll**: 시네마틱 보도. cinematic news shot, dramatic composition
+- **graph**: 인포그래픽 (실사 금지). flat illustration, vector art, clean lines
+- **logo**: 기업 건물 외관 + 브랜드 사이니지
 
-## ★ 연속 슬라이드 규칙
-- 인접한 2장이 같은 카테고리 피사체(예: 건물+건물, 모니터+모니터) 금지
-- 원경(wide/aerial) → 근경(closeup/macro) 교대 배치 권장
-- 조명 톤도 다양하게: 야경 → 주간 → 네온 → 자연광 번갈아
-
-## BANNED
-- text, numbers rendered in image
-- 사람, 얼굴, 신체
-- dark horror themes (금융 야경 어두움은 허용)
-- 같은 피사체/구도 2번 이상 반복"""
+## 기술적 한계 (AI 이미지 모델 제약)
+- 이미지 안에 글자/숫자/한글/한자 렌더링 금지 (AI가 못 그림)
+- 차트/그래프/인포그래픽 직접 생성 금지 (graph 타입에서만 일러스트로)
+- 스마트폰/앱/UI 화면 렌더링 금지 (AI가 못 그림)
+- 같은 장소 2번 이상 반복 금지"""

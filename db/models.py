@@ -1,9 +1,59 @@
 """Channel, Job, JobStep 모델 헬퍼"""
 from __future__ import annotations
 import json
+import os
 from datetime import datetime
 
 from pipeline.runner import STEP_DEFINITIONS
+
+# 채널 config 중 git에 올리지 않을 시크릿 키 (별도 JSON 파일에 저장)
+SECRET_KEYS = {
+    "gemini_api_key",
+    "youtube_api_key",
+    "youtube_client_id",
+    "youtube_client_secret",
+    "youtube_refresh_token",
+}
+
+SECRETS_PATH = os.path.join("data", "channel_secrets.json")
+
+
+def _load_secrets() -> dict:
+    if not os.path.exists(SECRETS_PATH):
+        return {}
+    try:
+        with open(SECRETS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_secrets(secrets: dict) -> None:
+    os.makedirs(os.path.dirname(SECRETS_PATH), exist_ok=True)
+    with open(SECRETS_PATH, "w", encoding="utf-8") as f:
+        json.dump(secrets, f, ensure_ascii=False, indent=2)
+
+
+def _split_config(cfg: dict) -> tuple[dict, dict]:
+    """config dict를 (public, secret) 쌍으로 분리."""
+    public = {k: v for k, v in cfg.items() if k not in SECRET_KEYS}
+    secret = {k: v for k, v in cfg.items() if k in SECRET_KEYS and v not in (None, "")}
+    return public, secret
+
+
+def _merge_secrets_into_channel(ch: dict, secrets_cache: dict = None) -> dict:
+    """채널 row의 config에 시크릿 JSON을 머지."""
+    if not ch:
+        return ch
+    secrets = secrets_cache if secrets_cache is not None else _load_secrets()
+    cfg_str = ch.get("config") or "{}"
+    try:
+        cfg = json.loads(cfg_str)
+    except (json.JSONDecodeError, TypeError):
+        cfg = {}
+    cfg.update(secrets.get(ch["id"], {}))
+    ch["config"] = json.dumps(cfg, ensure_ascii=False)
+    return ch
 
 
 def _now():
@@ -32,6 +82,7 @@ def create_channel(db_ch, name: str, handle: str = "",
                    description: str = "", instructions: str = "",
                    default_topics: str = "", cfg: dict = None) -> dict:
     cid = _next_channel_id(db_ch)
+    public_cfg, secret_cfg = _split_config(cfg or {})
     data = {
         "id": cid,
         "name": name,
@@ -39,15 +90,22 @@ def create_channel(db_ch, name: str, handle: str = "",
         "description": description,
         "instructions": instructions,
         "default_topics": default_topics,
-        "config": json.dumps(cfg or {}, ensure_ascii=False),
+        "config": json.dumps(public_cfg, ensure_ascii=False),
     }
     db_ch.insert("channels", data)
-    return db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [cid])
+    if secret_cfg:
+        secrets = _load_secrets()
+        secrets[cid] = secret_cfg
+        _save_secrets(secrets)
+    row = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [cid])
+    return _merge_secrets_into_channel(row)
 
 
 def list_channels(db_ch, db) -> list[dict]:
     channels = db_ch.fetchall("SELECT * FROM channels ORDER BY CAST(COALESCE(sort_order, '0') AS INTEGER), created_at")
+    secrets = _load_secrets()
     for ch in channels:
+        _merge_secrets_into_channel(ch, secrets)
         cnt = db.fetchone(
             "SELECT COUNT(*) as cnt FROM jobs WHERE channel_id = ?",
             [ch["id"]]
@@ -57,19 +115,43 @@ def list_channels(db_ch, db) -> list[dict]:
 
 
 def get_channel(db_ch, channel_id: str) -> dict | None:
-    return db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
+    row = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
+    return _merge_secrets_into_channel(row) if row else None
 
 
 def update_channel(db_ch, channel_id: str, **kwargs) -> dict | None:
     allowed = {"name", "handle", "description", "instructions", "default_topics", "config"}
     updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
-    if not updates:
-        return get_channel(db_ch, channel_id)
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    db_ch.execute(
-        f"UPDATE channels SET {set_clause} WHERE id = ?",
-        list(updates.values()) + [channel_id]
-    )
+
+    # config가 들어오면 시크릿을 분리해서 별도 저장
+    if "config" in updates:
+        try:
+            cfg = json.loads(updates["config"]) if isinstance(updates["config"], str) else dict(updates["config"])
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
+        public_cfg, secret_cfg = _split_config(cfg)
+        updates["config"] = json.dumps(public_cfg, ensure_ascii=False)
+
+        secrets = _load_secrets()
+        existing = secrets.get(channel_id, {})
+        # 시크릿 키가 config에 포함된 경우만 갱신 (전체 덮어쓰기)
+        existing.update(secret_cfg)
+        # 빈 값으로 들어온 시크릿은 제거
+        for k in SECRET_KEYS:
+            if k in cfg and cfg[k] in (None, ""):
+                existing.pop(k, None)
+        if existing:
+            secrets[channel_id] = existing
+        else:
+            secrets.pop(channel_id, None)
+        _save_secrets(secrets)
+
+    if updates:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        db_ch.execute(
+            f"UPDATE channels SET {set_clause} WHERE id = ?",
+            list(updates.values()) + [channel_id]
+        )
     return get_channel(db_ch, channel_id)
 
 
@@ -78,6 +160,9 @@ def delete_channel(db_ch, db, channel_id: str):
                [channel_id])
     db.execute("DELETE FROM jobs WHERE channel_id = ?", [channel_id])
     db_ch.execute("DELETE FROM channels WHERE id = ?", [channel_id])
+    secrets = _load_secrets()
+    if secrets.pop(channel_id, None) is not None:
+        _save_secrets(secrets)
 
 
 # --- Job ---

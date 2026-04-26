@@ -483,21 +483,22 @@ function renderJobCard(job, isCompleted = false) {
   if (job.status === "waiting_slides") activeStep = (job.uploaded_bg_count > 0) ? "영상 제작 대기" : "이미지 업로드 필요";
   if (job.status === "queued") activeStep = job.queue_position ? `대기 ${job.queue_position}번째` : "곧 시작";
 
-  // 누락 단계 보정 (가장 늦은 완료 단계 이전은 completed)
+  // 가장 늦은 완료/스킵 단계 인덱스 (그 이전 단계는 통과로 간주)
   let latestDoneIdx = -1;
-  for (const name of STEP_ORDER) {
-    const st = job.steps[name];
-    if (st === "completed" || st === "skipped") {
-      const idx = STEP_ORDER.indexOf(name);
-      if (idx > latestDoneIdx) latestDoneIdx = idx;
-    }
-  }
-  for (let i = 0; i < latestDoneIdx; i++) {
-    if (!job.steps[STEP_ORDER[i]]) job.steps[STEP_ORDER[i]] = "completed";
+  for (let i = 0; i < STEP_ORDER.length; i++) {
+    const st = job.steps[STEP_ORDER[i]];
+    if (st === "completed" || st === "skipped") latestDoneIdx = i;
   }
 
-  // 진행률 계산
-  const completed = STEP_ORDER.filter(s => job.steps[s] === "completed" || job.steps[s] === "skipped").length;
+  // 진행률 계산:
+  // - status가 completed면 100% (업로드 skipped 포함)
+  // - 그 외엔 latestDoneIdx 기반 (이전 단계 status가 failed/pending이어도 통과로 간주)
+  let completed;
+  if (job.status === "completed") {
+    completed = STEP_ORDER.length;
+  } else {
+    completed = latestDoneIdx + 1;
+  }
   const pct = Math.round((completed / STEP_ORDER.length) * 100);
 
   const jobNum = job.id.replace(/^job-\d+-0*/, "#");
@@ -5155,8 +5156,6 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-use-subagent").checked = !!cfg.use_subagent;
 
   // ── 콘텐츠 (content) ──
-  document.getElementById("cs-target-duration").value = cfg.target_duration || 60;
-  document.getElementById("cs-target-duration-label").textContent = cfg.target_duration || 60;
   document.getElementById("cs-format").value = cfg.format || "single";
   document.getElementById("cs-dedup-hours").value = cfg.dedup_hours != null ? cfg.dedup_hours : 24;
   document.getElementById("cs-skip-web-search").checked = !!cfg.skip_web_search;
@@ -5192,6 +5191,7 @@ async function openChannelSettings(channelId) {
   // ── 이미지 (image) ──
   document.getElementById("cs-bg-media-type").value = cfg.bg_media_type || "auto";
   document.getElementById("cs-first-slide-single-bg").checked = !!cfg.first_slide_single_bg;
+  document.getElementById("cs-first-slide-use-intro-bg").checked = !!cfg.first_slide_use_intro_bg;
   document.getElementById("cs-style-reference").checked = !!cfg.style_reference;
   document.getElementById("cs-veo-keep-audio").checked = !!cfg.veo_keep_audio;
   loadCharacterRefPreview();
@@ -5203,6 +5203,8 @@ async function openChannelSettings(channelId) {
   document.getElementById("cs-outro-duration").value = cfg.outro_duration || 3;
   document.getElementById("cs-intro-narration").value = cfg.intro_narration || "";
   document.getElementById("cs-outro-narration").value = cfg.outro_narration || "";
+  document.getElementById("cs-intro-show-headlines").checked = !!cfg.intro_show_headlines;
+  document.getElementById("cs-intro-overview-title").value = cfg.intro_overview_title || "";
   const nDelay = cfg.narration_delay ?? 2;
   document.getElementById("cs-narration-delay").value = nDelay;
   document.getElementById("cs-narration-delay-label").textContent = nDelay;
@@ -5337,6 +5339,7 @@ async function saveChannelSettings() {
   cfg.format = document.getElementById("cs-format").value;
   cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
   cfg.first_slide_single_bg = document.getElementById("cs-first-slide-single-bg").checked;
+  cfg.first_slide_use_intro_bg = document.getElementById("cs-first-slide-use-intro-bg").checked;
   cfg.style_reference = document.getElementById("cs-style-reference").checked;
   cfg.veo_keep_audio = document.getElementById("cs-veo-keep-audio").checked;
 
@@ -5359,7 +5362,6 @@ async function saveChannelSettings() {
   // 기본 탭
   cfg.fixed_topic = document.getElementById("cs-fixed-topic").checked;
   // 콘텐츠 탭
-  cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
   cfg.skip_web_search = document.getElementById("cs-skip-web-search").checked;
   cfg.dedup_hours = parseInt(document.getElementById("cs-dedup-hours").value);
   cfg.market_data_sources = [...document.querySelectorAll(".cs-market-source:checked")].map(cb => cb.value);
@@ -5422,6 +5424,8 @@ async function saveChannelSettings() {
   cfg.outro_duration = parseFloat(document.getElementById("cs-outro-duration").value) || 3;
   cfg.intro_narration = document.getElementById("cs-intro-narration").value.trim();
   cfg.outro_narration = document.getElementById("cs-outro-narration").value.trim();
+  cfg.intro_show_headlines = document.getElementById("cs-intro-show-headlines").checked;
+  cfg.intro_overview_title = document.getElementById("cs-intro-overview-title").value.trim();
 
   // 트렌드 소스 저장
   cfg.trend_sources = [];
@@ -5666,6 +5670,7 @@ async function saveChannelSettingsSilent() {
   cfg.format = document.getElementById("cs-format").value;
   cfg.bg_media_type = document.getElementById("cs-bg-media-type").value;
   cfg.first_slide_single_bg = document.getElementById("cs-first-slide-single-bg").checked;
+  cfg.first_slide_use_intro_bg = document.getElementById("cs-first-slide-use-intro-bg").checked;
   cfg.style_reference = document.getElementById("cs-style-reference").checked;
   cfg.veo_keep_audio = document.getElementById("cs-veo-keep-audio").checked;
 
@@ -5688,7 +5693,6 @@ async function saveChannelSettingsSilent() {
   // 기본 탭
   cfg.fixed_topic = document.getElementById("cs-fixed-topic").checked;
   // 콘텐츠 탭
-  cfg.target_duration = parseInt(document.getElementById("cs-target-duration").value) || 60;
   cfg.skip_web_search = document.getElementById("cs-skip-web-search").checked;
   cfg.dedup_hours = parseInt(document.getElementById("cs-dedup-hours").value);
   cfg.market_data_sources = [...document.querySelectorAll(".cs-market-source:checked")].map(cb => cb.value);
@@ -5783,7 +5787,6 @@ function _buildManualPrompt(channelId) {
   const slideLayout = cfg.slide_layout || "full";
   const imageStyle = cfg.image_style || "mixed";
   // image_prompt_style은 통합 지침(instructions) 내 섹션으로 관리
-  const targetDuration = cfg.target_duration || 60;
   const scriptRules = (fmt === "roundup") ? (cfg.roundup_rules || "") : (cfg.script_rules || "");
   const bgMediaType = cfg.bg_media_type || "auto";
   const autoBgSource = cfg.auto_bg_source || "sd_image";
@@ -5793,8 +5796,6 @@ function _buildManualPrompt(channelId) {
 
 사용자가 입력한 주제를 기반으로
 유튜브 쇼츠 영상을 제작한다.
-
-목표 영상 길이: ${targetDuration}초
 `;
 
   if (instructions) {
@@ -5817,8 +5818,7 @@ ${scriptRules}
     prompt += `
 [대본 규칙]
 
-- 슬라이드: ${targetDuration <= 30 ? '4~6개' : '6~8개'} (closing 제외, 시스템이 자동 추가)
-- 문장: ${targetDuration <= 30 ? '8~12개, 총 160~200자' : '14~20개, 총 200~300자'}
+- 슬라이드 수와 문장 수, 영상 길이는 채널 지침을 따른다 (closing 제외, 시스템이 자동 추가)
 - 슬라이드 1개당 문장 2~4개 (5개 이상 금지)
 - ★ 배경 1개당 표시 시간: 이미지 ~5초, 영상(video) ~6초
   - 나레이션 길이를 배경 교체 타이밍에 맞출 것
@@ -5833,7 +5833,7 @@ ${scriptRules}
     if (fmt === "roundup") {
       prompt += `
 - 라운드업 형식: 여러 뉴스를 한 영상에 묶어서 전달
-- 첫 슬라이드: bg_type "overview", 주제 목록 소개`;
+- 첫 슬라이드부터 곧바로 첫 번째 뉴스로 시작 (오프닝 안내는 채널 인트로 세그먼트가 처리)`;
     }
   }
 
@@ -5858,7 +5858,7 @@ ${imageStyle !== 'mixed' ? `이미지 스타일: ${imageStyle === 'anime' ? '애
 
 [나레이션 규칙]
 
-1. 전체 나레이션 읽기 시간이 ${targetDuration}초에 맞도록 조절
+1. 전체 나레이션 읽기 시간은 채널 지침에 명시된 영상 길이에 맞춘다
 2. 채널 지침과 대본 규칙의 톤/말투/문장 길이를 반드시 따를 것
 3. narration text는 TTS가 읽는 텍스트이므로 HTML 태그 금지, 순수 텍스트만
 `;
@@ -5882,6 +5882,10 @@ ${imageStyle !== 'mixed' ? `이미지 스타일: ${imageStyle === 'anime' ? '애
 
 반드시 아래 JSON 형식으로만 출력한다.
 설명문은 절대 출력하지 않는다.
+★★★ 전체 출력은 끊김 없이 하나의 JSON 코드 블록으로 한 번에 출력한다.
+- 중간에 설명/주석/구분선/요약을 끼워 넣지 않는다.
+- 여러 메시지로 쪼개거나 "계속하기"를 요구하지 않는다.
+- 사용자가 한 번의 클립보드 복사로 전체 내용을 그대로 붙여넣을 수 있어야 한다.
 
 {
   "topic": "",
@@ -5924,13 +5928,21 @@ ${bgMediaType === "single"
 → 수치/통계는 나레이션으로 전달, 배경은 해당 주제의 실제 사물/장소 사진으로 표현
 → 예: "48시간 타이머" → 모래시계 / "앱 채팅창" → 펜과 메모장 / "10% 수치" → 계산기와 영수증 / "법률 조항" → 펼쳐진 법전
 
-[★ 한국 로컬 이미지 규칙]
-- 모든 장면은 한국 환경 기준. 프롬프트에 "Korean" 키워드 반드시 포함
-- 건물/인테리어: Korean apartment, Korean gym, Korean office, Korean cafe
-- 화폐: Korean won bills (달러/유로 대신 한국 원화)
-- 서류: Korean contract, Korean official documents
-- 환경: Korean street, Korean urban setting
-- Western/European/American 스타일 사물 금지
+[★ 이미지 로컬라이즈 규칙 — 나레이션의 발생 지역 기준]
+- ★ 나레이션을 먼저 읽고 사건의 발생 지역을 파악한 뒤 그에 맞는 환경을 프롬프트에 반영
+- 한국 국내 사건/장소: Korean 키워드 사용
+  - 건물/인테리어: Korean apartment, Korean gym, Korean office, Korean cafe
+  - 화폐: Korean won bills (달러/유로 대신 한국 원화)
+  - 서류: Korean contract, Korean official documents
+  - 환경: Korean street, Korean urban setting, Hangul signage
+- 해외 사건: 나레이션에 명시된 국가/지역 환경 사용
+  - 이란/중동: Iranian setting, Middle Eastern architecture, Persian script signage
+  - 미국: American setting, Western infrastructure
+  - 중국: Chinese setting, Mandarin signage
+  - 일본: Japanese setting, Japanese signage
+  - 유럽: European setting
+- 환경 단서가 없는 추상 클로즈업(서류/물품/도구 등)은 중립적으로 처리. 특정 국가 키워드 강제 금지
+- ★ 절대 금지: 나레이션의 지역 정보를 무시하고 임의로 Korean을 강제하지 말 것 (이란 뉴스에 Korean setting 같은 부조리)
 `;
 
   // bg_media_type=single 규칙은 채널 규칙 유무와 무관하게 항상 추가
@@ -5984,9 +5996,21 @@ motion 구성 요소 (2~3개 조합할 것):
     }
   }
 
+  // 입력창에 주제가 있으면 자동 삽입. 없으면 라운드업/단일에 따라 안내
+  const _topicInput = (document.getElementById("manual-topic")?.value || "").trim();
+  let topicBlock;
+  if (_topicInput) {
+    topicBlock = _topicInput;
+  } else if (fmt === "roundup") {
+    topicBlock = "위 [오늘자 뉴스 헤드라인] 목록에서 채널 지침과 분야 다양성 기준에 맞는 뉴스 5~8개를 선정하여 라운드업 영상으로 만들어라.";
+  } else {
+    topicBlock = "(여기에 영상 주제를 입력하세요)";
+  }
+
   prompt += `
 [생성 요청 주제]
 
+${topicBlock}
 `;
   return prompt;
 }
@@ -6032,20 +6056,61 @@ async function _buildManualPromptWithNews(channelId) {
 
   if (!isNewsChannel) return base;
 
+  // 시장 데이터 크롤링 (채널 config의 market_data_sources)
+  let marketBlock = "";
+  const marketSources = cfg.market_data_sources || [];
+  if (marketSources.length > 0) {
+    try {
+      const mUrl = `/api/market/data?sources=${encodeURIComponent(marketSources.join(","))}`;
+      const mRes = await fetch(mUrl);
+      if (mRes.ok) {
+        const mData = await mRes.json();
+        if (mData.formatted) marketBlock = mData.formatted;
+      }
+    } catch (e) {
+      console.warn("시장 데이터 수집 실패:", e);
+    }
+  }
+
+  // 채널 config의 news_filter_section: 콤마 구분 (예: "종합", "경제,IT과학")
+  const filterSection = (cfg.news_filter_section || "").trim();
+  const url = filterSection
+    ? `/api/news/today?section=${encodeURIComponent(filterSection)}`
+    : "/api/news/today";
+
   try {
-    const res = await fetch("/api/news/today");
-    if (!res.ok) return base;
+    const res = await fetch(url);
+    if (!res.ok) return marketBlock ? _injectBlock(base, marketBlock) : base;
     const data = await res.json();
-    if (!data.formatted || data.count === 0) return base;
-    // 프롬프트 끝의 "[생성 요청 주제]" 앞에 뉴스 컨텍스트 삽입
-    const marker = "[생성 요청 주제]";
-    const idx = base.lastIndexOf(marker);
-    if (idx === -1) return base + "\n\n" + data.formatted;
-    return base.slice(0, idx) + data.formatted + "\n\n" + marker + base.slice(idx + marker.length);
+    if (!data.formatted || data.count === 0) {
+      return marketBlock ? _injectBlock(base, marketBlock) : base;
+    }
+
+    // 라운드업 채널이면 뉴스 컨텍스트 뒤에 라운드업 생성 안내 추가
+    let newsBlock = data.formatted;
+    if (fmt === "roundup") {
+      const sectionLabel = filterSection || "전체";
+      newsBlock += `\n\n[라운드업 생성 안내]\n` +
+        `위 ${sectionLabel} 뉴스 헤드라인 ${data.count}건 중 채널 지침의 슬라이드 수에 맞춰 ` +
+        `핵심 뉴스를 선정하여 라운드업 영상으로 만들어라. ` +
+        `각 뉴스는 1슬라이드씩 배치하고, 첫 슬라이드부터 곧바로 첫 번째 뉴스로 시작한다 ` +
+        `(오프닝 안내는 채널 인트로 세그먼트가 처리하므로 생성하지 않음).`;
+    }
+
+    // 시장 데이터 + 뉴스를 묶어 [생성 요청 주제] 앞에 삽입
+    const combinedBlock = [marketBlock, newsBlock].filter(Boolean).join("\n\n");
+    return _injectBlock(base, combinedBlock);
   } catch (e) {
     console.warn("뉴스 수집 실패:", e);
-    return base;
+    return marketBlock ? _injectBlock(base, marketBlock) : base;
   }
+}
+
+function _injectBlock(base, block) {
+  const marker = "[생성 요청 주제]";
+  const idx = base.lastIndexOf(marker);
+  if (idx === -1) return base + "\n\n" + block;
+  return base.slice(0, idx) + block + "\n\n" + marker + base.slice(idx + marker.length);
 }
 
 function toggleJsonPaste() {

@@ -286,7 +286,7 @@ def generate_infographic(slide_data: dict, script_context: str,
 ## 출력
 HTML 코드만 출력해. 설명이나 마크다운 코드 블록 없이 <!DOCTYPE html>로 시작해."""
 
-    raw = _run_claude(prompt, timeout=90, use_web=False, model="claude-haiku-4-5-20251001")
+    raw = _run_claude(prompt, timeout=90, use_web=False, model="claude-sonnet-4-6")
 
     # HTML 추출
     html = _extract_html(raw)

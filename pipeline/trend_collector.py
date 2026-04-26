@@ -296,8 +296,13 @@ def _fetch_kr_news(max_age_hours: int = 12) -> list[dict]:
 
 # ── 오늘자 뉴스 통합 수집 ──────────────────────────────────
 
-def fetch_today_news(max_age_hours: int = 12) -> list[dict]:
+def fetch_today_news(max_age_hours: int = 12,
+                     sections: list[str] | None = None) -> list[dict]:
     """Google News + 네이버 뉴스 RSS에서 오늘자 뉴스 통합 수집.
+
+    Args:
+        max_age_hours: 기사 최대 노후도(시간)
+        sections: 섹션 필터. None이면 전체. 예: ["종합"], ["경제", "IT과학"]
 
     Returns:
         [{"title": "...", "source": "...", "section": "...", "pub_date": "..."}]
@@ -305,26 +310,33 @@ def fetch_today_news(max_age_hours: int = 12) -> list[dict]:
     """
     all_items = []
 
+    section_map = {
+        "": "종합", "BUSINESS": "경제", "TECHNOLOGY": "IT과학",
+        "NATION": "정치", "ENTERTAINMENT": "연예", "SPORTS": "스포츠",
+    }
+    # 필터된 카테고리만 수집
+    cats_to_fetch = [c for c, s in section_map.items()
+                     if not sections or s in sections]
+
     # Google News — 카테고리별 수집
-    for cat in ["", "BUSINESS", "TECHNOLOGY", "NATION", "ENTERTAINMENT", "SPORTS"]:
+    for cat in cats_to_fetch:
         try:
             items = _fetch_google_news(category=cat, max_age_hours=max_age_hours)
-            section_map = {
-                "": "종합", "BUSINESS": "경제", "TECHNOLOGY": "IT과학",
-                "NATION": "정치", "ENTERTAINMENT": "연예", "SPORTS": "스포츠",
-            }
             for item in items:
                 item["section"] = section_map.get(cat, "종합")
             all_items.extend(items)
         except Exception as e:
             logger.warning("Google News(%s) 수집 실패: %s", cat, e)
 
-    # 한국 언론사 RSS
-    try:
-        kr_items = _fetch_kr_news(max_age_hours=max_age_hours)
-        all_items.extend(kr_items)
-    except Exception as e:
-        logger.warning("한국 언론사 뉴스 수집 실패: %s", e)
+    # 한국 언론사 RSS — 종합 섹션에 포함 (필터 없거나 "종합" 포함 시)
+    if not sections or "종합" in sections:
+        try:
+            kr_items = _fetch_kr_news(max_age_hours=max_age_hours)
+            for item in kr_items:
+                item["section"] = "종합"
+            all_items.extend(kr_items)
+        except Exception as e:
+            logger.warning("한국 언론사 뉴스 수집 실패: %s", e)
 
     # 중복 제거 (제목 유사도 기반)
     seen_titles = set()

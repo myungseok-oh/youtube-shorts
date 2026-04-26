@@ -10,4 +10,6 @@ data/shorts.db
 data/shorts.db-shm
 data/shorts.db-wal
 data/google-tts.json
+data/channel_secrets.json
+data/channels.db.bak.*
 .playwright-mcp/

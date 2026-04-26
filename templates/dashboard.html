@@ -226,13 +226,6 @@
       <!-- 탭: 콘텐츠 -->
       <div id="cs-tab-content" class="cs-tab-content hidden space-y-4">
         <div>
-          <label class="block text-sm text-gray-400 mb-1">목표 영상 길이 <span id="cs-target-duration-label" class="text-orange-400">60</span>초</label>
-          <input id="cs-target-duration" type="range" min="6" max="120" step="1" value="60"
-                 oninput="document.getElementById('cs-target-duration-label').textContent=this.value"
-                 class="w-full accent-orange-500">
-          <p class="text-xs text-gray-500 mt-1">6~120초. 슬라이드 수와 나레이션 분량이 이 길이에 맞춰 조절됩니다</p>
-        </div>
-        <div>
           <label class="block text-sm text-gray-400 mb-1">영상 형식</label>
           <select id="cs-format"
                   class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
@@ -503,6 +496,12 @@
               </div>
               <textarea id="cs-intro-narration" rows="2" placeholder="나레이션 멘트 (입력 시 TTS 생성, duration 자동)"
                         class="mt-1 w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs resize-none"></textarea>
+              <label class="mt-1 flex items-center gap-1 text-[11px] text-gray-400 self-start">
+                <input type="checkbox" id="cs-intro-show-headlines" class="accent-orange-500">
+                헤드라인 카드 누적 등장
+              </label>
+              <input type="text" id="cs-intro-overview-title" placeholder="헤드라인 타이틀 (기본: 오늘의 헤드라인)"
+                     class="mt-1 w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs" />
             </div>
             <!-- 아웃트로 -->
             <div class="flex flex-col items-center">
@@ -552,6 +551,11 @@
             <span class="text-sm text-gray-400">첫 슬라이드 배경 1장 고정</span>
           </label>
           <p class="text-xs text-gray-500 mt-1">인트로/오프닝 슬라이드는 배경 미디어 타입과 무관하게 항상 1장</p>
+          <label class="flex items-center gap-2 mt-3 cursor-pointer">
+            <input type="checkbox" id="cs-first-slide-use-intro-bg" class="rounded bg-gray-800 border-gray-600">
+            <span class="text-sm text-gray-400">첫 슬라이드 배경 = 채널 인트로 이미지 재사용</span>
+          </label>
+          <p class="text-xs text-gray-500 mt-1">매번 첫 슬라이드 이미지를 새로 생성하지 않고 채널 인트로 이미지(intro_bg)를 자동 사용. 토큰/시간 절약</p>
           <label class="flex items-center gap-2 mt-3 cursor-pointer">
             <input type="checkbox" id="cs-style-reference" class="rounded bg-gray-800 border-gray-600">
             <span class="text-sm text-gray-400">스타일 참조 (화풍/색감 유지)</span>
@@ -1068,6 +1072,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260415b"></script>
+  <script src="/static/app.js?v=20260426d"></script>
 </body>
 </html>

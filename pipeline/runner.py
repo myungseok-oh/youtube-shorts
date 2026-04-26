@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -401,7 +402,8 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
         topic = job_row["topic"]
         print(f"{_pa_tag} 채널={channel_id}, 주제={topic[:50]}")
 
-        channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
+        from db.models import get_channel
+        channel = get_channel(db_ch, channel_id)
         instructions = channel.get("instructions", "") if channel else ""
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         ch_config = json.loads(channel.get("config", "{}")) if channel else {}
@@ -460,17 +462,19 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
         if _is_news_ch:
             try:
                 _t_news = time.time()
-                print(f"{_pa_tag} [1.5/4] 오늘자 뉴스 RSS 수집 시작")
+                # 채널 config의 news_filter_section 적용 (예: "경제" → 경제 RSS만)
+                _filter = (ch_config.get("news_filter_section") or "").strip()
+                _sections = [s.strip() for s in _filter.split(",") if s.strip()] or None
+                _label = ",".join(_sections) if _sections else "전체"
+                print(f"{_pa_tag} [1.5/4] 오늘자 뉴스 RSS 수집 시작 (섹션={_label})")
                 from pipeline.trend_collector import fetch_today_news, format_today_news
-                _news_items = fetch_today_news(max_age_hours=12)
+                _news_items = fetch_today_news(max_age_hours=12, sections=_sections)
                 _news_context = format_today_news(_news_items)
                 print(f"{_pa_tag} [1.5/4] 뉴스 수집 완료: {len(_news_items)}건, {time.time()-_t_news:.1f}초")
             except Exception as e:
                 print(f"{_pa_tag} [1.5/4] 뉴스 수집 실패: {e}")
 
         if script_json is None:
-            target_duration = int(ch_config.get("target_duration", 60))
-
             # ── 통합 1회 호출: 시놉시스 + 비주얼 플랜 + 대본 ──
             _update_step(db, job_id, "synopsis", "running")
             try:
@@ -479,13 +483,12 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                 # Gemini 드래프트 모드: 토글 ON + API 키 존재 시
                 _gemini_key = ch_config.get("gemini_api_key", "") if use_gemini_draft else ""
                 _mode = "Gemini+Claude" if _gemini_key else ("Claude(no-web)" if _skip_web else "Claude(web)")
-                print(f"{_pa_tag} [2/4] 대본 생성 시작: mode={_mode}, target={target_duration}초, news={len(_news_context)}자")
+                print(f"{_pa_tag} [2/4] 대본 생성 시작: mode={_mode}, news={len(_news_context)}자")
                 _t_script = time.time()
                 result = generate_all_in_one(
                     topic, instructions, brand,
                     channel_format=channel_format,
                     has_outro=has_outro,
-                    target_duration=target_duration,
                     prompt_style=image_prompt_style,
                     layout=ch_config.get("slide_layout", "full"),
                     image_style=ch_config.get("image_style", "mixed"),
@@ -578,7 +581,6 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
 
         else:
             # script_json 직접 제공 (수동 대본) → Claude 후처리
-            target_duration = int(ch_config.get("target_duration", 60))
 
             # 슬라이드 내장 이미지 프롬프트 or meta_json에 저장된 프롬프트 → visual_plan으로 변환
             _existing_vp = []
@@ -630,7 +632,6 @@ def _run_phase_a(db_ch, db, job_id: str, script_json: dict = None,
                 print(f"{_pa_tag} [2/4] 수동 대본 Claude 검증 시작")
                 result = _validate_with_claude(
                     draft_json, instructions, brand, topic,
-                    target_duration=target_duration,
                     prompt_style=image_prompt_style,
                     layout=ch_config.get("slide_layout", "full"),
                     image_style=ch_config.get("image_style", "mixed"),
@@ -830,6 +831,17 @@ def _reset_steps_from(db, job_id, step_names):
             [job_id, name])
 
 
+def _finalize_step_states(db, job_id):
+    """jobs.status=completed 마킹 직전 호출.
+    영상이 완성된 시점에 failed/pending/running으로 남은 step을 모두 completed로 정리.
+    (Phase A 통합 호출 실패 후 우회 경로로 영상이 만들어진 케이스 대응)"""
+    db.execute(
+        "UPDATE job_steps SET status = 'completed', completed_at = ? "
+        "WHERE job_id = ? AND status NOT IN ('completed', 'skipped')",
+        [_now(), job_id]
+    )
+
+
 # ─── Phase B: 슬라이드 + TTS + 렌더 + 업로드 ───
 
 def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
@@ -847,7 +859,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
         topic = job_row["topic"]
         script_json = json.loads(job_row["script_json"])
 
-        channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
+        from db.models import get_channel
+        channel = get_channel(db_ch, channel_id)
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         instructions = channel.get("instructions", "") if channel else ""
         ch_config_pb = json.loads(channel.get("config", "{}")) if channel else {}
@@ -964,6 +977,31 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                             print(f"[runner] Phase B 프롬프트 재생성 실패: {regen_err}")
                             image_prompts = []
 
+                    # 첫 슬라이드 배경 = 채널 인트로 이미지 재사용 (토큰/시간 절약)
+                    _first_use_intro = ch_config_b.get("first_slide_use_intro_bg", False)
+                    if _first_use_intro:
+                        # 사용자가 직접 업로드한 bg_1.X가 있으면 보존
+                        _bg1_existing = any(
+                            os.path.exists(os.path.join(dirs["bg"], f"bg_1.{ext}"))
+                            for ext in ("jpg", "jpeg", "png", "webp", "gif", "mp4")
+                        )
+                        if _bg1_existing:
+                            print("[runner] bg_1 이미 존재 — intro_bg 재사용 스킵")
+                            _first_use_intro = False
+                        else:
+                            _intro_src = _find_channel_image(channel_id, "intro_bg")
+                            if _intro_src:
+                                _bg1_dst = os.path.join(dirs["bg"], "bg_1.png")
+                                try:
+                                    shutil.copy(_intro_src, _bg1_dst)
+                                    print(f"[runner] 첫 슬라이드 배경 = 채널 인트로 이미지 재사용 ({_intro_src})")
+                                except Exception as e:
+                                    print(f"[runner] intro_bg 복사 실패: {e}")
+                                    _first_use_intro = False
+                            else:
+                                print("[runner] first_slide_use_intro_bg=ON 이지만 intro_bg 없음 — 일반 생성")
+                                _first_use_intro = False
+
                     if auto_bg_source == "gemini":
                         gemini_key = ch_config_b.get("gemini_api_key", "")
                         if gemini_key:
@@ -979,6 +1017,10 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 if not en_prompt:
                                     continue
                                 out = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                                if _first_use_intro and idx == 0 and os.path.exists(out):
+                                    print(f"[runner] bg_1.png = intro_bg 재사용 — Gemini 생성 스킵")
+                                    _first_bg_path = out  # 스타일 참조용
+                                    continue
                                 try:
                                     if idx > 0:
                                         time.sleep(5)
@@ -1003,13 +1045,15 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                             for idx, prompt in enumerate(image_prompts):
                                 if _auto_video_src == "none":
                                     break
+                                if _first_use_intro and idx == 0:
+                                    continue  # intro_bg 재사용 — 영상화 스킵
                                 media_rec = prompt.get("media", "image") if isinstance(prompt, dict) else "image"
                                 if media_rec != "video":
                                     continue
                                 slide_num = prompt.get("slide", idx + 1) if isinstance(prompt, dict) else idx + 1
                                 slide = slides_data[slide_num - 1] if slide_num <= len(slides_data) else {}
                                 bg_type = slide.get("bg_type", "photo")
-                                if bg_type in ("graph", "overview", "closing"):
+                                if bg_type in ("graph", "closing"):
                                     continue
                                 img_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
                                 if not os.path.exists(img_path):
@@ -1058,6 +1102,9 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
                                 bg_type = slide.get("bg_type", "photo")
                                 en_prompt = _prompt_en(prompt)
                                 if not en_prompt:
+                                    continue
+                                if _first_use_intro and idx == 0:
+                                    print(f"[runner] bg_1 = intro_bg 재사용 — SD 생성 스킵")
                                     continue
                                 if auto_bg_source == "sd_video":
                                     out = os.path.join(dirs["bg"], f"bg_{idx + 1}.mp4")
@@ -1314,7 +1361,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
 
                 # 인트로/아웃트로
                 intro_offset, wrap_dur = _wrap_with_intro_outro(
-                    channel_id, final_path, dirs["segment"], _ch_cfg_render)
+                    channel_id, final_path, dirs["segment"], _ch_cfg_render,
+                    topic=topic, script_json=script_json)
                 total_duration += wrap_dur
 
                 # SFX/BGM 믹싱
@@ -1731,7 +1779,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
 
                 # 인트로/아웃트로 세그먼트 이어붙이기
                 intro_offset, wrap_dur = _wrap_with_intro_outro(
-                    channel_id, final_path, dirs["segment"], _ch_cfg_render)
+                    channel_id, final_path, dirs["segment"], _ch_cfg_render,
+                    topic=topic, script_json=script_json)
                 timeline["total_duration"] += wrap_dur
 
                 # voice_clips 믹싱 (Composer 음성/자막 분리 모드)
@@ -1875,7 +1924,8 @@ def _run_phase_b(db_ch, db, job_id: str, tts_voice_override: str = "",
             _update_step(db, job_id, "upload", "skipped",
                          output_data={"message": "YouTube 인증 미설정"})
 
-        # 작업 완료
+        # 작업 완료 — step 상태 정리 후 status 마킹
+        _finalize_step_states(db, job_id)
         db.execute(
             "UPDATE jobs SET status = ?, output_path = ?, updated_at = ? WHERE id = ?",
             ["completed", final_path, _now(), job_id]
@@ -2383,11 +2433,15 @@ def _generate_narration_audio(text: str, output_path: str, ch_config: dict,
 
 
 def _wrap_with_intro_outro(channel_id: str, final_path: str,
-                            segment_dir: str, ch_config: dict):
+                            segment_dir: str, ch_config: dict,
+                            topic: str = "",
+                            script_json: dict | None = None):
     """인트로/아웃트로 이미지가 있으면 영상 앞뒤에 세그먼트로 이어붙임.
 
     나레이션 텍스트가 있으면 TTS → 이미지+나레이션 (duration=오디오 길이),
     없으면 이미지+무음 (duration=설정값).
+
+    intro_show_headlines=true + script_json 있으면 인트로에 헤드라인 카드 누적 등장 적용.
 
     Returns:
         (intro_dur, total_added_dur) 튜플. 없으면 (0, 0).
@@ -2407,12 +2461,35 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
     intro_narration = (ch_config.get("intro_narration") or "").strip()
     outro_narration = (ch_config.get("outro_narration") or "").strip()
 
+    # 채널 설정에 intro_narration 비어있으면 script_json에서 AI 생성된 멘트 사용
+    if not intro_narration and isinstance(script_json, dict):
+        _ai_intro = (script_json.get("intro_narration") or "").strip()
+        if _ai_intro:
+            intro_narration = _ai_intro
+            print(f"[runner] AI 생성 인트로 멘트 사용: {intro_narration[:60]}...")
+    if not outro_narration and isinstance(script_json, dict):
+        _ai_outro = (script_json.get("outro_narration") or "").strip()
+        if _ai_outro:
+            outro_narration = _ai_outro
+
     # 나레이션 템플릿 변수 치환: {날짜} → "3월 11일", {요일} → "화요일"
     now = datetime.now()
+    # 라운드업이면 topic을 " / " 분리 → "①주제1 ②주제2 ③주제3" 형태
+    _topics = [t.strip() for t in (topic or "").split(" / ") if t.strip()]
+    _is_roundup = ch_config.get("format") == "roundup" and len(_topics) > 1
+    if _is_roundup:
+        _circled = "①②③④⑤⑥⑦⑧⑨⑩"
+        _topic_list = " ".join(
+            f"{_circled[i] if i < len(_circled) else f'{i+1}.'}{t}"
+            for i, t in enumerate(_topics)
+        )
+    else:
+        _topic_list = ""
     _narr_vars = {
         "날짜": f"{now.month}월 {now.day}일",
         "요일": ["월", "화", "수", "목", "금", "토", "일"][now.weekday()] + "요일",
         "오전오후": "오전" if now.hour < 12 else "오후",
+        "주제목록": _topic_list,
     }
     for k, v in _narr_vars.items():
         intro_narration = intro_narration.replace(f"{{{k}}}", v)
@@ -2422,7 +2499,58 @@ def _wrap_with_intro_outro(channel_id: str, final_path: str,
 
     if intro_bg:
         intro_seg = os.path.join(segment_dir, "intro.mp4")
-        if intro_narration:
+
+        # 헤드라인 오버뷰 인트로 (intro_show_headlines=true)
+        show_headlines = bool(ch_config.get("intro_show_headlines"))
+        overview_dur = 0.0
+        if show_headlines and script_json:
+            try:
+                from pipeline.intro_overview import (
+                    extract_headlines, render_intro_with_overview,
+                    build_fallback_narration,
+                )
+                _hl = extract_headlines(script_json)  # 콘텐츠 슬라이드 전체
+                if len(_hl) >= 2:
+                    # 채널/스크립트 양쪽 모두 비어있으면 헤드라인으로 자동 합성
+                    if not intro_narration:
+                        intro_narration = build_fallback_narration(_hl)
+                        if intro_narration:
+                            print(f"[runner] 인트로 나레이션 자동 합성: {intro_narration[:80]}")
+                    # 인트로 나레이션 오디오 (있으면) 미리 생성
+                    _ov_audio = None
+                    _ov_delay = 0.0
+                    if intro_narration:
+                        _audio_path = os.path.join(segment_dir, "intro_narration.mp3")
+                        _ov_audio = _generate_narration_audio(
+                            intro_narration, _audio_path, ch_config, channel_id)
+                        if _ov_audio:
+                            _nd_ov = ch_config.get("narration_delay")
+                            _ov_delay = _nd_ov if _nd_ov is not None else 2
+                    _date_label = (
+                        f"{now.month}월 {now.day}일 "
+                        f"{['월','화','수','목','금','토','일'][now.weekday()]}요일"
+                    )
+                    _title = (ch_config.get("intro_overview_title") or "오늘의 헤드라인").strip()
+                    overview_dur = render_intro_with_overview(
+                        intro_bg, _hl, _ov_audio, intro_seg, vcfg,
+                        audio_delay=_ov_delay,
+                        date_label=_date_label,
+                        title=_title,
+                        accent_color=ch_config.get("slide_accent_color", "#ff6b35"),
+                        hl_color=ch_config.get("slide_hl_color", "#ffd700"),
+                    )
+                    if overview_dur > 0 and os.path.exists(intro_seg):
+                        parts.append(intro_seg)
+                        added_dur += overview_dur
+                        intro_added = overview_dur
+                        print(f"[runner] 인트로 세그먼트 생성 (헤드라인 오버뷰, {len(_hl)}개): {overview_dur:.1f}초")
+            except Exception as e:
+                print(f"[runner] 헤드라인 오버뷰 인트로 실패 — 기본 인트로 폴백: {e}")
+                overview_dur = 0.0
+
+        if overview_dur > 0:
+            pass  # 이미 처리됨
+        elif intro_narration:
             audio_path = os.path.join(segment_dir, "intro_narration.mp3")
             audio = _generate_narration_audio(intro_narration, audio_path,
                                                ch_config, channel_id)
@@ -2556,7 +2684,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
         channel_id = job_row["channel_id"]
         topic = job_row["topic"]
 
-        channel = db_ch.fetchone("SELECT * FROM channels WHERE id = ?", [channel_id])
+        from db.models import get_channel
+        channel = get_channel(db_ch, channel_id)
         instructions = channel.get("instructions", "") if channel else ""
         brand = channel.get("name", "이슈60초") if channel else "이슈60초"
         ch_config_fp = json.loads(channel.get("config", "{}")) if channel else {}
@@ -2665,6 +2794,28 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
 
             bg_source_log = auto_bg_source
 
+            # 첫 슬라이드 배경 = 채널 인트로 이미지 재사용 (토큰/시간 절약)
+            _first_use_intro_s3 = ch_config_s3.get("first_slide_use_intro_bg", False)
+            if _first_use_intro_s3:
+                _bg1_existing_s3 = any(
+                    os.path.exists(os.path.join(dirs["bg"], f"bg_1.{ext}"))
+                    for ext in ("jpg", "jpeg", "png", "webp", "gif", "mp4")
+                )
+                if _bg1_existing_s3:
+                    print("[runner] bg_1 이미 존재 — intro_bg 재사용 스킵")
+                    _first_use_intro_s3 = False
+                else:
+                    _intro_src_s3 = _find_channel_image(channel_id, "intro_bg")
+                    if _intro_src_s3:
+                        try:
+                            shutil.copy(_intro_src_s3, os.path.join(dirs["bg"], "bg_1.png"))
+                            print(f"[runner] 첫 슬라이드 배경 = 채널 인트로 이미지 재사용 ({_intro_src_s3})")
+                        except Exception as e:
+                            print(f"[runner] intro_bg 복사 실패: {e}")
+                            _first_use_intro_s3 = False
+                    else:
+                        _first_use_intro_s3 = False
+
             if auto_bg_source == "openverse":
                 generate_backgrounds(slides_data, dirs["bg"])
             elif auto_bg_source == "gemini":
@@ -2681,6 +2832,10 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
                         if not en_prompt:
                             continue
                         output_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
+                        if _first_use_intro_s3 and idx == 0 and os.path.exists(output_path):
+                            print(f"[runner] bg_1.png = intro_bg 재사용 — Gemini 생성 스킵")
+                            _first_bg_path_s3 = output_path
+                            continue
                         try:
                             if idx > 0:
                                 time.sleep(5)
@@ -2700,12 +2855,14 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
 
                     # ── Step 2: video 추천 이미지 → Veo 3.1 Fast 영상화 ──
                     for idx, prompt in enumerate(image_prompts):
+                        if _first_use_intro_s3 and idx == 0:
+                            continue  # intro_bg 재사용 — 영상화 스킵
                         media_rec = prompt.get("media", "image") if isinstance(prompt, dict) else "image"
                         if media_rec != "video":
                             continue
                         slide = slides_data[idx] if idx < len(slides_data) else {}
                         bg_type = slide.get("bg_type", "photo")
-                        if bg_type in ("graph", "overview", "closing"):
+                        if bg_type in ("graph", "closing"):
                             continue
                         img_path = os.path.join(dirs["bg"], f"bg_{idx + 1}.png")
                         if not os.path.exists(img_path):
@@ -2924,7 +3081,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
 
             # 인트로/아웃트로 세그먼트 이어붙이기
             intro_offset_r, wrap_dur = _wrap_with_intro_outro(
-                channel_id, final_path, dirs["segment"], _ch_cfg_r)
+                channel_id, final_path, dirs["segment"], _ch_cfg_r,
+                topic=topic, script_json=script_data)
             timeline["total_duration"] += wrap_dur
 
             # SFX/BGM 믹싱 (인트로 길이만큼 오프셋)
@@ -3004,6 +3162,8 @@ def _run_pipeline(db_ch, db, job_id: str, script_json: dict = None):
             _update_step(db, job_id, "upload", "skipped",
                          output_data={"message": "YouTube 인증 미설정"})
 
+        # 작업 완료 — step 상태 정리 후 status 마킹
+        _finalize_step_states(db, job_id)
         db.execute(
             "UPDATE jobs SET status = ?, output_path = ?, updated_at = ? WHERE id = ?",
             ["completed", final_path, _now(), job_id]
